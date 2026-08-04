@@ -1,0 +1,230 @@
+defaults:
+  # 5=DEBUG, 4=INFO, 3=WARNING, 2=ERROR, 1=CRITICAL, 0=NOLOG
+  log_level: 4
+
+formats:
+  # 엑셀(xlsx/xlsm), csv는 PDF 변환 없이 처리
+  xlsx:
+    # docling(기본): MsExcel 백엔드로 DoclingDocument 생성 후 기존 청킹/벡터 파이프라인.
+    # tabular: 데이터 행마다 1벡터 + 컬럼 헤더→셀 값 메타데이터(병합셀 unmerge+forward-fill).
+    #   ※ Weaviate property 규칙(/[_A-Za-z][_0-9A-Za-z]*/)상 한글 헤더는 field_<hash> 로 alias 되고
+    #      원본명은 column_map 에 보존된다.
+    processing_mode: "docling"
+    # tabular 모드 전용 옵션
+    tabular:
+      # 헤더 행(0-based). 0=자동판정(제목행 스킵/멀티헤더 flatten), >0=단일헤더 강제.
+      header_row: 0
+      # 1시트에 표가 여러 개(빈 행으로 분리)면 표별로 분리. false(기본)=시트=1표.
+      multi_table: false
+
+  # PPT(ppt/pptx): 페이지 기반 청킹(기본 1 page 1 chunk, chunk_size 지정 시 연속 페이지 결합).
+  ppt:
+    # page_description: 페이지 내부 이미지 오브젝트(image_description)와 별개로 "페이지 자체"를
+    # 렌더링해 VLM 설명하고 그 텍스트를 페이지별 TextItem 으로 주입한다(PPT 원본 전용).
+    # native text 가 있으면 프롬프트에 포함해 요청. enable=true 면 generate_page_images 자동 강제.
+    page_description:
+      enable: true
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<IMAGE_DESCRIPTION_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      timeout: 360
+      concurrency: 16          # 페이지 설명 요청 병렬 수
+      # 프롬프트: prompt_template_file(우선) > prompt(inline) > 내장 기본값
+      prompt_template_file: prompt_page_image_description_default.md
+
+ocr:
+  ocr_mode: "auto" # "auto"(default), "force", "disable"
+
+  # OCR 엔진 선택. "paddle"(default) | "upstage"
+  engine: "paddle"
+
+  # 글리프 깨진 테이블 셀 재OCR 시 HTTP timeout(초)
+  table_cell_ocr_timeout: 60
+
+  paddle:
+    # engine: "paddle" 일 때만 사용
+    # <OCR_ENDPOINT>: PaddleOCR 서버 주소로 변경 필요
+    ocr_endpoint: "http://<OCR_ENDPOINT>/ocr"
+    text_score: 0.3
+
+  # 글리프 깨짐 기반 auto-OCR 재트리거 임계값
+  glyph_detection:
+    table_cell_threshold: 1   # 셀 GLYPH 토큰 N개 이상이면 재OCR
+    document_threshold: 10     # 문서 GLYPH 토큰 N개 초과면 OCR 경로 재시도
+
+  # engine: "upstage" 일 때만 사용
+  upstage:
+    api_endpoint: "https://api.upstage.ai/v1/document-digitization"
+    # api_key 가 비어있으면 UPSTAGE_API_KEY 환경변수에서 fallback
+    api_key: ""
+    model: "ocr"
+    timeout: 60
+    text_score: 0.5
+
+layout:
+  layout_model_type: "genos_layout" # "genos_layout"(default) or "docling_layout"
+  genos_layout:
+    # <LAYOUT_SERVING_ID>: Genos에 등록한 layout 모델서빙 ID로 변경 필요
+    # api_key는 k8s 내부 통신 기반 모델 호출 시 불필요.
+    endpoint: "http://llmops-gateway-api-service:8080/rep/serving/<LAYOUT_SERVING_ID>/v1/chat/completions"
+    api_key: ""
+    page_batch_size: 128
+    max_completion_tokens: 16384
+    model: "dots-mocr"          # 서빙 모델명
+    timeout: 1200               # VLM 요청 타임아웃(초)
+    retry_count: 2              # 비정상 VLM 응답 재시도 횟수
+    temperature: 0.1            # 생성 temperature
+    top_p: 0.9                  # 생성 top_p (0<top_p<=1)
+    repetition_penalty: 1.15    # >1.0, 토큰 반복(degeneration) 억제
+    length_fallback_enabled: true  # 폭주(finish_reason=length)/타임아웃 감지 시 layout_only 보정 on/off
+    fallback_dpi: 200           # 보정 시 페이지 재렌더 DPI (dots.ocr 권장 200)
+    table_fallback_enabled: true   # dotsocr가 표 HTML을 못 준 빈 테이블을 TableFormer로 보강 (CPU ~1.7s/표)
+
+# PDF 파이프라인 (docling PDF 파싱 성능/품질 노브)
+pdf_pipeline:
+  num_threads: 8                     # accelerator 스레드 수
+  device: "auto"                     # "auto"(default) | "cpu" | "cuda" | "mps"
+  images_scale: 2                    # 페이지/그림 이미지 렌더 배율
+  generate_page_images: true
+  generate_picture_images: true      # false 면 이미지 설명 enrichment 비활성화됨
+  table_structure_mode: "accurate"   # "accurate"(default) | "fast"
+
+# table_image
+# 복잡 표 대응: 표를 picture 와 동일하게 이미지로 잘라 저장하고 media_files 에
+# type='table_image' 로 기록한다(검색=청크 텍스트 / 답변=표 이미지).
+# 청크 내 표 텍스트(MD/HTML)는 그대로 유지되는 하이브리드 방식이다.
+table_image:
+  enable: false           # true 면 모든 표를 이미지로 저장 + media_files 기록
+
+# 표 텍스트 직렬화 형식(청크 text 내 docling 표 표현). tabular 모드(행=벡터)는 무관.
+output:
+  table_format: "html"   # "html"(default) | "markdown"
+  compact_tables: true    # markdown 표 컬럼 정렬 패딩 제거(대형 표 청크 축소). html 포맷엔 무관.
+
+# enrichment
+# 각 항목은 {이름: {옵션}} 형식의 list.
+# 비활성화: ① 항목 삭제  ② 항목 주석 처리  ③ enable: false
+# 모든 url 의 <ENRICHMENT_SERVING_ID> 는 Genos에 등록한 모델서빙 ID로 변경 필요.
+# api_key 는 k8s 내부 통신 기반 모델 호출 시 불필요.
+enrichment:
+  - toc:
+      enable: true
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<ENRICHMENT_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      temperature: 0.0
+      top_p: 0.00001
+      seed: 33
+      max_tokens: 10000
+      precheck:
+        enabled: true
+        max_context_tokens: 128000
+        completion_reserved_tokens: 12000
+      # 반복(degeneration) 억제. 미설정 시 미전송.
+      repetition_penalty: 1.1
+      # thinking(추론) 모드. 미설정 시 기본 off(차단 토큰 전송). 모델 자동 판단은 thinking: auto.
+      # thinking: off | on | auto,  thinking_dialect: standard(enable_thinking) | hcx(force/skip_reasoning)
+      # thinking: off
+      # thinking_dialect: standard
+      system_prompt_file: prompt_toc_default_system.md
+      user_prompt_file: prompt_toc_default_user.md
+      # 긴 문서 분할 TOC 추출(carry-over refine). enabled=true 면 길이와 무관하게 항상 분할 수행.
+      # 분할 각 청크에도 위 system/user 프롬프트를 사용하며, 2번째 청크부터 누적 목차를 컨텍스트로 덧붙인다.
+      split:
+        enabled: false
+        pages_per_chunk: 100          # 청크당 페이지 수
+        page_overlap: 1             # 청크 경계 중복 페이지 수
+        carryover_max_tokens: 1500  # 다음 청크에 주입할 누적 목차 토큰 상한
+
+  - metadata:
+      enable: true
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<ENRICHMENT_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      max_tokens: 10000
+      temperature: 0.0
+      timeout: 3600
+      pages: [1,4]  # null = 첫 4페이지
+      # output_fields: 프롬프트의 JSON 키와 일치해야 함
+      output_fields: [created_date, authors]
+      parser:
+        type: json   # json(default) | python
+      # thinking(추론) 모드. 미설정 시 기본 off(차단 토큰 전송). 모델 자동 판단은 thinking: auto.
+      # thinking: off | on | auto,  thinking_dialect: standard(enable_thinking) | hcx(force/skip_reasoning)
+      # thinking: off
+      # thinking_dialect: standard
+      system_prompt_file: prompt_metadata_default_system.md
+      user_prompt_file: prompt_metadata_default_user.md
+      precheck:
+        enabled: true
+        max_context_tokens: 128000
+        completion_reserved_tokens: 12000
+
+  - doc_summary:
+      enable: false          # 기본 off. true 또는 런타임 doc_summary=1 로 활성화. image/table 이 공유
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<ENRICHMENT_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      prompt_file: prompt_doc_summary.md   # {{full_text}} 기반 문서 본문요약
+      max_chars: 6000
+  - image_description:
+      enable: false
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<IMAGE_DESCRIPTION_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      concurrency: 16        # 이미지 설명 요청 병렬 수
+      before_items: 3
+      after_items: 2
+      max_context_chars: 1500
+      prompt_template_file: prompt_image_description_default.md
+      # ── 차트 처리 ──
+      chart:
+        enable: false          # false=일반 image description만 / true=차트 처리 수행
+        detection: auto         # auto=docling 자동판별(차트 분류 이미지만 차트 프롬프트) | all=모든 이미지를 차트로 처리
+        chart_prompt_file: prompt_chart_description_default.md
+  - table_description:
+      enable: false          # 기본 off(회귀 없음). true 또는 런타임 table_desc=1 로 활성화
+      url: "http://llmops-gateway-api-service:8080/rep/serving/<IMAGE_DESCRIPTION_SERVING_ID>/v1/chat/completions"
+      api_key: ""
+      model: "model"
+      concurrency: 8         # 표 설명 요청 병렬 수
+      before_items: 3
+      after_items: 2
+      max_context_chars: 1500
+      prompt_template_file: prompt_table_description_default.md   # 요약 전용 프롬프트
+      # ── 구조 재구성(refine): true(또는 런타임 table_refine=1)면 재구성 HTML 로 표 본체 교체 ──
+      refine:
+        enable: false
+        prompt_file: prompt_table_refine_combined.md   # 재구성 HTML + 요약 통합 프롬프트
+
+# 청킹(GenosSmartChunker) 설정
+chunking:
+  # 청크 최대 크기(max_tokens). char 모드면 "최대 문자 수", huggingface 모드면 "최대 토큰 수".
+  # 우선순위: 호출 kwargs 의 chunk_size > 아래 chunk_size. 0 = 토큰/문자 기반 분할 안 함. 0 초과 시 최소 1024 로 보정.
+  chunk_size: 10000
+  # 청킹 모드: split_only(기본) = chunk_size 초과 청크만 분할(구조 보존) |
+  #           resize_all = 모든 청크를 chunk_size 에 맞게 병합/분할. 우선순위: kwargs.chunk_mode > 아래.
+  chunk_mode: split_only
+  # 토큰 수 계산 방식. "char"(default)=문자 수 기준 | "huggingface"=HF 토크나이저 기준
+  tokenizer_type: "char"
+  # 청킹용 토크나이저(huggingface 모드에서만 사용). tokenizer_path 가 실제 존재하면 그 경로,
+  # 없으면 tokenizer_id(HF) 로 폴백 (외부 네트워크 차단 환경 대비)
+  tokenizer_path: "/models/doc_parser_models/sentence-transformers-all-MiniLM-L6-v2"
+  tokenizer_id: "sentence-transformers/all-MiniLM-L6-v2"
+
+# 모델 경로 (다운로드된 기본값 사용; 미지정 시 현행 동작 유지)
+models:
+  # docling 모델(TableFormer 등) 로컬 경로. 비우면 docling 기본 캐시 사용(현행).
+  artifacts_path: ""
+
+# PII 마스킹(#315) — GenOS Guardrail 연동.
+# on/off 는 여기서 하지 않고 요청별 kwargs(guardrail_call, 기본 off)로 제어한다.
+# 아래는 접속 정보(환경 종속값)만 둔다. 클러스터 내부 gateway 주소를 사용한다.
+
+guardrail:
+  # GenOS 분류 워크플로우 연동(#315). 기능 on/off 는 요청별 kwargs(guardrail_call)로 제어.
+  url: ""                 # GenOS gateway 주소(코드가 /workflow/{id}/run/v2 를 붙임). 예: "https://genos.genon.ai/api/gateway/rep"
+  workflow_id:            # 민감정보 분류 워크플로우 ID
+  api_key: ""             # 워크플로우 호출 Bearer 인증키(가능하면 배포 환경변수로 주입)
+  timeout: 60             # 워크플로우 호출 타임아웃(초). 대용량 문서는 상향 필요
+  masking_enabled: false  # quote_masked 치환 on/off. content_category 메타 부착은 기능 켜지면 항상 수행

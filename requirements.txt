@@ -1,0 +1,4 @@
+
+# ---- sync-serving-repo.sh 가 추가: docling wheel (직접 편집 금지) ----
+# docling(fork) 은 소스 대신 packages/ 의 wheel 로 동봉된다. pip 이 이 경로의 wheel 을 직접 설치한다.
+./packages/genon_docling-2.41.0+genon.0-py3-none-any.whl
