@@ -6,6 +6,8 @@
 > 이 repo는 **빌드 산출물**입니다(원본·빌드 도구는 별개의 비공개 repo). docling은 소스 대신
 > `packages/`의 wheel로 동봉되어 런타임에 설치됩니다.
 
+문서는 **① GenOS 배포·등록 → ② 호출(사전 준비·엔드포인트·사용 예시)** 순서로 구성됩니다.
+
 ## 개요
 
 - 엔드포인트: `/health`, `/preprocess*`(적재/첨부/변환), `/parser`(파싱), `/chunker`(청킹).
@@ -18,10 +20,71 @@
 (sheet.csv)  ──POST /parser──▶ data.elements(parse-format) ┘
 ```
 
-> 무거운 처리(OCR·레이아웃·enrichment)는 파싱에서 끝나므로 청킹은 가볍게 반복 호출할 수 있습니다.
+> 무거운 처리(OCR·레이아웃·enrichment)는 파싱에서 끝나므로 청킹은 가볍게 호출할 수 있습니다.
 > docling 포맷(pdf/html/htm/docx/hwp/hwpx)은 구조 인식 청킹, 그 외 포맷은 parse-format 공통 청킹입니다.
 
+## 배포 / GenOS 코드서빙 등록
+
+이 배포본을 GenOS 코드서빙으로 올리는 절차입니다. (배포본은 원본 repo에서 `sync-serving-repo.sh`로
+빌드됩니다 — genon 코드 + `main.py` + docling wheel(`packages/`)만 담기며 docling 소스·dev/legacy 폴더는 제외됩니다.)
+
+1. **base 이미지 준비/등록**
+   - 코드서빙 base 이미지 `mnc/template-code-serving-doc-parser` 를 GenOS 도커 이미지에 등록하고 이미지 타입은 **`Code_Serving`** 으로 지정합니다.
+   - base 이미지는 사내 도커레지스트리에 있습니다.
+     확인: `curl http://192.168.74.164:30500/v2/mnc/template-code-serving-doc-parser/tags/list`
+     (없으면 원본 repo의 `build-script/code-serving-doc-parser/README.md` 로 빌드/푸시.)
+
+2. **GenOS 코드서빙 생성** — [genos docs · 코드서빙](https://genos-docs.gitbook.io/default/v1.8.6/basic-tutorials/guides/development/code_serving)
+   참고. 저장소 유형은 **Gitea** 를 선택합니다(생성 시 gitea repo가 함께 만들어짐).
+
+3. **배포본을 gitea repo에 올리기** — [코드스페이스](https://genos-docs.gitbook.io/default/v1.8.6/basic-tutorials/guides/development/code_space)를 생성해 vscode에서 아래를 수행합니다.
+   ```bash
+   # 코드서빙 생성 시 만들어진 gitea repo clone (gitea id 는 코드서빙 페이지에서 확인)
+   # id와 pass는 GenOS의 id와 pass를 입력해줍니다.
+   git clone http://llmops-gitea-service:3000/llmops/<코드서빙 gitea id>.git <gitea_dir>
+
+   # 빌드된 배포본 clone
+   # id와 pass는 github id와 토큰을 입력합니다.
+   # 토큰 발급방법은 아래의 발급방법을 참고바랍니다.
+   git clone git@github.com:genonai/doc_parser_code_serving.git
+   cd doc_parser_code_serving
+
+   # 배포본 내용을 gitea repo 로 복사 (.git 제외)
+   tar --exclude=.git -cf - . | (cd <gitea_dir> && tar -xf -)
+
+   # gitea repo에서 환경에 맞게 config yaml 수정 (특히 LLM 모델 주소) — 용도별 대상 파일:
+   # genon/preprocessor/facade/gitbook_doc/ 의 매뉴얼 참고바람.
+   #   genon/preprocessor/resource/parser_processor_config.yaml
+   #   genon/preprocessor/resource/chunking_processor_config.yaml
+   #   genon/preprocessor/resource/intelligent_processor_config.yaml
+   #   genon/preprocessor/resource/attachment_processor_config.yaml
+   #   genon/preprocessor/resource/convert_processor_config.yaml
+
+   # commit/push (push 시 GenOS id/pass 입력)
+   cd <gitea_dir> && git add . && git commit -m "deploy doc_parser code-serving" && git push
+   ```
+   - github token 발급방법
+     - github에서 다음 경로로 이동
+       - Settings → Developer settings → Personal access tokens → Fine-grained tokens
+     - 토큰 생성시 설정
+       - Resource owner: genonai
+       - Repository access:
+         - Selected repositories → doc_parser_code_serving
+       - Repository permissions:
+         - Contents: Read-only
+   - ⚠️ config는 이 gitea repo(배포처)에서 수정합니다.
+
+4. **리비전 생성/배포** — 코드서빙 매뉴얼대로 리비전을 생성하면 gitea 소스(레포 URL/commit)가 런타임에 `/app/src/service`로 clone되고 `main.py`가 실행됩니다.
+   - 이미지: `mnc/template-code-serving-doc-parser` 선택.
+   - GPU 미할당, **medium(1 CPU Core, 16GB Memory)** 수준 인스턴스.
+
+5. **호출/테스트** — 아래 [사용 예시](#사용-예시) 및 동봉된
+   `genon/preprocessor/examples/code_serving/serving_gateway_test.py` 참고.
+
 ## 사전 준비
+
+위 [배포 / GenOS 코드서빙 등록](#배포--genos-코드서빙-등록)으로 코드서빙을 만들면 `serving_id`가 발급됩니다.
+이를 게이트웨이 base URL·`auth_key`(Bearer 토큰)와 함께 호출에 사용합니다.
 
 | 항목 | 설명 | 예시 |
 | --- | --- | --- |
@@ -129,62 +192,42 @@ python serving_gateway_test.py --mode chunker --doc-json /tmp/doc.json
   전체 상세는 **전체 매뉴얼**을 참고하세요:
   → [`genon/preprocessor/facade/gitbook_doc/code_serving.md`](genon/preprocessor/facade/gitbook_doc/code_serving.md)
 
-## 배포 / GenOS 코드서빙 등록
+## 부록: 로컬에서 `facade/test.py` 직접 실행 (개발·디버깅용)
 
-이 배포본을 GenOS 코드서빙으로 올리는 절차입니다. (배포본은 원본 repo에서 `sync-serving-repo.sh`로
-빌드됩니다 — genon 코드 + `main.py` + docling wheel(`packages/`)만 담기며 docling 소스·dev/legacy 폴더는 제외됩니다.)
+게이트웨이 HTTP 테스트(`serving_gateway_test.py`, 위 [사용 예시](#사용-예시))와 달리, **서빙 배포 없이 이
+repo를 clone한 로컬에서 전처리기를 직접 호출**해 보는 개발용 절차입니다. 대상은
+`genon/preprocessor/facade/test.py`(지능형 프로세서, PDF).
 
-1. **base 이미지 준비/등록**
-   - 코드서빙 base 이미지 `mnc/template-code-serving-doc-parser` 를 GenOS 도커 이미지에 등록하고 이미지 타입은 **`Code_Serving`** 으로 지정합니다.
-   - base 이미지는 사내 도커레지스트리에 있습니다.
-     확인: `curl http://192.168.74.164:30500/v2/mnc/template-code-serving-doc-parser/tags/list`
-     (없으면 원본 repo의 `build-script/code-serving-doc-parser/README.md` 로 빌드/푸시.)
+> `uv sync` 는 이 배포본에서 **실패**합니다 — 동봉된 `genon/preprocessor/pyproject.toml` 의 docling 의존성
+> source 가 소스가 없는(wheel만 있는) 이 repo 루트를 가리켜 docling 을 소스빌드하려다 깨집니다. 그래서 아래처럼
+> **동봉 wheel 을 직접 설치**합니다.
 
-2. **GenOS 코드서빙 생성** — [genos docs · 코드서빙](https://genos-docs.gitbook.io/default/v1.8.6/basic-tutorials/guides/development/code_serving)
-   참고. 저장소 유형은 **Gitea** 를 선택합니다(생성 시 gitea repo가 함께 만들어짐).
+**① 동작환경 설정 (uv)** — repo 루트에서:
+```bash
+uv venv --python 3.11 && source .venv/bin/activate
+uv pip install -r requirements.txt        # docling(fork) wheel + docling 계열 deps
+uv pip install -r requirements-dev.txt     # 로컬 실행 전용 추가 deps (fastapi httpx grpcio protobuf)
+```
+> `requirements-dev.txt` 는 `sync-serving-repo.sh` 가 생성합니다. 여기 담긴 deps 는 **운영 base 이미지엔 이미
+> 포함**되어 있어 운영 런타임은 `requirements.txt`(docling wheel)만 설치합니다 — 로컬 bare-metal 실행 시에만
+> 필요합니다.
 
-3. **배포본을 gitea repo에 올리기** — [코드스페이스](https://genos-docs.gitbook.io/default/v1.8.6/basic-tutorials/guides/development/code_space)를 생성해 vscode에서 아래를 수행합니다.
-   ```bash
-   # 코드서빙 생성 시 만들어진 gitea repo clone (gitea id 는 코드서빙 페이지에서 확인)
-   # id와 pass는 GenOS의 id와 pass를 입력해줍니다.
-   git clone http://llmops-gitea-service:3000/llmops/<코드서빙 gitea id>.git <gitea_dir>
+**② config 수정** — `genon/preprocessor/resource/intelligent_processor_config.yaml` 을 직접 편집:
+- `layout.layout_model_type:` → **`docling_layout`** (외부 layout VLM 없이 로컬 모델 사용)
+- `enrichment` 의 `toc.enable`·`metadata.enable` → **`false`** (외부 LLM 호출 차단)
+- (권장) `ocr.ocr_mode:` → **`disable`**, `formats.ppt.page_description.enable:` → **`false`**
 
-   # 빌드된 배포본 clone
-   # id와 pass는 github id와 토큰을 입력합니다.
-   # 토큰 발급방법은 아래의 발급방법을 참고바랍니다.
-   git clone git@github.com:genonai/doc_parser_code_serving.git
-   cd doc_parser_code_serving
+> ↔ 사내망에서 실제 모델서빙이 닿는 환경이면, 위 대신 config 의 placeholder(`<LAYOUT_SERVING_ID>`,
+> `<ENRICHMENT_SERVING_ID>`, `<OCR_ENDPOINT>` …)를 실제 주소로 채우면 원 설정 그대로 동작합니다.
 
-   # 배포본 내용을 gitea repo 로 복사 (.git 제외)
-   tar --exclude=.git -cf - . | (cd <gitea_dir> && tar -xf -)
+**③ 실행** — 반드시 `facade/` 디렉토리에서 (test.py 의 `sys.path` 처리가 `genon.*` 절대 import 를 해결):
+```bash
+cd genon/preprocessor/facade && python test.py    # 입력: ../sample_files/pdf_sample.pdf → 결과: result.json
+```
+- 최초 1회 docling layout/TableFormer 모델을 HuggingFace 에서 다운로드합니다(네트워크 필요, 이후 캐시).
 
-   # gitea repo에서 환경에 맞게 config yaml 수정 (특히 LLM 모델 주소) — 용도별 대상 파일:
-   #   genon/preprocessor/resource/parser_processor_config.yaml
-   #   genon/preprocessor/resource/chunking_processor_config.yaml
-   #   genon/preprocessor/resource/intelligent_processor_config.yaml
-   #   genon/preprocessor/resource/attachment_processor_config.yaml
-   #   genon/preprocessor/resource/convert_processor_config.yaml
-
-   # commit/push (push 시 GenOS id/pass 입력)
-   cd <gitea_dir> && git add . && git commit -m "deploy doc_parser code-serving" && git push
-   ```
-   - github token 발급방법
-     - github에서 다음 경로로 이동
-       - Settings → Developer settings → Personal access tokens → Fine-grained tokens
-     - 토큰 생성시 설정
-       - Resource owner: genonai
-       - Repository access:
-         - Selected repositories → doc_parser_code_serving
-       - Repository permissions:
-         - Contents: Read-only
-   - ⚠️ config는 이 gitea repo(배포처)에서 수정합니다.
-
-4. **리비전 생성/배포** — 코드서빙 매뉴얼대로 리비전을 생성하면 gitea 소스(레포 URL/commit)가 런타임에 `/app/src/service`로 clone되고 `main.py`가 실행됩니다.
-   - 이미지: `mnc/template-code-serving-doc-parser` 선택.
-   - GPU 미할당, **medium(1 CPU Core, 16GB Memory)** 수준 인스턴스.
-
-5. **호출/테스트** — 위 [사용 예시](#사용-예시) 및 동봉된
-   `genon/preprocessor/examples/code_serving/serving_gateway_test.py` 참고.
+> ⚠️ config(`resource/*.yaml`) 편집분과 `.venv`·`result.json`·`__pycache__` 등 로컬 산출물은 **개발용**입니다.
+> 실제 배포 gitea repo 로는 push 하지 마세요(`resource/` 는 배포 시 실제 서빙 주소로 채워야 함).
 
 ---
 ※ 이 README는 원본 repo의 `build-script/code-serving-README.md`에서 `sync-serving-repo.sh` 실행 시 복사됩니다(직접 편집 금지).

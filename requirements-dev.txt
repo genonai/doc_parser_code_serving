@@ -1,0 +1,9 @@
+# ---- sync-serving-repo.sh 가 생성: 로컬 실행 전용 (직접 편집 금지) ----
+# 로컬 bare-metal 에서 genon/preprocessor/facade/test.py(지능형/PDF) 실행 시에만 필요.
+# 운영 코드서빙 base 이미지엔 이미 포함 → 런타임은 requirements.txt(docling wheel)만 설치한다.
+# 사용:  uv pip install -r requirements.txt      # docling wheel
+#       uv pip install -r requirements-dev.txt   # 아래 4개
+fastapi
+httpx
+grpcio
+protobuf
