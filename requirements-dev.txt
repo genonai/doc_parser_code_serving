@@ -1,9 +1,20 @@
 # ---- sync-serving-repo.sh 가 생성: 로컬 실행 전용 (직접 편집 금지) ----
-# 로컬 bare-metal 에서 genon/preprocessor/facade/test.py(지능형/PDF) 실행 시에만 필요.
+# 로컬 bare-metal 에서 genon/preprocessor/facade/*_processor.py 를 직접 실행할 때만 필요.
 # 운영 코드서빙 base 이미지엔 이미 포함 → 런타임은 requirements.txt(docling wheel)만 설치한다.
 # 사용:  uv pip install -r requirements.txt      # docling wheel
-#       uv pip install -r requirements-dev.txt   # 아래 4개
+#       uv pip install -r requirements-dev.txt   # 아래 목록
+
+# 공통(모든 facade)
 fastapi
 httpx
 grpcio
 protobuf
+
+# parser / chunking / attachment / convert facade 의 모듈 최상위 import
+pymupdf
+langchain-community
+langchain-core
+langchain-text-splitters
+markdown2
+pydub
+chardet
