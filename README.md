@@ -8,7 +8,15 @@
 
 문서는 **① GenOS 배포·등록 → ② 호출(사전 준비·엔드포인트·사용 예시)** 순서로 구성됩니다.
 
-> **전처리기 코드를 직접 수정하려면** 아래 요약 대신
+**독자별로 읽는 곳이 다릅니다.**
+
+| 독자 | 읽을 곳 |
+|---|---|
+| **코드서빙을 설치·배포하는 엔지니어** | [배포 / GenOS 코드서빙 등록](#배포--genos-코드서빙-등록) 1~5번 (최초 설치는 1번부터) → [사용 예시](#사용-예시) 로 동작 확인 |
+| **전처리기를 호출하는 개발자** | [사전 준비](#사전-준비) → [엔드포인트](#엔드포인트) → [사용 예시](#사용-예시) |
+| **전처리기 코드를 수정하는 개발자** | 아래 개발 매뉴얼 |
+
+> **전처리기 코드를 직접 수정하려면** 이 문서 대신
 > [`genon/preprocessor/facade/gitbook_doc/code_serving_dev_manual.md`](genon/preprocessor/facade/gitbook_doc/code_serving_dev_manual.md)
 > 를 보세요 — Genos 개념부터 로컬 개발환경 세팅, parser/chunker 코드 이해·수정, 재배포까지 한 문서로
 > 안내합니다. 이 저장소(공개 배포본)만으로 따라갈 수 있게 쓰여 있습니다.
@@ -33,6 +41,9 @@
 이 공개 배포본의 릴리스는 배포 스크립트로 생성됩니다. Genos 코드서빙용 gitea 복사본에서는 facade 코드와
 config를 업무 요구사항에 맞게 수정할 수 있습니다.
 
+> ⚠️ **이 공개 배포본의 파일은 릴리스마다 배포 스크립트가 다시 생성합니다.** 여기에서 직접 고친 내용은
+> 다음 릴리스에 덮어써집니다. **수정은 항상 gitea 복사본(배포처)에서** 하세요.
+
 - **버전 소스**: 원본의 git 릴리스 태그(예: `2.2.5`)가 버전의 단일 진실 소스입니다.
   배포본 repo에도 **동일한 미러 태그**가 붙으므로, 배포본 태그 = 원본 릴리스 태그입니다.
 - **`VERSION` 파일**: 배포본 루트의 `VERSION`(JSON)이 이 산출물이 어느 원본에서 나왔는지 새깁니다.
@@ -43,12 +54,22 @@ config를 업무 요구사항에 맞게 수정할 수 있습니다.
 
 ## 배포 / GenOS 코드서빙 등록
 
-이 배포본을 GenOS 코드서빙으로 올리는 절차입니다. 시작 시점에는 코드서빙용 도커 이미지가 GenOS에 이미
-등록되어 있다고 가정합니다.
+이 배포본을 GenOS 코드서빙으로 올리는 절차입니다.
 
-1. **등록된 이미지 확인**
-   - 기존 코드서빙 리비전에서 사용 중인 전처리기 이미지를 그대로 사용합니다.
-   - 외부 개발자는 이미지를 직접 빌드하거나 등록하지 않습니다.
+- **사이트에 코드서빙을 처음 올리는 경우** — 1번부터 순서대로 진행합니다.
+- **이미 코드서빙이 배포되어 동작 중인 경우** — 1·2번은 건너뛰고 3번(소스 갱신)부터 진행합니다.
+
+1. **base 이미지 확보 · GenOS 등록** — *설치 담당 엔지니어용(사이트당 1회). 이미지가 이미 등록되어
+   있다면 건너뜁니다.*
+   - 이미 코드서빙 리비전이 돌고 있으면 **그 리비전이 쓰는 이미지를 그대로** 사용합니다.
+   - 레지스트리에 이미지가 있는지 확인:
+     ```bash
+     curl http://192.168.74.164:30500/v2/mnc/template-code-serving-doc-parser/tags/list
+     ```
+   - GenOS **도커 이미지**에 등록하고, 이미지 타입은 반드시 **`Code_Serving`** 으로 지정합니다.
+     (이 타입이 아니면 4번 리비전 생성 화면의 이미지 목록에 나타나지 않습니다.)
+   - 레지스트리에 없으면 **사내 원본 저장소의 `build-script/code-serving-doc-parser/README.md`** 절차로
+     빌드·푸시합니다. 공개 배포본에는 빌드 도구가 포함되지 않습니다.
 
 2. **GenOS 코드서빙 생성** — [genos docs · 코드서빙](https://genos-docs.gitbook.io/default/v1.8.6/basic-tutorials/guides/development/code_serving)
    참고. 저장소 유형은 **Gitea** 를 선택합니다(생성 시 gitea repo가 함께 만들어짐).
@@ -175,13 +196,21 @@ curl --location "${GW}/parser" -H 'Content-Type: application/json' -H "Authoriza
 ### Python (표준 라이브러리만 사용)
 동봉된 `genon/preprocessor/examples/code_serving/serving_gateway_test.py`로 동일 호출:
 ```bash
+# 접속 정보는 환경변수 또는 인자로 전달합니다(스크립트에 기본값이 없어 없으면 실행을 거부합니다).
+export GENOS_BASE_URL="https://<GENOS_HOST>"
+export GENOS_SERVING_ID="<SERVING_ID>"
+export GENOS_AUTH_KEY="<AUTH_KEY>"
+
 python serving_gateway_test.py --mode health
-python serving_gateway_test.py --mode e2e --file-path /data/documents/report.pdf --out /tmp/chunks.json
-python serving_gateway_test.py --mode parser --file-path /data/documents/report.pdf --out-doc /tmp/doc.json
-python serving_gateway_test.py --mode chunker --doc-json /tmp/doc.json
+python serving_gateway_test.py --mode e2e     --file-path /data/documents/report.pdf --out /tmp/chunks.json --chunk-size 10000
+python serving_gateway_test.py --mode parser  --file-path /data/documents/report.pdf --out-doc /tmp/doc.json
+python serving_gateway_test.py --mode chunker --doc-json /tmp/doc.json --chunk-size 10000
 ```
 주요 인자: `--mode`(health/parser/parser_upload/chunker/e2e), `--base-url`, `--serving-id`, `--auth-key`,
 `--file-path`, `--chunk-size`, `--param KEY=VALUE`(임의 `params` 오버라이드, 반복 가능).
+
+> `--chunk-size` 를 생략하면 필드를 아예 보내지 않아 **서빙 config 의 `chunking.chunk_size` 가
+> 적용**됩니다. 크기 기반 병합·분할을 끄려면 `--chunk-size 0` 을 명시하세요.
 
 ## 에러 응답
 
@@ -211,9 +240,11 @@ repo를 clone한 로컬에서 전처리기를 직접 호출**해 보는 개발�
 ```bash
 uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r requirements.txt        # docling(fork) wheel + docling 계열 deps
-uv pip install -r requirements-dev.txt     # 로컬 실행 전용 추가 deps (fastapi httpx grpcio protobuf)
+uv pip install -r requirements-dev.txt     # 로컬 실행 전용 추가 deps
 ```
-> `requirements-dev.txt` 는 `sync-serving-repo.sh` 가 생성합니다. 여기 담긴 deps 는 **운영 base 이미지엔 이미
+> `requirements-dev.txt` 는 `sync-serving-repo.sh` 가 생성합니다. 공통 deps(fastapi·httpx·grpcio·protobuf)와
+> **parser·chunker facade 실행에 필요한 deps**(pymupdf·langchain-community·langchain-core·
+> langchain-text-splitters·markdown2·pydub·chardet)가 함께 담깁니다. 이 deps 는 **운영 base 이미지엔 이미
 > 포함**되어 있어 운영 런타임은 `requirements.txt`(docling wheel)만 설치합니다 — 로컬 bare-metal 실행 시에만
 > 필요합니다.
 

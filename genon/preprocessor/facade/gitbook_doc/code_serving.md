@@ -40,7 +40,7 @@ doc_parser 전처리기를 GenOS **코드 서빙** 플랫폼에 배포하면, �
 > 청킹 단계는 파싱 결과만 입력으로 받습니다. OCR·레이아웃·enrichment 등 무거운
 > 처리는 모두 파싱 단계에서 끝나므로, 청킹은 가볍고 빠르게 반복 호출할 수 있습니다.
 > docling 포맷(pdf/html/htm/docx/hwp/hwpx)은 구조 인식 청킹(GenosSmartChunker)을, 그 외
-> 비-docling 포맷은 parse-format 공통 청킹(audio→`[AUDIO]` 단일, csv/xlsx→`[DA]` 단일,
+> 비-docling 포맷은 parse-format 공통 청킹(audio→`[AUDIO]` 단일, csv/xlsx→행마다 청크 1개,
 > 그 외 텍스트→문자 기반 splitter)을 수행합니다.
 
 ## 사전 준비
@@ -323,11 +323,11 @@ python serving_gateway_test.py --mode parser --file-path /data/documents/report.
 | 인자 | 기본값 | 설명 |
 | --- | --- | --- |
 | `--mode` | `e2e` | `health` / `parser` / `parser_upload` / `chunker` / `e2e` |
-| `--base-url` | `https://<GENOS_HOST>` | 게이트웨이 base URL |
-| `--serving-id` | `139` | 코드 서빙 ID |
-| `--auth-key` | (스크립트 기본값) | `Authorization: Bearer <key>` |
+| `--base-url` | `$GENOS_BASE_URL` | 게이트웨이 base URL. 환경변수도 인자도 없으면 실행 거부 |
+| `--serving-id` | `$GENOS_SERVING_ID` | 코드 서빙 ID. 환경변수도 인자도 없으면 실행 거부 |
+| `--auth-key` | `$GENOS_AUTH_KEY` | `Authorization: Bearer <key>`. 환경변수도 인자도 없으면 실행 거부 |
 | `--file-path` | `""` | 파싱할 문서 경로(서버 기준). `parser`/`e2e` 에 필요 |
-| `--chunk-size` | `0` | 청크 최대 크기(0=분할 안 함). 청킹 config 기본값을 덮어씀 |
+| `--chunk-size` | (미전송) | 청크 최대 크기. 생략하면 필드를 보내지 않아 서빙 config 의 `chunking.chunk_size` 가 쓰인다. `0` 은 크기 기반 병합·분할 끄기 |
 | `--doc-json` | `None` | `chunker` 모드의 입력 docling JSON 파일 경로 |
 | `--out` | `None` | 청크 결과 JSON 저장 경로/디렉터리(옵션) |
 | `--out-doc` | `None` | `parser` 모드의 docling JSON 저장 경로/디렉터리(옵션) |
@@ -515,8 +515,8 @@ python test.py --llm_cache --interim_root <경로> --workflow_id <id> --run_id <
 - **응답에 `data.document` 가 없을 때**: docling 포맷 파일(pdf/html/htm/docx/hwp/hwpx)인데
   `data.document` 가 없으면 파싱 서빙 config 의 `output.format` 이 `"docling"` 인지 확인하세요.
   비-docling 포맷(csv/xlsx/txt/md/ppt/이미지/오디오)은 `data.elements`(parse-format)로 반환되며,
-  이 역시 `params.document` 에 그대로 넣어 청킹할 수 있습니다(audio→`[AUDIO]` 단일, csv/xlsx→`[DA]`
-  단일, 그 외 텍스트→`chunking.generic` splitter).
+  이 역시 `params.document` 에 그대로 넣어 청킹할 수 있습니다(audio→`[AUDIO]` 단일, csv/xlsx→행마다
+  청크 1개, 그 외 텍스트→`chunking.generic` splitter).
 - **`Argument list too long`**: 큰 `doc.json` 을 curl `--data` 인자로 직접 넘긴 경우입니다.
   `jq | --data-binary @-` 방식(stdin)으로 전달하세요.
 - **`code` 가 0이 아님**: 요청이 실패한 것이며 `errMsg` 에 사유가 들어 있습니다.
