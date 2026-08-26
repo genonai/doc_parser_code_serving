@@ -15,7 +15,7 @@ facade 의 DocumentProcessor 를 직접 import 해 호출하므로 uvicorn/게�
       2) 원본 소스 문서 JSON(위 형태가 아닌 임의 데이터 JSON) → 파서로 파싱(raw text)→청킹
          - 프로덕션 파서와 동일하게 TextLoader 로 파싱. 모델서버 불필요.
 
-    # 비-docling 포맷(csv/xlsx/txt/md/ppt/pptx/이미지/오디오 등) → 파싱(parse-format)→공통 청킹
+    # 비-docling 포맷(csv/xlsx/txt/ppt/pptx/이미지/오디오 등) → 파싱(parse-format)→공통 청킹
     python parse_chunk_test.py <input.csv|dir> <output_dir> [--chunk-size N]
       - parser 가 docling 을 못 만드는 포맷은 {"elements":[...]} parse-format 을 반환하고,
         chunker 가 이를 legacy(attachment) 와 동일하게 공통 청킹한다.
@@ -47,11 +47,11 @@ from genon.preprocessor.facade.chunking_processor import (
 
 mock_request = Request(scope={"type": "http"})
 
-# 파싱 경로(docling) 확장자 + docling JSON 입력
-PARSE_EXTENSIONS = {".pdf", ".docx", ".hwp", ".hwpx", ".html", ".htm"}
+# 파싱 경로(docling) 확장자 + docling JSON 입력. md는 MarkdownDocumentBackend를 사용한다.
+PARSE_EXTENSIONS = {".pdf", ".docx", ".hwp", ".hwpx", ".html", ".htm", ".md"}
 # parser 가 docling 을 못 만드는 포맷 → parse-format({"elements":[...]}) → 공통 청킹
 NONDOCLING_EXTENSIONS = {
-    ".csv", ".xlsx", ".txt", ".md", ".ppt", ".pptx", ".doc",
+    ".csv", ".xlsx", ".txt", ".ppt", ".pptx", ".doc",
     ".jpg", ".jpeg", ".png", ".wav", ".mp3", ".m4a",
 }
 SUPPORTED_EXTENSIONS = PARSE_EXTENSIONS | NONDOCLING_EXTENSIONS | {".json"}
@@ -94,16 +94,19 @@ async def parse_document(file_path: Path, kwargs: dict) -> dict:
 
 
 async def chunk_payload(file_path: Path, payload: dict, chunk_size: int, chunk_mode: str,
+                        chunk_header: str | None = None,
                         cache_kwargs: dict | None = None) -> list[dict]:
     """청킹 실행 → GenOSVectorMeta dict 리스트.
 
     payload 는 docling({"document":...}) 또는 parse-format({"elements":...}) 어느 쪽이든 허용.
     chunker 가 형태를 스스로 판별한다(file_path 확장자 무관).
     #329 스코프(cache_kwargs)는 청킹엔 LLM 이 없어 no-op 이지만 API 일관성 위해 전달(내부에서 pop).
+    chunk_header 는 미지정(None) 이면 kwargs 를 아예 넘기지 않아 yaml 기본값을 따른다.
     """
+    header_kwargs = {} if chunk_header is None else {"include_chunk_header": 1 if chunk_header == "on" else 0}
     vectors = await get_chunker()(
         mock_request, str(file_path), document=payload, chunk_size=chunk_size, chunk_mode=chunk_mode,
-        **(cache_kwargs or {})
+        **header_kwargs, **(cache_kwargs or {})
     )
     return [v.model_dump() if hasattr(v, "model_dump") else v for v in vectors]
 
@@ -152,6 +155,7 @@ async def parse_and_save(file_path: Path, out_base: Path, cache_kwargs: dict) ->
 
 
 async def process_one(file_path: Path, out_base: Path, chunk_size: int, chunk_mode: str,
+                      chunk_header: str | None = None,
                       cache_kwargs: dict | None = None) -> None:
     """파일 1개: (파싱→)청킹 수행 후 결과 저장."""
     cache_kwargs = cache_kwargs or {}
@@ -173,7 +177,7 @@ async def process_one(file_path: Path, out_base: Path, chunk_size: int, chunk_mo
     else:
         payload = await parse_and_save(file_path, out_base, cache_kwargs)
 
-    vectors = await chunk_payload(file_path, payload, chunk_size, chunk_mode, cache_kwargs)
+    vectors = await chunk_payload(file_path, payload, chunk_size, chunk_mode, chunk_header, cache_kwargs)
     save_json(out_base.with_suffix(".chunks.json"), vectors)
     print(f"  [chunk] {len(vectors)} chunks")
 
@@ -182,8 +186,8 @@ def parse_args():
     ap = argparse.ArgumentParser(description="in-process 파싱→청킹 테스트(docling + parse-format 공통)")
     ap.add_argument(
         "input_path",
-        help="입력 파일/디렉터리 (docling: PDF/DOCX/HWP/HWPX/HTML | "
-             "parse-format: CSV/XLSX/TXT/MD/PPT/PPTX/이미지/오디오 | "
+        help="입력 파일/디렉터리 (docling: PDF/DOCX/HWP/HWPX/HTML/MD | "
+             "parse-format: CSV/XLSX/TXT/PPT/PPTX/이미지/오디오 | "
              ".json: 파서 출력물이면 청킹만, 원본 소스 문서면 파싱→청킹 자동 판별)",
     )
     ap.add_argument("output_dir", help="결과 저장 디렉터리")
@@ -201,6 +205,13 @@ def parse_args():
         choices=["split_only", "resize_all"],
         default="split_only",
         help="split_only=chunk_size 초과 청크만 분할(기본) | resize_all=모든 청크를 chunk_size 에 맞게 병합/분할",
+    )
+    ap.add_argument(
+        "--chunk-header",
+        choices=["on", "off"],
+        default=None,
+        help="청크 선두 'HEADER: <섹션 경로>' 라인 부착 여부. "
+             "미지정=설정(chunking.include_chunk_header, 기본 on) | off=순수 본문만",
     )
     # ── #329: LLM 캐시 / error_policy / deadline (opt-in) ──────────────────────
     # 캐시는 parse 단계(LLM 호출: OCR VLM/TOC/이미지·표 desc/메타데이터)에서 동작한다.
@@ -265,7 +276,8 @@ def main():
             out_base = output_dir / file_path.relative_to(input_path)
         else:
             out_base = output_dir / file_path.name
-        asyncio.run(process_one(file_path, out_base, args.chunk_size, args.chunk_mode, cache_kwargs))
+        asyncio.run(process_one(file_path, out_base, args.chunk_size, args.chunk_mode,
+                                args.chunk_header, cache_kwargs))
 
 
 if __name__ == "__main__":

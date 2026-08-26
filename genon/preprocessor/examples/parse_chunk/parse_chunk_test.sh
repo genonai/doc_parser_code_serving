@@ -85,9 +85,26 @@ for case in "${MONIMO_CASES[@]}"; do
   "${PYTHON}" parse_chunk_test.py --doc_type "${dt}" "${src}" "${OUT}/" \
     || echo "[FAIL] doc_type=${dt} ${src}"
 done
+# ── Markdown front matter → 청크 metadata / text 제외 확인 ───────────────────
+# product_slf/product_ssf 설정은 document_type/source_file/source_pages/author/created_at만
+# 청크 metadata로 승격하고 front matter 전체는 text에서 제거한다. LLM 연결이 실패해도 이 직접
+# 추출 필드와 constants는 유지된다(error_policy 기본 lenient).
+# "${PYTHON}" parse_chunk_test.py --doc_type product_slf \
+#   "${MONIMO}/monimo_product_slf_sample.md" "${OUT}/front_matter/"
+# "${PYTHON}" -c \
+#   "import json; p='${OUT}/front_matter/monimo_product_slf_sample.chunks.json'; d=json.load(open(p)); print(len(d), d[0]['source_file'], d[0]['source_pages'], d[0]['created_date']); assert all('conversion_note:' not in c['text'] and 'source_file:' not in c['text'] for c in d)"
 
 # 기존 카드 데모(회귀 확인용)
 "${PYTHON}" parse_chunk_test.py --doc_type card "/Users/shkim/_shkim/01.source/doc_parser/shkim_labs/20260803_monimo/01_card/card01.flat.html" result_parse_chunk/
+# ── 청크 선두 헤더(HEADER: <섹션 경로>) on/off ─────────────────────────────────
+# 섹션 경로는 청크 선두 한 줄에서만 붙는다(compose_vectors). 예전에는 본문 안에도 같은 제목이
+# 두 번 더 들어가 청크 텍스트의 30~56% 가 제목 반복이었고, 제목만 있고 본문이 없는 청크도
+# 생겼다(여비세칙 76개 중 20개) — 둘 다 제거되었다.
+# --chunk-header 미지정 시 설정값(chunking.include_chunk_header, 기본 on)을 따른다.
+# off 는 순수 본문만 뽑을 때 쓴다. 검색 시 섹션 문맥이 사라지므로 RAG 적재용으로는 on 을 권장.
+# 이미 만들어둔 .docling.json 을 입력으로 주면 모델서버 없이 청킹만 다시 돌려 비교할 수 있다.
+# "${PYTHON}" parse_chunk_test.py --chunk-header on  "${OUT}/hwp_sample_table.docling.json" "${OUT}/hdr_on/"
+# "${PYTHON}" parse_chunk_test.py --chunk-header off "${OUT}/hwp_sample_table.docling.json" "${OUT}/hdr_off/"
 
 
 # ── LLM 캐시 / error_policy / deadline 테스트 (parse→chunk 분리 경로) ──────
@@ -119,7 +136,7 @@ RUN="run-1"
 # processing_mode=tabular 이면 doc_type 없이도 "행=청크" 로 처리한다.
 # doc_type=faq 는 각 행 컬럼을 custom_field_faq.yaml의 목표 필드
 # (question/answer_text/category_code/... + doc_type)로 매핑할 때만 사용한다.
-# ⚠️ 지금은 custom_field_faq.yaml 에 llm_fields(QUESTION_VARIANTS)가 있어 행마다 LLM 을 1회 호출한다.
+# 지금은 custom_field_faq.yaml 에 llm_fields(QUESTION_VARIANTS)가 있어 행마다 LLM 을 1회 호출한다.
 #    모델서버 없이 매핑만 보려면 --doc_type 없이 돌리거나 그 yaml 의 llm_fields 를 주석 처리한다.
 #    (증권/카드 FAQ 도 동일 스키마라 같은 매핑으로 처리)
 # FAQ_SRC="../../../../shkim_labs/20260803_monimo/02_faq/증권FAQ_260712.xlsx"

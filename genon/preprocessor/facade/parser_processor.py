@@ -114,10 +114,14 @@ try:
     from genon.preprocessor.facade.enrichment.json_records import (
         build_json_records_mappers,
     )
+    from genon.preprocessor.facade.enrichment.markdown_front_matter import (
+        build_markdown_front_matter_specs,
+    )
 except ImportError:
     build_document_custom_fields_enrichers = None  # type: ignore[assignment]
     build_tabular_custom_fields_mappers = None  # type: ignore[assignment]
     build_json_records_mappers = None  # type: ignore[assignment]
+    build_markdown_front_matter_specs = None  # type: ignore[assignment]
 
     def normalize_doc_type(value):  # type: ignore[no-redef]
         return str(value or "").strip().lower()
@@ -1896,9 +1900,8 @@ class DocumentProcessor:
         self._md_cfg = self._intel._md_cfg
         # enrichment.custom_fields 중 tabular_mapping handler를 시작 시 1회 로드한다.
         self._config_dir = self._intel._config_dir
-        self._tabular_custom_fields_mappers = (
-            build_tabular_custom_fields_mappers(self._intel.custom_fields_cfgs)
-            if build_tabular_custom_fields_mappers is not None else []
+        self._tabular_custom_fields_mappers = self._build_tabular_custom_fields_mappers(
+            self._intel.custom_fields_cfgs
         )
 
         defaults_cfg = _as_dict(cfg.get("defaults"))
@@ -1972,6 +1975,12 @@ class DocumentProcessor:
         # 꺼낼 key 목록)을 시작 시 1회 로드한다. tabular_mapping 과 같은 패턴.
         self._json_text_specs = self._build_json_text_specs(self._intel.custom_fields_cfgs)
 
+        # 문서 단위 custom_fields의 markdown.front_matter 설정. doc_type별로 원천 YAML의
+        # metadata 승격 필드와 청크 텍스트 제외 필드를 독립 선택한다.
+        self._markdown_front_matter_specs = self._build_markdown_front_matter_specs(
+            self._intel.custom_fields_cfgs
+        )
+
         # enrichment.custom_fields 중 extractor=json_mapping 설정(= JSON 레코드 → 목표필드
         # 매핑). 문서 모드(json:)보다 우선하며, 레코드마다 청크 메타데이터를 따로 싣는다.
         self._json_records_mappers = self._build_json_records_mappers(self._intel.custom_fields_cfgs)
@@ -2028,13 +2037,42 @@ class DocumentProcessor:
         return specs
 
     @staticmethod
+    def _build_markdown_front_matter_specs(custom_fields_cfgs: list) -> list:
+        if build_markdown_front_matter_specs is None:
+            return []
+        try:
+            return build_markdown_front_matter_specs(custom_fields_cfgs)
+        except (ValueError, TypeError) as exc:
+            raise GenosServiceException(
+                "1", f"custom_fields markdown.front_matter 설정 오류: {exc}",
+                stage="custom_fields",
+            ) from exc
+
+    @staticmethod
+    def _build_tabular_custom_fields_mappers(custom_fields_cfgs: list) -> list:
+        """custom_fields 설정 중 extractor=tabular_mapping 만 매퍼로 만든다.
+
+        json 쪽과 같이 감싸는 이유: 감싸지 않으면 설정 오류가 raw 로 __init__ 을 뚫고 나가
+        **서비스 import 자체가 죽는다**(어느 설정이 문제인지도 드러나지 않는다).
+        TypeError 도 잡는다 — `constants: 5` 처럼 dict() 강제 변환이 TypeError 를 내는 경우가 있다.
+        """
+        if build_tabular_custom_fields_mappers is None:
+            return []
+        try:
+            return build_tabular_custom_fields_mappers(custom_fields_cfgs)
+        except (ValueError, TypeError, FileNotFoundError) as exc:
+            raise GenosServiceException(
+                "1", f"custom_fields tabular_mapping 설정 오류: {exc}", stage="custom_fields"
+            ) from exc
+
+    @staticmethod
     def _build_json_records_mappers(custom_fields_cfgs: list) -> list:
         """custom_fields 설정 중 extractor=json_mapping 만 매퍼로 만든다. tabular 와 같은 패턴."""
         if build_json_records_mappers is None:
             return []
         try:
             return build_json_records_mappers(custom_fields_cfgs)
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, TypeError, FileNotFoundError) as exc:
             raise GenosServiceException(
                 "1", f"custom_fields json_mapping 설정 오류: {exc}", stage="custom_fields"
             ) from exc
@@ -2056,6 +2094,16 @@ class DocumentProcessor:
             ],
             runtime_doc_type,
             "json",
+        )
+
+    def _markdown_front_matter_spec_for(self, runtime_doc_type: Any):
+        return self._single_json_match(
+            [
+                spec for spec in self._markdown_front_matter_specs
+                if spec.matches(runtime_doc_type)
+            ],
+            runtime_doc_type,
+            "markdown.front_matter",
         )
 
     @staticmethod
@@ -2206,6 +2254,38 @@ class DocumentProcessor:
     # ------------------------------------------------------------------
     # HTML flatten 전처리 / JSON 본문 추출
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_markdown(file_path: str, work_dir: str, spec) -> tuple[str, dict]:
+        """Front matter 선택 규칙을 적용한 파싱 경로와 enrichment context를 반환."""
+        try:
+            parsed = spec.parse(file_path)
+        except ValueError as exc:
+            raise GenosServiceException(
+                "1", str(exc), stage="custom_fields"
+            ) from exc
+
+        if not parsed.found:
+            return file_path, {}
+
+        context = {
+            "metadata": dict(parsed.metadata),
+            "prompt_prefix": parsed.prompt_prefix,
+            "source_fields": list(parsed.source_fields),
+        }
+        if parsed.filtered_text is None:
+            return file_path, context
+
+        # 원본과 같은 basename을 유지해 Docling origin.filename이 임시 이름으로 바뀌지 않게 한다.
+        out_path = Path(work_dir) / Path(file_path).name
+        try:
+            out_path.write_text(parsed.filtered_text, encoding="utf-8")
+        except OSError as exc:
+            raise GenosServiceException(
+                "1", f"Markdown front matter 전처리 파일 생성 실패: {exc}",
+                stage="custom_fields",
+            ) from exc
+        return str(out_path), context
 
     def _prepare_html(self, file_path: str, work_dir: str) -> str:
         """필요 시 HTML 을 flatten 해 새 경로를 돌려준다. 불필요하면 원본 경로 그대로.
@@ -2687,7 +2767,7 @@ class DocumentProcessor:
             # "content": {"html": full_html, "markdown": "", "text": ""},
             "elements": elements,
             # "model": "genonai-parser",
-            "usage": {"pages": doc.num_pages()},
+            "usage": {"pages": DocumentProcessor._docling_page_count(doc)},
         }
 
     @staticmethod
@@ -2759,6 +2839,27 @@ class DocumentProcessor:
         return ""
 
     @staticmethod
+    def _docling_page_count(doc: DoclingDocument) -> int:
+        """DoclingDocument 의 페이지 수. 페이지 개념이 없는 백엔드는 1 로 센다.
+
+        docling HTML 백엔드는 브라우저 렌더링을 켠 경우에만 doc.pages 를 채우므로 평소엔 0 이다.
+        raw HTML 블록이 섞인 md 도 md_backend 가 HTML 백엔드로 위임하면서(page 1 스텁이 버려진다)
+        같은 상태가 된다. 내용이 있는 문서를 0페이지로 내보내면 소비계층의 페이지 기반 계산이
+        전부 무너지므로 1 로 올린다. 진짜 빈 문서는 0 을 유지한다.
+        """
+        try:
+            pages = int(doc.num_pages())
+        except Exception:
+            pages = 0
+        if pages >= 1:
+            return pages
+        try:
+            has_content = next(doc.iterate_items(), None) is not None
+        except Exception:
+            has_content = False
+        return 1 if has_content else 0
+
+    @staticmethod
     def _normalize_response(result: dict) -> dict:
         """응답에 content / elements / usage 키가 항상 존재하도록 보장."""
         result.setdefault("content", "")
@@ -2789,7 +2890,7 @@ class DocumentProcessor:
             # clear_coordinates / table_format 은 원본 보존을 위해 docling 포맷에서는 무시한다.
             resp = {
                 "document": self._serialize_docling_document(doc),
-                "usage": {"pages": doc.num_pages()},
+                "usage": {"pages": self._docling_page_count(doc)},
             }
         elif output_format == "json":
             result = self._docling_to_parse_format(doc, table_format=table_format,
@@ -2799,10 +2900,7 @@ class DocumentProcessor:
                     element["coordinates"] = []
             resp = result
         else:
-            try:
-                pages = max(1, int(doc.num_pages()))
-            except Exception:
-                pages = 0
+            pages = self._docling_page_count(doc)
             content = self._docling_to_content(doc)
             resp = self._content_response(content, pages=pages)
 
@@ -2990,6 +3088,29 @@ class DocumentProcessor:
                             **kwargs,
                         )
                     self._warn_if_thin_html(file_path, doc)
+                elif ext == ".md":
+                    spec = self._markdown_front_matter_spec_for(kwargs.get("doc_type"))
+                    if spec is None:
+                        doc = self._parse_docling(
+                            file_path, _enrichment_context=enrichment_context, **kwargs
+                        )
+                    else:
+                        # front matter를 제외한 파생 Markdown은 임시 파일로만 사용한다.
+                        # 선택 metadata와 제외된 원문은 custom-fields 후처리에 별도 전달한다.
+                        with tempfile.TemporaryDirectory(prefix="parser_md_") as work_dir:
+                            parse_path, front_matter_context = self._prepare_markdown(
+                                file_path, work_dir, spec
+                            )
+                            markdown_kwargs = dict(kwargs)
+                            markdown_kwargs["_markdown_front_matter"] = front_matter_context
+                            doc = self._parse_docling(
+                                parse_path,
+                                artifacts_from=file_path if parse_path != file_path else None,
+                                _enrichment_context=enrichment_context,
+                                **markdown_kwargs,
+                            )
+                        kwargs = dict(kwargs)
+                        kwargs["_markdown_front_matter"] = front_matter_context
                 else:
                     doc = self._parse_docling(file_path, _enrichment_context=enrichment_context, **kwargs)
                 doc = await self._apply_docling_post_enrichment(doc, _enrichment_context=enrichment_context, **kwargs)
