@@ -48,14 +48,14 @@ required:
 constants:
   STATUS: "PUBLISHED"
 
-nulls:
-  - BIZ_ID
-  - FAQ_CTGR_NM
+defaults:
+  BIZ_ID: null
+  FAQ_CTGR_NM: null
   # 앱 딥링크: 레코드의 url 은 데이터 경로(/fcm/...json), app_route 는 메뉴 경로라
   # 둘 다 앱 딥링크가 아니다. 어느 값을 쓸지 원천 담당 확인 후 key_map 에 추가할 것.
-  - DEEP_LINK_URL
-  - EFFECTIVE_FROM
-  - EFFECTIVE_TO
+  DEEP_LINK_URL: null
+  EFFECTIVE_FROM: null
+  EFFECTIVE_TO: null
 
 llm_fields:
   - output_fields: [QUESTION_VARIANTS]
@@ -100,12 +100,22 @@ llm_fields:
       {{raw_text}}
       </faq>
 
+# ── [선택] 청크 본문에 함께 실을 항목명 ─────────────────────────────────────
+# 본문 필드를 `항목명: 값` 으로 낸다. 여기 이름이 없는 필드는 값만 나간다.
+# 사람이 검색어로 쓰는 말을 적는다 — 목표필드명(DB 컬럼명)이나 원천 key 는 검색어에 안 나온다.
+# 값에 줄바꿈이 있는 블록(상세 본문 등)에는 붙지 않는다. 그 블록은 이미 자기 제목을 갖는다.
+field_labels:
+  QUESTION: 질문
+  ANSWER: 답변
+
 text_fields:
   - QUESTION
   - ANSWER
 
 # ── 레코드 본문이 chunk_size 를 넘으면 여러 청크로 나눈다(metadata 는 조각마다 동일) ──
 split: true
+chunk_prefix_fields:
+  - QUESTION
 
 # ── records 키를 찾지 못했을 때: error(기본, 즉시 실패) | skip(경고 후 0건) ──
 missing_policy: error

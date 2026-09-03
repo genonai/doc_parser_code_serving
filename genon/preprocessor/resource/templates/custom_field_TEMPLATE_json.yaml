@@ -10,7 +10,8 @@
 #   · `column_map` 대신 `key_map` 을 쓴다.
 #   · JSON 중첩 안쪽 값도 **키 이름만으로** 찾는다(`wcmsHtml.htmlText` → `htmlText` 한 단어).
 #     JSONPath 같은 경로 문법은 없다. 깊이가 다르면 **얕은 쪽이 우선**한다.
-#   · `records`·`html_text_fields`·`split`·`missing_policy` 를 추가로 쓸 수 있다.
+#   · `records`·`collect_key_map`·`missing_policy` 를 추가로 쓸 수 있다
+#     (`row_merge`·`text_from`/`html_text_fields`·`split` 은 tabular 와 같다).
 #
 #  ── 쓰는 순서 ────────────────────────────────────────────────────────────
 #  ① 이 파일을 resource/custom_field_<유형>.yaml 로 복사한다.
@@ -41,6 +42,25 @@ key_map:
   <TARGET_FIELD_1>: [<json key>, <다른 표기>]
   <TARGET_FIELD_2>: [<json key>]
 
+# ── [선택] 반복 key의 값을 모두 수집 ─────────────────────────────────────────
+# bubble[].serviceUrl처럼 한 레코드 안에 같은 key가 여러 번 나오고 모두 본문에 필요할 때 쓴다.
+# 결과는 문서 순서의 배열이며 같은 값은 한 번만 남긴다. key_map과 목표필드명이 겹치면 오류다.
+# html_text_fields의 원본으로 지정하면 HTML 배열을 항목별 변환한 뒤 빈 줄로 이어 붙인다.
+# collect_key_map:
+#   <REPEATED_HTML_FIELDS>: [serviceUrl]
+
+# ── [선택] 여러 레코드에 걸쳐 쪼개진 값을 한 건으로 접기 ────────────────────
+# 원천이 값 하나(주로 JSON 문자열)를 여러 레코드에 나눠 보내는 스키마에만 쓴다.
+# tabular 의 row_merge 와 같은 구현·같은 규칙이다 — group_by 가 같은 **연속** 레코드만
+# 한 묶음으로 접는다(멀리 떨어진 동일 키는 다른 건으로 남긴다).
+# 병합은 값 변환·파생 필드보다 **먼저** 돈다. 조각마다 transforms/text_from 이 돌면
+# 잘린 JSON 조각을 각각 평문화하게 되어 복원이 불가능하다.
+# row_merge:
+#   group_by:  [<TARGET_FIELD_1>]     # 이 값이 같은 연속 레코드가 한 묶음(목표필드명 기준)
+#   order_by:  <TARGET_FIELD_2>       # 묶음 안 정렬 기준(숫자 우선, 미지정 시 원본 순서)
+#   concat:    [<TARGET_FIELD_3>]     # 순서대로 이어붙일 필드(목표필드명)
+#   separator: ""                     # 기본값. 문자 단위로 잘려 온다면 반드시 빈 문자열로 둔다
+
 # ── [선택] 값 변환 ──────────────────────────────────────────────────────────
 # 쓸 수 있는 변환기는 이 3개뿐이다.
 #   date_int       "2026-07-01"                    → 20260701 (파싱 실패 시 0)
@@ -63,23 +83,24 @@ key_map:
 # required:
 #   - <TARGET_FIELD_1>
 
-# ── [선택] 기본값 / 고정값 / null 명시 ──────────────────────────────────────
-# defaults  : 원천 값이 None·"" 일 때만 채운다
+# ── [선택] 기본값 / 고정값 ──────────────────────────────────────────────────
+# defaults  : 원천 값이 None·"" 일 때만 채운다. 값을 `null` 로 두면 "매핑은 없지만 적재
+#             스키마에는 있어야 하는 필드"를 명시 출력한다(예전 `nulls:` 목록과 같은 결과다)
 # constants : 원천 값이 있어도 덮어쓴다(파일 단위로 고정인 값)
-# nulls     : key_map 에 **없는** 필드를 null 로 명시 출력한다(있는 필드는 적지 않는다)
-# 적용 순서: nulls 초기화 → key_map 매핑 → constants → defaults → value_map → transforms
-#            → html_text_fields
+# 적용 순서: key_map 매핑 → collect_key_map 매핑 → (row_merge 병합) → defaults → constants
+#            → value_map → transforms → html_text_fields
 # defaults:
 #   <TARGET_FIELD_3>: "<기본값>"
+#   <TARGET_FIELD_5>: null           # 매핑 없이 스키마만 고정
 # constants:
 #   <TARGET_FIELD_4>: "<고정값>"
-# nulls:
-#   - <TARGET_FIELD_5>
 
 # ── [선택] HTML 필드 → 평문 파생 필드 ───────────────────────────────────────
 # `파생필드: 원본필드` 형태다. 원본 HTML 을 평문으로 바꿔 새 필드에 담는다.
 # 같은 이름을 양쪽에 쓰면 제자리에서 평문으로 바꾼다(예: `CONTENT: CONTENT`).
 # 정리 규칙은 파싱 경로와 같다 — 접힌 약관·aria-hidden 텍스트도 보존된다.
+# 형제 키가 하나 더 있다(섞어 써도 된다. 단, 같은 파생필드명을 두 곳에 쓰면 오류다):
+#   text_from        원본 값의 종류(JSON/HTML/평문)를 자동 판별해 변환한다. 스키마가 안 정해진 원천용.
 # html_text_fields:
 #   <DERIVED_TEXT>: <TARGET_FIELD_HTML>
 
@@ -90,6 +111,10 @@ key_map:
 #    어긋나면 에러 없이 값이 null 로 채워진다.
 # **parser 경로에서만 실행된다.** json_mapping 자체가 parser 의 .json 분기 전용이므로
 #    적재용(intelligent)/변환용(convert) 설정에 넣으면 **경고도 없이 아무 일도 일어나지 않는다.**
+# `output_fields`/`input_fields`/`concurrency`/`on_error` 를 뺀 나머지 키는 그대로
+#    CustomFieldsEnricher 생성자로 넘어간다 — 아래 `url`/`api_key`/`model`/프롬프트를 이 항목에
+#    직접 쓰는 대신, `config_file: custom_field_<이름>.yaml` 로 별도 파일을 가리켜도 된다
+#    (같은 리소스 폴더 기준. 여러 doc_type 이 프롬프트를 공유할 때 유용하다).
 # llm_fields:
 #   - output_fields: [<GENERATED_FIELD>]
 #     input_fields:  [<TARGET_FIELD_1>]         # 프롬프트 {{raw_text}} 로 넣을 필드(선언 순서대로 결합)
@@ -125,10 +150,20 @@ key_map:
 #       {{raw_text}}
 #       </item>
 
+# ── [선택] 청크 본문에 함께 실을 항목명 ─────────────────────────────────────
+# 본문 필드를 `항목명: 값` 으로 낸다(`질문: 가입은 어떻게 하나요?`).
+# 여기 이름이 없는 필드는 값만 나가고, 값에 줄바꿈이 있는 블록에는 붙지 않는다 —
+# 그 블록은 이미 자기 제목을 갖고 있어 라벨을 얹으면 첫 줄만 라벨 뒤에 붙어 구조가 깨진다.
+# **사람이 검색어로 쓰는 말**을 적는다. 목표필드명(DB 컬럼명)과 원천 key 는 검색어에 안 나오므로
+# 그대로 노출하면 임베딩에 잡음만 는다.
+# json_mapping 은 원천 key 가 시스템 이름이라, 여기 적은 필드만 항목명과 함께 나간다.
+# field_labels:
+#   <TARGET_FIELD_1>: <항목명>
+
 # ── [필수] 청크 본문을 구성할 필드 (선언 순서대로 개행 결합) ─────────────────
 # 이 값이 임베딩 입력이 된다. 비어 있으면 기동 시 실패한다(tabular 와 달리 필수다).
 # **여기 적은 필드는 위에서 반드시 만들어져야 한다** — 어디에도 없는 필드를 적으면
-#    **에러 없이 그 부분이 빠진 채** 청크가 나간다. 본문이 통째로 비면 그 레코드는
+#    **에러 없이 그 부분이 빠진 채** 청크가 나간다(기동 시 경고는 남는다). 본문이 통째로 비면 그 레코드는
 #    element 에서 제외된다("본문이 빈 레코드 N/M건을 제외했습니다" 경고).
 #    앞에 항상 값이 있는 필드(제목 등)를 두면 요약 실패 시에도 검색 가능한 상태가 유지된다.
 text_fields:
@@ -139,10 +174,40 @@ text_fields:
 # true 면 본문이 chunk_size 를 넘을 때 여러 청크로 나눈다(metadata 는 조각마다 동일).
 # 미지정(기본 false) = 레코드 1건이 항상 청크 1개.
 # split: true
+# 분할된 모든 청크 앞에 반복할 식별 필드. `split: true` 일 때만 유효하다(false 면 무시).
+# 접두 필드는 본문 맨 앞으로 이동하며 text_fields 에도 있으면 거기서 빠진다(중복 방지) —
+# text_fields 선두가 아닌 필드를 지정하면 본문 순서가 바뀌니 선두 필드를 쓰는 것이 안전하다.
+# chunk_prefix_fields:
+#   - <TARGET_FIELD_1>                       # 예: TITLE, QUESTION
 
 # ── [선택] records 키를 못 찾았을 때 ────────────────────────────────────────
 # error(기본) = 즉시 실패 / skip = 경고 후 0건
 # missing_policy: skip
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  기동 시 자동 검사 — 무엇을 잡아주고 무엇을 못 잡나
+#  (facade/enrichment/tabular_custom_fields.py 의 validate_custom_field_config,
+#   tabular_mapping·json_semantic 도 같은 검사를 공유한다)
+#
+#  실패시킨다(요청 전에 바로 안다)
+#   · `required`/`text_fields`/`chunk_prefix_fields` 를 목록이 아닌 값으로,
+#     `key_map`/`collect_key_map`/`constants`/`defaults`/`value_map`/`transforms`/`field_labels` 등을 맵이 아닌 값으로 쓴 경우
+#     (`required: TITLE` 처럼 `- ` 를 빠뜨리면 글자 단위로 쪼개져 전건 skip 이 된다)
+#   · 목표필드명이 벡터 예약 필드(text·title·n_char·i_page·created_date·appendix …)와
+#     겹치거나 property 이름 규칙 `/[_A-Za-z][_0-9A-Za-z]*/` 을 벗어난 경우(한글·공백·기호)
+#   · `required` 에 `llm_fields` 가 만드는 필드를 적은 경우(LLM 호출 전에 전건이 걸러진다)
+#   · `chunk_prefix_fields` 에 아무도 만들지 않는 필드를 적은 경우
+#   · **이 extractor 가 읽지 않는 키를 적은 경우.** 두 가지를 나눠 알려준다 —
+#     어느 extractor 도 모르는 키(`key_maps` 같은 오타)는 가장 가까운 이름을 제안하고,
+#     다른 extractor 의 키(예: json_mapping 설정에 남의 키)는 어느 extractor 전용인지 알려준다.
+#     지원 키 목록은 facade/enrichment/config_schema.py 의 EXTRACTOR_KEYS 한 곳에 있다.
+#
+#  경고만 남긴다(로그를 봐야 안다)
+#   · `text_fields` 가 아무도 만들지 않는 필드를 가리킬 때 — 그 부분이 조용히 빠진다
+#   · `field_labels` 가 아무도 만들지 않는 필드를 가리킬 때 — 라벨만 조용히 사라진다
+#
+#  못 잡는다(아래 "확인 방법"으로 직접 봐야 한다)
+#   · 별칭이 원천과 어긋나 값이 전부 비는 경우
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  확인 방법
@@ -163,6 +228,6 @@ text_fields:
 #    "
 #  → 레코드 수가 0 이면 key_map 별칭이 원천 키와 어긋난 것이다(required 로 전건 skip).
 #
-#  현재 코드는 **모르는 키를 조용히 무시**한다. `key_maps`(오타)처럼 한 글자만 틀려도
-#     에러 없이 매핑이 0개가 되므로 위 방법으로 결과를 꼭 확인할 것.
+#  위 "기동 시 자동 검사"가 못 잡는 것(모르는 키·어긋난 별칭)은 여기서만 드러난다 —
+#     설정을 바꿨으면 꼭 돌려볼 것.
 # ═══════════════════════════════════════════════════════════════════════════

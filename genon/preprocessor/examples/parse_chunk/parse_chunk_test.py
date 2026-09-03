@@ -56,6 +56,29 @@ NONDOCLING_EXTENSIONS = {
 }
 SUPPORTED_EXTENSIONS = PARSE_EXTENSIONS | NONDOCLING_EXTENSIONS | {".json"}
 
+
+def _alias_extensions() -> set[str]:
+    """파서 설정(formats.extension_aliases)에 등록된 비표준 확장자.
+
+    러너가 확장자 목록을 따로 들고 있으면 파서는 처리할 수 있는 파일을 러너가 먼저
+    막는다. 목록을 파서 설정에서 끌어와 그 어긋남을 없앤다.
+    """
+    try:
+        from genon.preprocessor.facade.common import config_parse as cp
+        from genon.preprocessor.facade.common import format_alias as fa
+        from genon.preprocessor.facade.parser_processor import (
+            _resolve_default_parser_config_path,
+        )
+
+        cfg = cp.load_config(_resolve_default_parser_config_path(), strict=False)
+        return set(fa.parse_extension_aliases(cfg.get("formats")))
+    except Exception as exc:  # 설정을 못 읽어도 러너는 계속 돈다
+        print(f"  [warn] 확장자 별칭을 읽지 못했습니다: {exc}")
+        return set()
+
+
+SUPPORTED_EXTENSIONS |= _alias_extensions()
+
 # 지연 인스턴스화 (파싱이 필요할 때만 ParserProcessor 생성)
 _parser: ParserProcessor | None = None
 _chunker: ChunkerProcessor | None = None
@@ -197,7 +220,7 @@ def parse_args():
         help="문서 구분(kwargs). 'faq'=tabular 행의 컬럼을 목표 custom field로 매핑, "
              "'card'=문서 메타에 doc_type 스탬프. 행별 청크 여부는 processing_mode가 결정.",
     )
-    ap.add_argument("--chunk-size", type=int, default=10000,
+    ap.add_argument("--chunk-size", type=int, default=None,
                     help="청크 최대 크기 (0=크기 기반 병합·분할 끄기 — docling 입력은 구조 청크가 그대로 "
                          "남아 여러 개, parse-format 입력은 요소당 1개. 0 초과 시 최소 1024)")
     ap.add_argument(
@@ -212,6 +235,11 @@ def parse_args():
         default=None,
         help="청크 선두 'HEADER: <섹션 경로>' 라인 부착 여부. "
              "미지정=설정(chunking.include_chunk_header, 기본 on) | off=순수 본문만",
+    )
+    ap.add_argument(
+        "--table-text-desc",
+        action="store_true",
+        help="custom_fields의 텍스트 표 설명을 활성화(설정된 LLM으로 여러 표를 통합 호출)",
     )
     # ── #329: LLM 캐시 / error_policy / deadline (opt-in) ──────────────────────
     # 캐시는 parse 단계(LLM 호출: OCR VLM/TOC/이미지·표 desc/메타데이터)에서 동작한다.
@@ -253,6 +281,8 @@ def build_cache_kwargs(args) -> dict:
         kw["error_policy"] = args.error_policy
     if getattr(args, "request_deadline", None) is not None:
         kw["request_deadline"] = args.request_deadline
+    if getattr(args, "table_text_desc", False):
+        kw["table_text_desc"] = 1
     return kw
 
 

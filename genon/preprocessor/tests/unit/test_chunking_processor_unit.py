@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from genon.preprocessor.facade.chunking_processor import _carry_over_section_headings
 from docling_core.types import DoclingDocument
 from docling_core.types.doc import DocItemLabel, DocumentOrigin
 
@@ -279,6 +280,81 @@ def test_chunker_rows_without_splittable_stay_one_chunk_per_row():
 
 
 # ----------------------------------------------------------------------
+# chunk_prefix(json_semantic 섹션 및 json/tabular 레코드 제목) 유지 분할.
+#
+# JSON 레코드와 긴 Excel 행도 조각마다 TITLE/QUESTION 같은 식별 접두가 없으면 두 번째
+# 조각부터 무엇에 대한 본문인지 사라진다. json_semantic 은 여기에 섹션명과 공통 정보도 싣는다.
+# ----------------------------------------------------------------------
+
+def test_chunker_splittable_row_with_prefix_keeps_prefix_on_every_piece():
+    """chunk_prefix 를 가진 splittable 행이 분할되면 모든 조각이 접두로 시작한다."""
+    cp = pytest.importorskip("facade.chunking_processor")
+
+    prefix = "[혜택 상세] 0.5%~3% 빅포인트 적립\n상품코드: AAP1344\n상품명: 새마을금고 삼성카드 7"
+    body = "국내외 가맹점에서 이용금액의 0.5%를 빅포인트로 적립합니다. " * 30
+    elements = [
+        {
+            "category": "custom_fields_row",
+            "content": f"{prefix}\n{body}",
+            "page": 1,
+            "id": 0,
+            "splittable": True,
+            "chunk_prefix": prefix,
+            "metadata": {"SECTION_NM": "혜택 상세", "PRODUCT_NM": "새마을금고 삼성카드 7"},
+        },
+    ]
+
+    chunker = cp.DocumentProcessor()
+    vectors = asyncio.run(
+        chunker(
+            request=None, file_path="/data/product.json",
+            document={"elements": elements}, chunk_size=80, chunk_overlap=0,
+        )
+    )
+
+    assert len(vectors) > 1, "본문이 chunk_size 를 넘으니 여러 조각으로 나뉘어야 한다"
+    for v in vectors:
+        assert v.text.startswith(prefix), f"접두 없이 시작하는 조각: {v.text!r}"
+        # metadata 는 조각마다 원 레코드 것을 그대로 유지한다(기존 splittable 규칙과 동일).
+        assert v.SECTION_NM == "혜택 상세"
+
+
+def test_chunker_splittable_row_prefix_overflow_falls_back_with_warning(caplog):
+    """접두 자체가 chunk_size 이상인 병리 케이스 — 죽지 않고 경고 후 본문 기준으로 진행한다."""
+    cp = pytest.importorskip("facade.chunking_processor")
+
+    huge_prefix = "[혜택 상세] " + "아주 긴 섹션 제목이라 접두만으로도 chunk_size 를 넘긴다 " * 10
+    body = "본문 내용 " * 50
+    assert len(huge_prefix) > 80  # 이 테스트의 전제(접두 > chunk_size)
+
+    elements = [
+        {
+            "category": "custom_fields_row",
+            "content": f"{huge_prefix}\n{body}",
+            "page": 1,
+            "id": 0,
+            "splittable": True,
+            "chunk_prefix": huge_prefix,
+            "metadata": {"SECTION_NM": "혜택 상세"},
+        },
+    ]
+
+    chunker = cp.DocumentProcessor()
+    with caplog.at_level(logging.WARNING):
+        vectors = asyncio.run(
+            chunker(
+                request=None, file_path="/data/product.json",
+                document={"elements": elements}, chunk_size=80, chunk_overlap=0,
+            )
+        )
+
+    assert vectors, "병리 케이스에서도 청크는 산출되어야 한다"
+    assert "접두 몫 예약" in caplog.text
+    # 폴백 후에도 원문 내용은 어딘가에 남아 있어야 한다(정보 유실 방지).
+    assert "본문 내용" in "\n".join(v.text for v in vectors)
+
+
+# ----------------------------------------------------------------------
 # 청크 선두 헤더(HEADER: <섹션 경로>) 정규화 + include_chunk_header on/off.
 #
 # 과거에는 섹션 제목이 세 지점에서 3번 붙었다(compose_vectors 의 HEADER 라인 +
@@ -379,6 +455,27 @@ def test_all_chunkers_exclude_only_filename_title_from_header_paths(module_name)
     paths = chunker._extract_header_paths(base_chunk._header_short_info_list)
 
     assert paths == [f"실제 문서 제목{HEADER_SEP}제1장 총칙"]
+
+
+def test_document_title_chunk_merges_into_first_section():
+    """문서 TITLE(`#`) 만 담긴 청크는 남지 않고 하위 섹션 청크의 헤더 경로로 승계된다.
+
+    실측(상품요약서 md): TITLE 을 breadcrumb 에서 빼자 제목만 든 41자 청크가 색인됐다.
+    본문이 0 개라 검색 상위를 차지해도 근거를 못 주므로 하위 섹션과 합쳐야 한다.
+    """
+    pytest.importorskip("facade.chunking_processor")
+
+    doc = DoclingDocument(name="product_summary")
+    title = doc.add_title(text="상품요약서")
+    overview = doc.add_heading(text="문서 개요", level=1, parent=title)
+    doc.add_text(label=DocItemLabel.TEXT, text="가입나이 만 15세 이상 40세 이하", parent=overview)
+    keywords = doc.add_heading(text="핵심 키워드", level=1, parent=title)
+    doc.add_text(label=DocItemLabel.TEXT, text="무배당, 무해약환급금형", parent=keywords)
+
+    vectors = _chunk(doc.model_dump(mode="json"))
+
+    assert all(v.text.strip() != "상품요약서" for v in vectors), "제목만 있는 청크가 남았다"
+    assert all(v.text.startswith(f"HEADER: 상품요약서{HEADER_SEP}") for v in vectors)
 
 
 def test_heading_only_chunk_is_merged_forward():
@@ -534,6 +631,39 @@ def test_no_item_text_is_lost():
 
 
 @pytest.mark.unit
+def test_repeated_body_text_is_not_deduped():
+    """같은 섹션 안에서 반복되는 본문은 반복 횟수만큼 남는다 — 개수 기반 무손실 가드.
+
+    존재 여부(`s not in joined`)만 보는 test_no_item_text_is_lost 는 이 부류를 못 잡는다.
+    실제로 본문까지 중복 제거하던 시절 상품요약서 md 에서 아이템 65개 중 36개가 사라졌고,
+    그 테스트는 통과했다. 반복은 정당한 원문 구조다(같은 특이사항 문단이 여러 쪽에 실린다).
+
+    섹션이 chunk_size 로 쪼개지면 반복이 서로 다른 그룹으로 흩어져 증상이 감춰지므로,
+    한 그룹에 다 들어가도록 chunk_size 를 넉넉히 준다.
+    """
+    pytest.importorskip("facade.chunking_processor")
+
+    repeated = "해당사항 없음"
+    n = 4
+
+    doc = DoclingDocument(name="repeated_body")
+    section = doc.add_heading(text="제1조 목적", level=1)
+    for _ in range(n):
+        doc.add_text(label=DocItemLabel.TEXT, text=repeated, parent=section)
+        doc.add_text(label=DocItemLabel.TEXT, text="사이에 끼는 다른 문장.", parent=section)
+
+    for chunk_mode in ("split_only", "resize_all"):
+        vectors = _chunk(doc.model_dump(mode="json"), chunk_mode=chunk_mode, chunk_size=10000)
+        joined = "\n".join(v.text for v in vectors)
+        assert joined.count(repeated) == n, (
+            f"{chunk_mode}: 반복 본문이 {joined.count(repeated)}회만 남음(기대 {n})"
+        )
+        # 섹션헤더는 여전히 HEADER 라인 + 본문 1회까지만 (헤더 dedup 은 유지된다)
+        bodies = [v.text.partition("\n")[2] for v in vectors]
+        assert sum(b.count("제1조 목적") for b in bodies) <= 1
+
+
+@pytest.mark.unit
 def test_heading_equals_body_text_preserved():
     """본문이 헤더 문자열과 같거나 헤더 문자열만으로 구성돼도 본문이 사라지지 않는다."""
     pytest.importorskip("facade.chunking_processor")
@@ -644,3 +774,42 @@ def test_single_oversized_text_item_is_split(chunk_size):
         assert not over, f"{chunk_mode} chunk_size={effective} 초과: {over[:5]}"
         # 잘린 조각들이 원문을 모두 담고 있어야 한다.
         assert "본문내용" in "\n".join(v.text for v in vectors)
+
+
+# ── 분할 조각의 섹션 문맥 승계 (#360) ────────────────────────────────────────
+# custom_fields 의 text_from 이 원천(JSON/HTML/평문)을 `## 제목` 마크다운으로 펴 놓으면,
+# 청커는 그 헤딩을 우선 분리자로 써서 섹션 경계에서 자르고, 섹션 하나가 chunk_size 를 넘어
+# 중간에서 잘린 경우에만 직전 제목을 다시 붙인다.
+
+@pytest.mark.unit
+def test_carry_over_section_headings_reattaches_last_title():
+    """헤딩 없이 시작하는 뒷 조각에 직전 섹션 제목을 `(이어서)` 로 붙인다.
+
+    이게 없으면 "8월 17일 2544만으로 감소" 같은 조각이 **무엇에 대한 값인지 알 수 없는**
+    상태로 검색에 노출되어, 그 조각만 뽑혔을 때 근거로 쓸 수 없다.
+    """
+    pieces = _carry_over_section_headings([
+        "## 거래량 변화\n8월 13일 3408만",
+        "8월 17일 2544만으로 감소",
+        "## 종합 진단\n관망",
+    ])
+    assert pieces[1] == "## 거래량 변화 (이어서)\n8월 17일 2544만으로 감소"
+    assert pieces[0].startswith("## 거래량 변화\n")     # 첫 조각은 그대로
+    assert pieces[2].startswith("## 종합 진단")          # 헤딩으로 시작하면 손대지 않는다
+
+
+@pytest.mark.unit
+def test_carry_over_section_headings_tracks_nested_level():
+    """가장 최근 헤딩을 물려받는다 — 레벨(##/###)도 그대로 유지한다."""
+    pieces = _carry_over_section_headings([
+        "## 기술적 지표\n### RSI\n8월 13일 47.72",
+        "8월 17일 47.44로 하락",
+    ])
+    assert pieces[1].startswith("### RSI (이어서)\n")
+
+
+@pytest.mark.unit
+def test_carry_over_section_headings_noop_without_headings():
+    """헤딩이 없는 평문 입력에서는 아무것도 하지 않는다(회귀 가드)."""
+    pieces = ["첫 문단입니다.", "둘째 문단입니다."]
+    assert _carry_over_section_headings(list(pieces)) == pieces

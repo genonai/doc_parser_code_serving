@@ -1,0 +1,18 @@
+# 부팅 단계 도커 빌드의 컨텍스트에서 제외할 항목 (sync-serving-repo.sh 가 생성, 직접 편집 금지).
+# packages/ 는 docling wheel 설치에 필요하므로 제외하지 않는다.
+.git
+.gitignore
+.dockerignore
+.venv/
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+.DS_Store
+.idea/
+offline-dev-kit/
+wheelhouse/
+genon/preprocessor/facade/result.json
+genon/preprocessor/examples/parse_chunk/result_parse_chunk/
+genon/preprocessor/examples/code_serving/result_serving_gateway_test/

@@ -37,6 +37,7 @@ value_map:
 # 유일키 UX_TERM_CANON(CLCM_C + TERM_NORM)의 재료라 이 규칙이 곧 중복 판정 기준이 된다.
 transforms:
   TERM_NORM: text_norm
+  SRC_LAST_MOD_DT: date_int_flex
 
 required:
   - GROUP_C
@@ -46,9 +47,7 @@ required:
 
 defaults:
   STATUS: "ACTIVE"                 # TB_TERM 기본값과 동일
-
-nulls:
-  - BIZ_ID                         # 원천이 비워 보내도 스키마는 고정
+  BIZ_ID: null                         # 원천이 비워 보내도 스키마는 고정
 
 # ── 원천에 없는 필드를 행마다 LLM 으로 생성 ─────────────────────────────────
 # SYNONYMS 는 TB_TERM 에 JSON 타입이고 원천에 동의어 컬럼이 없다(파생 전용).
@@ -101,3 +100,8 @@ nulls:
 text_fields:
   - TERM
   - DEFINITION
+
+# 긴 정의는 chunk_size 기준으로 나누고, 모든 조각에 용어를 반복한다.
+split: true
+chunk_prefix_fields:
+  - TERM
