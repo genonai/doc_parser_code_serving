@@ -13,15 +13,26 @@ from pathlib import Path
 import pytest
 import yaml
 
-from genon.preprocessor.facade.chunking import doc_prefix as dpx
-from genon.preprocessor.facade.common import config_parse as cp
-from genon.preprocessor.facade.enrichment.json_records import JsonRecordsMapper
-from genon.preprocessor.facade.enrichment.tabular_custom_fields import (
+from genon.preprocessor.processing.chunking import doc_prefix as dpx
+from genon.preprocessor.processing.common import config_parse as cp
+from genon.preprocessor.processing.enrichment.json_records import JsonRecordsMapper
+from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
     TabularCustomFieldsMapper,
     build_chunk_text,
 )
 
 RESOURCE_DIR = Path(__file__).resolve().parents[2] / "resource"
+
+
+def _load_shipped(name: str) -> dict:
+    """출고 설정을 내부 형태로 읽는다(출고는 v2 표기다).
+
+    번역 없이 raw 로 읽으면 v2 파일에서 `text_fields`/`field_labels` 가 빈 값이 되어
+    검사가 **조용히 무력해진다** — 통과하지만 아무것도 보지 않는 상태가 된다.
+    """
+    from shipped_config import load_shipped
+
+    return load_shipped(RESOURCE_DIR / name)
 
 
 # ── build_chunk_text: 항목명 결정 규칙 ───────────────────────────────────────
@@ -82,11 +93,25 @@ def test_json_path_without_labels_stays_value_only():
 
 
 @pytest.mark.unit
-def test_multiline_block_keeps_no_label():
-    """여러 줄 블록은 자기 제목을 이미 갖고 있어 항목명을 붙이지 않는다."""
+def test_multiline_value_keeps_the_named_label_on_its_own_line():
+    """사람이 적어 준 항목명은 여러 줄 값에도 나간다 — 첫 줄에 붙이지 않고 따로 낸다.
+
+    `html_text` 가 만드는 값은 표·목록으로 시작해 자기 제목이 없는 경우가 대부분이라,
+    여러 줄이면 라벨을 버리는 종전 규칙에서는 설정의 `labels` 가 조용히 무시됐다.
+    """
+    content, _ = build_chunk_text(
+        {"CONTENT": "| 구 분 | 내 용 |\n| - | - |"}, ["CONTENT"], [],
+        field_labels={"CONTENT": "내용"},
+    )
+    assert content == "내용:\n| 구 분 | 내 용 |\n| - | - |"
+
+
+@pytest.mark.unit
+def test_multiline_value_drops_the_fallback_header_label():
+    """원천 헤더로 폴백한 이름은 종전대로 여러 줄 값에 붙이지 않는다."""
     content, _ = build_chunk_text(
         {"DETAIL_TEXT": "## 혜택\n- 5% 적립"}, ["DETAIL_TEXT"], [],
-        field_labels={"DETAIL_TEXT": "상세내용"},
+        column_map={"DETAIL_TEXT": ["상세설명"]},
     )
     assert content == "## 혜택\n- 5% 적립"
 
@@ -124,12 +149,16 @@ def test_resolve_field_labels_prefers_kwargs_over_document_metadata():
 def test_unknown_field_label_warns_but_does_not_fail(tmp_path, caplog):
     """이름을 잘못 적으면 라벨만 조용히 사라진다 — 기동 시 경고로 드러낸다."""
     cfg = """
-    key_map:
-      TITLE: [title]
-    field_labels:
-      TITLE: 제목
-      TITEL: 제목
-    text_fields: [TITLE]
+    schema: v2
+    source:
+      kind: records
+    fields:
+      TITLE: {alias: [title]}
+    body:
+      fields: [TITLE]
+      labels:
+        TITLE: 제목
+        TITEL: 제목
     """
     path = tmp_path / "custom_field_json.yaml"
     path.write_text(textwrap.dedent(cfg), encoding="utf-8")
@@ -177,29 +206,41 @@ def test_doc_prefix_reads_labels_from_document_metadata():
     assert dpx.reserved_prefix_text({}, metadata) == repeated
 
 
+# 값 자체가 무엇인지 말해 주는 필드는 항목명을 붙이지 않는다 - 사이트 운영 설정의 선택이다
+# (커밋 263f53ea). CS_CATEGORY 는 "이용안내 > 상세 이용 조건" 같은 분류 경로라 `분류: ` 를
+# 덧붙여도 정보가 늘지 않는다. 예외를 목록으로 두는 이유는 "라벨을 깜빡 빠뜨린 것"과
+# "일부러 안 붙인 것"을 구분해야 아래 검사가 계속 값을 하기 때문이다.
+_LABEL_EXEMPT_FIELDS = {"CS_CATEGORY"}
+
+
 # ── 실제 출고 설정 ───────────────────────────────────────────────────────────
 
 @pytest.mark.unit
 @pytest.mark.parametrize("name", [
     "custom_field_faq.yaml", "custom_field_faq_json.yaml", "custom_field_cs_sss.yaml",
-    "custom_field_cs_slf.yaml", "custom_field_cs_ssf.yaml", "custom_field_link.yaml",
-    "custom_field_monimo_news.yaml", "custom_field_monimo_event.yaml",
+    "custom_field_cs_slf.yaml", "custom_field_cs_ssf.yaml",
+    # monimo_news 는 원천이 레코드 배열에서 HTML 문서 한 건으로 바뀌면서 본문 필드
+    # (text_fields)가 없는 `kind: html` 설정이 됐다. 검사 대상이 아니다.
+    "custom_field_monimo_event.yaml",
 ])
 def test_shipped_configs_name_every_body_field(name):
     """본문 필드는 모두 항목명을 갖는다 — 하나라도 빠지면 그 필드만 값으로 나가 불규칙해진다."""
-    cfg = yaml.safe_load((RESOURCE_DIR / name).read_text(encoding="utf-8"))
+    cfg = _load_shipped(name)
     labels = cfg.get("field_labels") or {}
-    missing = [f for f in (cfg.get("text_fields") or []) if f not in labels]
+    body_fields = cfg.get("text_fields") or []
+    assert body_fields, f"{name}: 본문 필드가 비어 검사가 무의미합니다."
+    missing = [f for f in body_fields
+               if f not in labels and f not in _LABEL_EXEMPT_FIELDS]
     assert not missing, f"{name}: {missing} 에 항목명이 없습니다."
 
 
 @pytest.mark.unit
 def test_faq_xlsx_and_faq_json_agree_on_labels():
     """같은 doc_type 이 원천 포맷에 따라 다른 본문 모양을 내지 않는다(이 작업의 출발점)."""
-    tabular = yaml.safe_load(
-        (RESOURCE_DIR / "custom_field_faq.yaml").read_text(encoding="utf-8"))
-    json_cfg = yaml.safe_load(
-        (RESOURCE_DIR / "custom_field_faq_json.yaml").read_text(encoding="utf-8"))
+    # 출고 설정은 v2 표기다. 이 검사는 "무엇을 만드는가"를 보는 것이라 표기와 무관해야
+    # 하므로, 매퍼가 하는 것과 같은 번역을 거쳐 내부 형태로 맞춘 뒤 비교한다.
+    tabular = _load_shipped("custom_field_faq.yaml")
+    json_cfg = _load_shipped("custom_field_faq_json.yaml")
     assert tabular["field_labels"] == json_cfg["field_labels"]
     assert tabular["text_fields"] == json_cfg["text_fields"]
 

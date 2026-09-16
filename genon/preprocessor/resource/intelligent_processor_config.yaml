@@ -234,17 +234,16 @@ enrichment:
         repeat_context_on_split: true
 
   # ── 문서유형별 custom_fields 추출 ──────────────────────────────────────────
-  # extractor=llm 은 문서 단위 LLM 추출, tabular_mapping 은 Excel/CSV 행별 직접 매핑.
+  # extractor 는 적지 않는다 — 설정 파일(config_file)의 `source.kind` 에서 정해진다
+  #   (document → 문서 단위 LLM 추출, rows → Excel·CSV 행별 직접 매핑).
   # doc_type(요청 kwargs)과 일치하는 설정만 동작. 배포 시 enable/serving ID 설정 후 사용.
   - custom_fields:
       enable: false
       doc_type: card
-      extractor: llm
       config_file: custom_field_card.yaml   # resource_path 자동 = 이 yaml 파일 디렉토리
   - custom_fields:
       enable: false
       doc_type: faq
-      extractor: tabular_mapping
       config_file: custom_field_faq.yaml   # resource_path 자동 = 이 yaml 파일 디렉토리
 
 # 청킹(GenosSmartChunker) 설정
@@ -275,6 +274,24 @@ chunking:
   # 표/코드 블록 안의 구조와 원문 의미는 건드리지 않는다(문장 재작성/공백 병합 없음).
   # 우선순위: 호출 kwargs 의 text_cleanup > 아래 > off.
   text_cleanup: off
+  #
+  # 그 사이트의 원천에만 있는 노이즈는 위 문자 위생으로 지워지지 않는다. 블록으로 쓰면
+  # 정규식 규칙을 줄 수 있다(기본은 규칙 없음 — 적지 않으면 산출이 바뀌지 않는다).
+  #
+  #   text_cleanup:
+  #     mode: safe
+  #     rules:                                        # 적은 순서대로 적용
+  #       - {line: "^\\s*목차\\s*$"}                   # 매칭되는 줄을 지운다
+  #       - {find: "\\[이미지[^\\]]*\\]", replace: ""}  # 부분 치환(replace 생략 시 삭제)
+  #       - {chunk: "^본 문서는 참고용"}                # 청크를 통째로 버린다
+  #
+  # line/find 는 **청킹 입력**에 적용된다 — 그래야 삭제가 청크 경계와 n_char 에 반영된다.
+  # chunk 만 출력 단계에서 판정한다.
+  # 코드 블록(``` 펜스·인라인 백틱)은 규칙을 타지 않는다 — 예제 코드가 훼손되는 것을 막는다.
+  # 마크다운 표 행을 건너뛰는 것은 `line` 뿐이다. `find` 는 표 안에서도 치환하므로
+  # `- {find: "\\|"}` 같은 규칙은 표를 통째로 깨뜨린다. 표 셀의 글자를 지울 때만 쓴다.
+  # 잘못된 정규식·모르는 액션 키는 요청 때가 아니라 **기동 시** 실패한다.
+  # 규칙을 켜면 청크 본문이 바뀌므로 재색인이 필요하다.
   # 토큰 수 계산 방식. "char"(default)=문자 수 기준 | "huggingface"=HF 토크나이저 기준
   tokenizer_type: "char"
   # 청킹용 토크나이저(huggingface 모드에서만 사용). tokenizer_path 가 실제 존재하면 그 경로,

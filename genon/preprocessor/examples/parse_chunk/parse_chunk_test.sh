@@ -77,6 +77,10 @@ MONIMO_CASES=(
   #   _02_ : section 1개(항목 1건), _01_ : section 3개(항목 3건 → metadata 는 1세트만 나온다)
   "cs_hpp:${MONIMO}/.INC_235488_02_20260626103138.html"
   "cs_hpp:${MONIMO}/.INC_235489_01_20260626103139.html"
+  # 같은 원천의 마크다운 산출물. 확장자가 표준이 아니라 설정의 formats.extension_aliases
+  # (".parsed": ".md")로 포맷을 알려준다. 예전에는 그 설정이 파사드까지 배선되지 않아
+  # 구조 없는 텍스트로 떨어져 청크 본문에 <table> 태그가 원문 그대로 실렸다.
+  "cs_hpp:${MONIMO}/.INC_235488_02_20260626103138.html.parsed"
   "product_slf:${MONIMO}/monimo_product_slf_sample.md"
   "product_ssf:${MONIMO}/monimo_product_ssf_sample.md"
   # json_semantic — 상품 1건(JSON 파일 1개)이 성격별 섹션(혜택 상세/상품 문서 …)으로 나뉘어
@@ -86,7 +90,6 @@ MONIMO_CASES=(
   # 원천이 한 종목의 세부내용 JSON 하나를 ntc_objline 1..N 으로 문자 단위로 잘라 여러 행에
   # 뿌린다. row_merge 가 그 행들을 도로 이어붙인다 — 아래 전용 블록 참고.
   "stock_insight:${MONIMO}/monimo_stock_insight_sample.xlsx"
-  "link:${MONIMO}/monimo_link_sample.json"
 )
 
 # 한 건이 실패해도 나머지는 계속 돌린다(set -e 아래에서 전체 중단 방지).
@@ -123,7 +126,7 @@ MONIMO_CASES=(
 #      (실 원천에 `"price_pat` / `tern_desc":` 처럼 키 이름 중간에서 끊긴 사례가 있다)
 #      → row_merge(group_by=REGT_NO+JONG_CODE, order_by=NTC_OBJLINE_NO)가 구분자 없이 이어붙임
 #   3) detail_desc 에 **JSON·HTML·평문이 섞여** 오고 정해진 스키마가 없음
-#      → text_from 이 종류를 자동 판별해 하나의 마크다운으로 수렴시킴
+#      → `transform: text` 가 종류를 자동 판별해 하나의 마크다운으로 수렴시킴
 # 샘플 4종목이 세 종류를 모두 덮는다:
 #   테슬라·엔비디아 = JSON, 팔란티어 = 구조 HTML(표 포함), 리게티 = 평문
 # 청커는 `## ` 를 우선 분리자로 써서 섹션 경계에서 자르고, 섹션 하나가 chunk_size 를 넘어

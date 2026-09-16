@@ -15,9 +15,9 @@ from docling_core.types.doc import (
     TableData,
 )
 
-from genon.preprocessor.facade.enrichment.custom_fields_enricher import CustomFieldsEnricher
-from genon.preprocessor.facade.enrichment.field_transforms import extract_metadata_from_document
-from genon.preprocessor.facade.enrichment.table_description import TableDescriptionExtractor
+from genon.preprocessor.processing.enrichment.custom_fields_enricher import CustomFieldsEnricher
+from genon.preprocessor.processing.enrichment.field_transforms import extract_metadata_from_document
+from genon.preprocessor.processing.enrichment.table_description import TableDescriptionExtractor
 
 
 SAMPLE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "table_text_description"
@@ -61,6 +61,9 @@ def test_multiple_tables_share_one_custom_fields_llm_call_and_are_annotated():
         url="http://llm.invalid/v1/chat/completions",
         model="test-model",
         output_fields=["document_kind"],
+        # 표 2개가 한 호출을 공유하려면 그만한 응답 예산이 있어야 한다 — 배치 크기는
+        # 입력뿐 아니라 max_tokens 가 감당하는 표 개수로도 끊긴다.
+        max_tokens=8000,
         table_text_description={
             "enabled": True, "before_items": 2, "after_items": 1,
             "prompt_template": TEST_TABLE_PROMPT,
@@ -149,6 +152,7 @@ def test_actual_md_html_samples_parse_describe_once_and_chunk(
         url="http://llm.invalid/v1/chat/completions",
         model="test-model",
         output_fields=["document_kind"],
+        max_tokens=8000,   # 표 2개를 한 호출에 담을 응답 예산
         table_text_description={
             "enabled": True, "input_format": input_format,
             "prompt_template": TEST_TABLE_PROMPT,
@@ -196,9 +200,13 @@ def test_actual_md_html_samples_parse_describe_once_and_chunk(
 def test_doc_type_yaml_overrides_processor_common_table_text_description(tmp_path):
     """문서유형 YAML 값이 프로세서 공통값을 덮고, rag 하위는 키 단위로 병합된다."""
     (tmp_path / "cf.yaml").write_text(
-        "url: http://llm.invalid\n"
-        "model: test-model\n"
-        "output_fields: [document_kind]\n"
+        "schema: v2\n"
+        "source:\n  kind: document\n"
+        "llm:\n"
+        "  - endpoint:\n"
+        "      url: http://llm.invalid\n"
+        "      model: test-model\n"
+        "    out: [document_kind]\n"
         "table_text_description:\n"
         "  enabled: true\n"
         "  prompt_template: 문서유형 프롬프트\n"

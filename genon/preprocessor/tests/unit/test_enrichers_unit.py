@@ -22,8 +22,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 pytest.importorskip("httpx")
-_me = pytest.importorskip("facade.enrichment.metadata_enricher")
-_cf = pytest.importorskip("facade.enrichment.custom_fields_enricher")
+pytest.importorskip("docling_core")
+_me = pytest.importorskip("processing.enrichment.metadata_enricher")
+_cf = pytest.importorskip("processing.enrichment.custom_fields_enricher")
+
+from docling_core.types.doc import (  # noqa: E402
+    BoundingBox,
+    DocItemLabel,
+    DoclingDocument,
+    ProvenanceItem,
+    Size,
+)
+from docling_core.types.doc.base import CoordOrigin  # noqa: E402
 
 MetadataEnricher = _me.MetadataEnricher
 CustomFieldsEnricher = _cf.CustomFieldsEnricher
@@ -90,8 +100,8 @@ def _make_custom_fields_enricher(**overrides):
 
 # 두 enricher 모두에서 동일하게 검증할 (생성자, 모듈경로) 쌍
 _ENRICHERS = [
-    pytest.param(_make_metadata_enricher, "facade.enrichment.metadata_enricher", id="metadata"),
-    pytest.param(_make_custom_fields_enricher, "facade.enrichment.custom_fields_enricher", id="custom_fields"),
+    pytest.param(_make_metadata_enricher, "processing.enrichment.metadata_enricher", id="metadata"),
+    pytest.param(_make_custom_fields_enricher, "processing.enrichment.custom_fields_enricher", id="custom_fields"),
 ]
 
 
@@ -295,9 +305,25 @@ class TestParserPathTraversalGuard:
 # ── MetadataEnricher._extract_raw_text 페이지 선택 ─────────────────────────────
 
 def _make_paged_doc(num_pages: int):
-    doc = MagicMock()
-    doc.pages = {i: object() for i in range(1, num_pages + 1)}
-    doc.export_to_markdown = MagicMock(side_effect=lambda page_no: f"[{page_no}]")
+    """페이지마다 `PAGE-<n>` 한 줄만 담은 실제 DoclingDocument.
+
+    mock 을 쓰지 않는다. `_extract_raw_text` 는 `common.markdown_export.export_markdown`
+    을 거치는데 그 안에서 `MarkdownDocSerializer` 가 doc 을 pydantic 으로 검증하므로
+    MagicMock 은 애초에 통과하지 못한다. 실제 문서를 쓰면 페이지 선택이 직렬화까지
+    관통해서 검증된다.
+    """
+    doc = DoclingDocument(name="paged")
+    for page_no in range(1, num_pages + 1):
+        doc.add_page(page_no=page_no, size=Size(width=100, height=100))
+        doc.add_text(
+            label=DocItemLabel.TEXT,
+            text=f"PAGE-{page_no}",
+            prov=ProvenanceItem(
+                page_no=page_no,
+                bbox=BoundingBox(l=0, t=0, r=10, b=10, coord_origin=CoordOrigin.TOPLEFT),
+                charspan=(0, 6),
+            ),
+        )
     return doc
 
 
@@ -306,18 +332,18 @@ class TestMetadataExtractRawText:
     def test_default_reads_first_four_pages(self):
         enr = _make_metadata_enricher(pages=None)
         doc = _make_paged_doc(6)
-        text = enr._extract_raw_text(doc)
-        assert text == "[1][2][3][4]"
+        # 페이지별 markdown 을 구분자 없이 이어 붙인다. 5~6 페이지는 읽지 않는다.
+        assert enr._extract_raw_text(doc) == "PAGE-1PAGE-2PAGE-3PAGE-4"
 
     def test_fewer_than_four_pages(self):
         enr = _make_metadata_enricher(pages=None)
         doc = _make_paged_doc(2)
-        assert enr._extract_raw_text(doc) == "[1][2]"
+        assert enr._extract_raw_text(doc) == "PAGE-1PAGE-2"
 
     def test_explicit_pages_respected(self):
         enr = _make_metadata_enricher(pages=[2, 3])
         doc = _make_paged_doc(6)
-        assert enr._extract_raw_text(doc) == "[2][3]"
+        assert enr._extract_raw_text(doc) == "PAGE-2PAGE-3"
 
 
 # ── CustomFieldsEnricher._load_config 경로 해석 ────────────────────────────────
@@ -330,14 +356,21 @@ class TestCustomFieldsLoadConfig:
 
     def test_yaml_with_resource_path(self, tmp_path):
         cfg = tmp_path / "fields.yaml"
-        cfg.write_text("url: http://x\nmodel: m\n", encoding="utf-8")
+        cfg.write_text(
+            "schema: v2\nsource:\n  kind: document\n"
+            "llm:\n  - endpoint:\n      url: http://x\n      model: m\n",
+            encoding="utf-8",
+        )
         enr = object.__new__(CustomFieldsEnricher)
         loaded = enr._load_config("fields.yaml", str(tmp_path))
         assert loaded == {"url": "http://x", "model": "m"}
 
     def test_bare_name_with_resource_path(self, tmp_path):
         cfg = tmp_path / "authors.yaml"
-        cfg.write_text("output_fields: [authors]\n", encoding="utf-8")
+        cfg.write_text(
+            "schema: v2\nsource:\n  kind: document\nllm:\n  - out: [authors]\n",
+            encoding="utf-8",
+        )
         enr = object.__new__(CustomFieldsEnricher)
         loaded = enr._load_config("authors", str(tmp_path))
         assert loaded == {"output_fields": ["authors"]}
@@ -372,7 +405,7 @@ class TestCustomFieldsPromptFiles:
         assert enr._system_prompt == "FROM_FILE"
 
     def test_default_system_prompt_when_unset(self, tmp_path):
-        from facade.enrichment.custom_fields_enricher import _DEFAULT_CUSTOM_FIELDS_SYSTEM_PROMPT
+        from processing.enrichment.custom_fields_enricher import _DEFAULT_CUSTOM_FIELDS_SYSTEM_PROMPT
         enr = _make_custom_fields_enricher(
             system_prompt="", user_prompt="USER", resource_path=str(tmp_path),
         )
@@ -387,7 +420,9 @@ class TestCustomFieldsPromptFiles:
     def test_inline_yaml_prompt_loaded(self, tmp_path):
         """프롬프트를 config yaml 안에 직접 써도 파일과 동일하게 로드된다(자족 설정)."""
         (tmp_path / "cf.yaml").write_text(
-            'system_prompt: |\n  SYS_INLINE\nuser_prompt: |\n  USER_INLINE {{raw_text}}\n',
+            "schema: v2\nsource:\n  kind: document\nllm:\n  - prompt:\n"
+            "      system: |\n        SYS_INLINE\n"
+            "      user: |\n        USER_INLINE {{raw_text}}\n",
             encoding="utf-8",
         )
         enr = _make_custom_fields_enricher(
@@ -416,7 +451,7 @@ class TestShippedCardConfigSelfContained:
         )
 
     def test_prompts_are_inline(self, resource_dir):
-        from facade.enrichment.custom_fields_enricher import (
+        from processing.enrichment.custom_fields_enricher import (
             _DEFAULT_CUSTOM_FIELDS_SYSTEM_PROMPT,
         )
         enr = self._enricher(resource_dir)

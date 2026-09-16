@@ -1,4 +1,4 @@
-"""custom_fields(html_text_fields) 경로의 표 형식 선택 테스트.
+"""custom_fields(`transform: html_text`) 경로의 표 형식 선택 테스트.
 
 파서가 docling 을 거치지 않고 HTML 필드를 평문으로 바꾸는 경로다. 청커가 쓰는 판정과
 같은 함수를 써야 같은 표가 파생 필드와 청크에서 다른 모양으로 나가지 않는다.
@@ -6,7 +6,7 @@
 
 import pytest
 
-from genon.preprocessor.facade.enrichment.json_records import (
+from genon.preprocessor.processing.enrichment.json_records import (
     html_to_text,
     normalize_table_format,
 )
@@ -70,3 +70,38 @@ def test_table_caption_survives_every_format():
     body = f'<table><caption>월별 내역</caption>{SIMPLE[len("<table>"):]}'
     for fmt in ("html", "markdown", "auto"):
         assert "월별 내역" in html_to_text(f"<h2>안내</h2>{body}", table_format=fmt)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("fmt,expect_md", [("html", False), ("markdown", True)])
+def test_rows_path_honors_table_format(tmp_path, fmt, expect_md):
+    """rows(tabular_mapping) 경로도 프로세서의 `output.table_format` 을 따른다.
+
+    예전에는 `structural_html_renderer()` 를 인자 없이 만들어 rows 파생 필드만 항상
+    `<table>` 이었다. records 경로는 파서가 설정을 넘기고 있어서, 현장이
+    `table_format: markdown` 을 쓰면 같은 파일 안에서 kind 마다 표 모양이 갈렸다.
+    """
+    import textwrap
+
+    from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
+        TabularCustomFieldsMapper,
+    )
+
+    (tmp_path / "custom_field_t.yaml").write_text(textwrap.dedent("""
+        schema: v2
+        source: {kind: rows}
+        fields:
+          RAW: {alias: [내용]}
+          DETAIL: {alias: [내용], transform: html_text}
+        require: {fields: [RAW]}
+        body: {fields: [DETAIL]}
+    """), encoding="utf-8")
+    mapper = TabularCustomFieldsMapper(
+        config_file="custom_field_t.yaml", resource_path=str(tmp_path),
+        doc_type="t", extractor="tabular_mapping",
+    )
+    data = {"data": [{"sheet_name": "S", "data_rows": [{"내용": SIMPLE}]}]}
+
+    detail = mapper.build_fields(data, "t", table_format=fmt)[0]["DETAIL"]
+    assert _has_markdown_table(detail) is expect_md
+    assert ("<table" in detail) is (not expect_md)
