@@ -478,12 +478,11 @@ _REQUIRED_BY_DOC_TYPE = {
     "custom_field_menu.yaml":          ["GROUP_C", "MENU_NM"],
     "custom_field_term.yaml":          ["GROUP_C", "TERM", "TERM_NORM", "DEFINITION", "STATUS"],
     "custom_field_faq.yaml":           ["GROUP_C", "QUESTION", "ANSWER", "STATUS"],
-    "custom_field_faq_json.yaml":      ["GROUP_C", "QUESTION", "ANSWER", "STATUS"],
-    "custom_field_monimo_event.yaml":  ["GROUP_C", "TITLE"],
-    "custom_field_monimo_news.yaml":   ["GROUP_C", "TITLE"],
-    "custom_field_cs_slf.yaml":        ["GROUP_C", "TITLE"],
-    "custom_field_cs_ssf.yaml":        ["GROUP_C", "TITLE"],
-    "custom_field_cs_sss.yaml":        ["GROUP_C", "TITLE"],
+    "custom_field_monimo_event.yaml":  ["GROUP_C", "CUSTOM_TITLE"],
+    "custom_field_monimo_news.yaml":   ["GROUP_C", "CUSTOM_TITLE"],
+    "custom_field_cs_slf.yaml":        ["GROUP_C", "CUSTOM_TITLE"],
+    "custom_field_cs_ssf.yaml":        ["GROUP_C", "CUSTOM_TITLE"],
+    "custom_field_cs_sss.yaml":        ["GROUP_C", "CUSTOM_TITLE"],
     "custom_field_stock_insight.yaml": ["GROUP_C", "JONG_CODE", "JONG_NM", "ANALYSIS_DATE"],
 }
 
@@ -1103,7 +1102,8 @@ def test_shipped_configs_pass_startup_validation():
             else:
                 continue
             cls(config_file=opts["config_file"], resource_path=str(base),
-                doc_type=opts.get("doc_type"), extractor=extractor)
+                doc_type=opts.get("doc_type"), extractor=extractor,
+                model_presets=raw.get("model_presets"))
             built += 1
     assert built >= 10, f"검증 대상 매핑 설정이 너무 적다({built}개) — 등록을 확인하라"
 

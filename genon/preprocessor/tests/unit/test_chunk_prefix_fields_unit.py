@@ -42,21 +42,19 @@ class TestFieldListResolution:
 
 @pytest.mark.unit
 class TestPrefixText:
-    def test_renders_value_only_without_label(self):
-        """필드명은 DB 컬럼명이라 라벨로 노출하면 임베딩에 잡음이 된다."""
-        assert dpx.build_prefix_text({"PRODUCT_NM": "삼성 iD ON 카드"}, ["PRODUCT_NM"]) == (
-            "삼성 iD ON 카드\n"
-        )
-
-    def test_skips_missing_and_unrenderable_values(self):
-        meta = {"A": "값", "B": None, "C": "", "D": {"nested": 1}}
-        assert dpx.build_prefix_text(meta, ["A", "B", "C", "D", "MISSING"]) == "값\n"
-
-    def test_joins_scalar_list(self):
-        assert dpx.build_prefix_text({"K": ["결제취소", "환불"]}, ["K"]) == "결제취소, 환불\n"
-
-    def test_deduplicates_identical_values(self):
-        assert dpx.build_prefix_text({"A": "카드", "B": "카드"}, ["A", "B"]) == "카드\n"
+    @pytest.mark.parametrize("meta,fields,expected", [
+        # 필드명은 DB 컬럼명이라 라벨로 노출하면 임베딩에 잡음이 된다 — 값만 낸다
+        ({"PRODUCT_NM": "삼성 iD ON 카드"}, ["PRODUCT_NM"], "삼성 iD ON 카드\n"),
+        # 없는 키, None, 빈 문자열, 렌더 불가한 값은 건너뛴다
+        ({"A": "값", "B": None, "C": "", "D": {"nested": 1}},
+         ["A", "B", "C", "D", "MISSING"], "값\n"),
+        # 스칼라 목록은 쉼표로 잇는다
+        ({"K": ["결제취소", "환불"]}, ["K"], "결제취소, 환불\n"),
+        # 같은 값이 두 필드에 있으면 한 번만 낸다
+        ({"A": "카드", "B": "카드"}, ["A", "B"], "카드\n"),
+    ], ids=["value-only", "skips-unrenderable", "joins-list", "deduplicates"])
+    def test_build_prefix_text(self, meta, fields, expected):
+        assert dpx.build_prefix_text(meta, fields) == expected
 
     def test_reserved_text_covers_both_lists(self):
         """청커 예산은 첫 청크 몫까지 더한 보수적 상한이라야 어떤 청크도 한도를 안 넘는다."""
@@ -107,9 +105,11 @@ class TestChunkerAndProcessorContract:
 @pytest.mark.parametrize(
     "yaml_name,key,expected",
     [
-        # TITLE 은 사이트 운영 설정(263f53ea)이 첫 청크 접두에 함께 넣었다.
-        ("custom_field_cs_hpp.yaml", "first_chunk_fields", ["CS_CATEGORY", "TITLE"]),
-        ("custom_field_product_hpp.yaml", "chunk_prefix_fields", ["PRODUCT_NM"]),
+        # cs_hpp 는 JSON 레코드 매핑으로 바뀌면서 분류·제목을 매 청크에 반복한다
+        # (yaml `body.repeat`). 레코드마다 값이 달라 첫 청크 1회로는 식별이 안 된다.
+        ("custom_field_cs_hpp.yaml", "chunk_prefix_fields", ["CS_CTGR_L1", "CUSTOM_TITLE"]),
+        # product_hpp 는 연회비를 첫 섹션 청크에만 1회 싣는다(yaml `body.once`).
+        ("custom_field_product_hpp.yaml", "first_chunk_fields", ["FEE"]),
     ],
 )
 def test_operational_yaml_declares_prefix_fields(yaml_name, key, expected):
