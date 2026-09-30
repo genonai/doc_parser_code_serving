@@ -27,7 +27,7 @@ git apply my_change.patch          # 충돌하면 patch 를 보고 손으로 반
 | `custom_field_regex_demo.yaml` + `.py` | 설정 폴더 (코드 수정 없음) | `extractor: python` — 정규식으로 값을 뽑는다 |
 
 청킹 쪽 정제 예시 비교(설정 vs 훅)는 `../text_cleanup/` 에 있다.
-훅 전반의 사용법은 [facade_hooks.md](../../facade/gitbook_doc/facade_hooks.md) 를 본다.
+훅 전반의 사용법은 [facade_hooks.md](../../manual/facade_hooks.md) 를 본다.
 
 마지막 항목은 훅이 아니다 — **전처리기 파일을 고치지 않고 설정만으로** 파이썬을 꽂는
 자리다(`extractor: python`). 값 추출이 목적이라면 훅보다 이쪽이 먼저다.
@@ -61,7 +61,7 @@ SKIP_TABLE_DESC_DOC_TYPES = ("cs_hpp",)
 ### 왜 끄는가
 
 `table_text_desc` 를 켜면 문서의 표를 모아 LLM 한 번에 여러 개씩 설명하게 한다. 그런데
-한 호출에 표를 몇 개 담을지는 `max_context_tokens`(입력 예산)가 정하고, 그 응답을 받아 줄
+한 호출에 표를 몇 개 담을지는 `model_context_tokens`(입력 예산)가 정하고, 그 응답을 받아 줄
 `max_tokens`(출력 상한)는 배치 계획에 반영되지 않는다. 표가 아주 많은 문서에서는 배치가
 요구하는 응답이 상한을 넘겨 JSON 이 중간에서 잘리고, 잘린 JSON 은 파싱에 실패해
 **그 배치의 표 전부**가 설명 없이 지나간다. 로그에 아래가 반복되면 이 상황이다.
@@ -71,7 +71,7 @@ SKIP_TABLE_DESC_DOC_TYPES = ("cs_hpp",)
 ```
 
 표가 수백~수천 개인 문서유형은 표 설명을 끄는 편이 낫다. 켠 채로 쓰려면 yaml 에서
-`max_context_tokens` 를 낮춰 배치당 표 수를 줄이고 `max_tokens` 를 함께 올린다.
+`model_context_tokens` 를 낮춰 배치당 표 수를 줄이고 `max_tokens` 를 함께 올린다.
 
 ### `table_text_desc` 한 키로 두 경로가 함께 꺼진다
 

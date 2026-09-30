@@ -9,6 +9,10 @@ from docling_core.types import DoclingDocument
 from docling_core.types.doc import DocItem, PictureItem, TableItem
 from docling_core.types.doc.document import ContentLayer
 
+from genon.preprocessor.processing.common.config_parse import (
+    MODEL_CONTEXT_TOKENS_KEYS,
+    resolve_model_context_tokens,
+)
 from genon.preprocessor.processing.common.markdown_export import export_markdown
 
 
@@ -54,14 +58,28 @@ def canonical_enable_key(cfg: dict | None) -> dict:
     return merged
 
 
+def _canonical_context_key(cfg: dict) -> dict:
+    """context 한도의 옛 이름들을 현재 이름 `model_context_tokens` 하나로 모은다.
+
+    `canonical_enable_key` 와 같은 이유다. 공통이 새 이름, 문서유형이 옛 이름이면 병합 뒤
+    둘 다 남아 새 이름(공통값)이 우선하므로 문서유형 값이 조용히 무시된다.
+    """
+    value = resolve_model_context_tokens(cfg)
+    if value is None:
+        return cfg
+    merged = {k: v for k, v in cfg.items() if k not in MODEL_CONTEXT_TOKENS_KEYS}
+    merged[MODEL_CONTEXT_TOKENS_KEYS[0]] = value
+    return merged
+
+
 def merge_table_text_description(common: dict | None, local: dict | None) -> dict:
     """프로세서 공통 설정 위에 문서유형 설정을 key 단위로 얹는다(문서유형 우선).
 
     `rag` 하위도 통째로 교체하지 않고 key 단위로 병합해, 문서유형에서 한 항목만 바꿔도
     나머지 공통값이 살아 있게 한다.
     """
-    base = canonical_enable_key(common)
-    override = canonical_enable_key(local)
+    base = _canonical_context_key(canonical_enable_key(common))
+    override = _canonical_context_key(canonical_enable_key(local))
     merged = {**base, **override}
     base_rag = base.get("rag") if isinstance(base.get("rag"), dict) else {}
     override_rag = override.get("rag") if isinstance(override.get("rag"), dict) else {}
@@ -78,7 +96,7 @@ class TableTextDescriptionOptions:
     after_items: int = 2
     max_context_chars: int = 1500
     max_context_tokens: int = 128000
-    completion_reserved_tokens: int = 8000
+    completion_reserved_tokens: int | None = None  # None 이면 호출의 max_tokens 만큼 예약한다
     overflow_policy: str = "batch"
     conflict_policy: str = "prefer_text"
     retrieval_context_max_chars: int = 350
@@ -109,8 +127,11 @@ class TableTextDescriptionOptions:
             before_items=_as_int(cfg.get("before_items"), 3),
             after_items=_as_int(cfg.get("after_items"), 2),
             max_context_chars=_as_int(cfg.get("max_context_chars"), 1500, 1),
-            max_context_tokens=_as_int(cfg.get("max_context_tokens"), 128000, 1),
-            completion_reserved_tokens=_as_int(cfg.get("completion_reserved_tokens"), 8000),
+            max_context_tokens=_as_int(resolve_model_context_tokens(cfg), 128000, 1),
+            completion_reserved_tokens=(
+                None if cfg.get("completion_reserved_tokens") is None
+                else _as_int(cfg.get("completion_reserved_tokens"), 8000)
+            ),
             overflow_policy=overflow,
             conflict_policy=conflict,
             retrieval_context_max_chars=_as_int(rag.get("retrieval_context_max_chars"), 350, 1),

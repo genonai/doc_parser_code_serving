@@ -19,7 +19,7 @@ from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
 pytestmark = pytest.mark.unit
 
 _PREPROC = Path(__file__).resolve().parents[2]
-_SCRIPT = _PREPROC / "examples" / "config_precheck" / "precheck_custom_fields.py"
+_SCRIPT = _PREPROC / "tools" / "config_precheck" / "precheck_custom_fields.py"
 
 
 def _load_precheck():
@@ -84,7 +84,9 @@ def test_unknown_policy_falls_back_to_error(tmp_path, monkeypatch, value):
 def test_precheck_passes_on_shipped_resource():
     """출고 설정은 그대로 통과해야 한다(스크립트가 오탐을 내면 쓸모가 없다)."""
     precheck = _load_precheck()
-    root = _PREPROC / "resource"
+    from shipped_config import SITE_MONIMO
+
+    root = _PREPROC / SITE_MONIMO
     blocks = precheck.registered_blocks(root)
     assert len(blocks) >= 15
     seen: set = set()

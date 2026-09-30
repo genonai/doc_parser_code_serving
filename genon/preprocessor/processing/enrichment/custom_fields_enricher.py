@@ -983,10 +983,13 @@ class CustomFieldsEnricher(BaseEnricher):
         과소 추정이 된다. _TOKENS_PER_CHAR 안전계수를 곱해 넘치는 쪽으로 판정한다.
         """
         system, user = self._render_prompts(raw_text, document, suffix)
+        reserved = self._table_description_options.completion_reserved_tokens
+        if reserved is None:
+            # 예약량을 생략하면 응답 상한만큼 남긴다. max_tokens 와 손으로 맞출 필요가 없다.
+            reserved = max(0, self._max_tokens or 0)
         available = max(
             1,
-            self._table_description_options.max_context_tokens
-            - self._table_description_options.completion_reserved_tokens,
+            self._table_description_options.max_context_tokens - reserved,
         )
         estimated = (len(system) + len(user)) * _TOKENS_PER_CHAR
         return estimated <= available
@@ -1237,7 +1240,7 @@ class CustomFieldsEnricher(BaseEnricher):
             return parsed
 
         if policy == "error":
-            raise ValueError("custom_fields + 표 설명 프롬프트가 max_context_tokens를 초과했습니다.")
+            raise ValueError("custom_fields + 표 설명 프롬프트가 model_context_tokens를 초과했습니다.")
         output = await self._call_llm(raw_text, document)
         parsed = self._parse_with_custom_parser(output, document, **kwargs)
         if policy == "skip":
@@ -1313,7 +1316,7 @@ class CustomFieldsEnricher(BaseEnricher):
 
         policy = self._table_description_options.overflow_policy
         if policy == "error":
-            raise ValueError("표 설명 프롬프트가 max_context_tokens 를 초과했습니다.")
+            raise ValueError("표 설명 프롬프트가 model_context_tokens 를 초과했습니다.")
         if policy == "skip":
             _log.warning("표 설명 프롬프트가 한도를 초과해 표 설명을 건너뜁니다.")
             return
@@ -1436,10 +1439,15 @@ class CustomFieldsEnricher(BaseEnricher):
         # 문서에 저장 → 별도 chunk API 경계를 넘어 청커 passthrough 가 각 청크에 부착
         # (created_date/MetadataEnricher 와 동일 경로). 선언된 output_fields 는 값이 null 이어도
         # 결과에 모두 남겨야 하므로 preserve_nulls=True(sentinel 왕복)로 저장한다.
-        # typed_keys 는 front matter 유래 키로 한정한다 — 전 필드에 적용하면 기존 doc_type 의
-        # 청크 property 타입까지 바뀐다(field_transforms.store_metadata_in_document 주석 참고).
+        # typed_keys 는 front matter 유래 키와 설정이 값을 정하는 키(const/default/transform)로
+        # 한정한다. 후자를 빼면 front matter 에 값이 없는 문서만 `VALID_FROM: "0"` 처럼 문자열이
+        # 되어 같은 필드의 타입이 문서마다 갈린다. LLM 필드까지 넓히면 기존 doc_type 의 청크
+        # property 타입이 바뀐다(field_transforms.store_metadata_in_document 주석 참고).
+        typed_keys = {
+            *structured_fields, *self._constants, *self._defaults, *self._transforms,
+        }
         store_metadata_in_document(
-            document, normalized, preserve_nulls=True, typed_keys=set(structured_fields)
+            document, normalized, preserve_nulls=True, typed_keys=typed_keys
         )
 
         context = kwargs.get("_enrichment_context")

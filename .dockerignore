@@ -13,6 +13,6 @@
 .idea/
 offline-dev-kit/
 wheelhouse/
-genon/preprocessor/facade/result.json
-genon/preprocessor/examples/parse_chunk/result_parse_chunk/
-genon/preprocessor/examples/code_serving/result_serving_gateway_test/
+genon/preprocessor/tools/facade_run/result.json
+genon/preprocessor/tools/parse_chunk/result_parse_chunk/
+genon/preprocessor/tools/code_serving/result_serving_gateway_test/
