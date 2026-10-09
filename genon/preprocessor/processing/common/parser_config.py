@@ -16,6 +16,7 @@ from genon.preprocessor.processing.enrichment.custom_fields_enricher import (
     normalize_doc_type,
     normalize_doc_types,
 )
+from genon.preprocessor.processing.enrichment.tabular_custom_fields import normalize_column_name
 
 _log = logging.getLogger(__name__)
 
@@ -107,7 +108,9 @@ def json_records_mappers_for(mappers: Iterable, runtime_doc_type: Any,
         # 그쪽은 records_key 가 없으므로 getattr 로 견딘다 — 키가 None 이면 무엇을 맡는지
         # 알 수 없으니 거부된다(semantic 은 1파일=1대상이라 섞이는 것 자체가 모호하다).
         keys = [getattr(m, "records_key", None) for m in matching]
-        if len(set(keys)) != len(keys) or None in keys:
+        # 레코드 탐색이 키를 정규화해 찾으므로(`faq_list` == `FAQ-LIST`) 겹침도 같은 규칙으로 본다.
+        normalized = {normalize_column_name(k) for k in keys if k is not None}
+        if len(normalized) != len(keys) or None in keys:
             raise exc_factory(
                 f"동일 doc_type 에 json_mapping 설정이 여러 개인데 records 키가 겹칩니다"
                 f"({runtime_doc_type}, records={keys}). 배열마다 다른 records 키를 주거나"
@@ -156,7 +159,7 @@ def check_doc_type_configured(custom_fields_cfgs: Iterable[dict] | None, runtime
     if key in registered:
         return
     message = (
-        f"doc_type={key} 에 맞는 custom_fields 등록이 없습니다. parser_processor_config.yaml 의 "
+        f"doc_type={key} 에 맞는 custom_fields 등록이 없습니다. parse_config.yaml 의 "
         f"enrichment 에 등록하거나, 등록 없이 기본 경로로 처리하려면 "
         f"defaults.unknown_doc_type 을 warn 으로 두세요."
     )

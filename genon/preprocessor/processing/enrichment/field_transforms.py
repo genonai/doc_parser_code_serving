@@ -106,8 +106,8 @@ def parse_created_date(date_text: str) -> int:
     return 0
 
 
-def transform_date_int(value: Any) -> int:
-    """date_int 변환기: 날짜 텍스트/정수를 YYYYMMDD 정수로 변환."""
+def _date_int_basic(value: Any) -> int:
+    """날짜 텍스트/정수를 YYYYMMDD 정수로 변환한다(4자리 연도 표기만 인식)."""
     if isinstance(value, (int, float)):
         candidate_int = int(value)
         return candidate_int if candidate_int > 0 else 0
@@ -127,18 +127,28 @@ _COMPACT_DATE6_RE = re.compile(r"^\s*(\d{2})(\d{2})(\d{2})\s*$")
 _SHORT_DATE_RE = re.compile(r"^\s*(\d{2})\s*[-./]\s*(\d{1,2})\s*[-./]\s*(\d{1,2})\s*$")
 
 
-def transform_date_int_flex(value: Any) -> int:
-    """date_int_flex 변환기: 2자리 연도("26.07.01")까지 받는 YYYYMMDD 정수 변환.
+def transform_date_int(value: Any, *, on_error: Any = 0) -> Any:
+    """date_int 변환기: 날짜 텍스트/정수를 YYYYMMDD 정수로 변환. 옛 이름 `date_int_flex` 는 별칭이다.
 
-    `date_int`(parse_created_date)는 `\\d{4}` 연도만 인식해 "26.07.01" 을 2601 년으로도,
-    날짜로도 읽지 못한다. 여기서 아래 세 형태를 먼저 정규화한 뒤 나머지는 `date_int` 에
-    위임하므로 기존 created_date 동작에는 영향이 없다.
+    `parse_created_date` 는 `\\d{4}` 연도만 인식해 "26.07.01" 을 2601 년으로도,
+    날짜로도 읽지 못한다. 여기서 아래 세 형태를 먼저 정규화한 뒤 나머지는 `_date_int_basic` 에
+    위임한다. 메타 기본 변환(created_date)도 이 함수를 쓰므로 같은 표기를 받는다.
       - "26.07.01" / "26-07-01"  (2자리 연도 + 구분자)
       - "20260713"               (구분자 없는 8자리 YYYYMMDD)
       - "260701"                 (구분자 없는 6자리 YYMMDD)
     월/일이 실제 날짜가 아니면(예: "202699") 정규화하지 않고 기존 경로로 넘긴다.
+
+    `on_error` 는 입력이 있는데 날짜를 만들지 못했을 때 남길 값이다(기본 0). 빈 입력(None,
+    공백뿐인 문자열, `parse_created_date` 가 빈 값으로 보는 "None")은 대상이 아니며 항상 0 이다.
+    "값이 없음"과 "해석 실패"를 구분해야 `{name: date_int, on_error: 99991231}` 이 종료일 없는
+    값과 기간 정보가 없는 값을 갈라 낸다.
     """
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
+    if value is None or (isinstance(value, str) and value.strip() in ("", "None")):
+        return 0
+    if isinstance(value, bool):
+        # bool 은 int 의 하위형이라 그대로 두면 True 가 1 로 통과한다.
+        return on_error
+    if isinstance(value, (int, float)):
         # 엑셀/JSON 이 숫자로 준 압축 날짜(20260713)도 문자열과 같게 다룬다.
         as_int = int(value)
         if 10_000_000 <= as_int <= 99_999_999 or 100_000 <= as_int <= 999_999:
@@ -165,11 +175,14 @@ def transform_date_int_flex(value: Any) -> int:
                     break          # 날짜가 아니면 압축 표기로 보지 않는다
                 value = f"{year}-{month}-{day}"
                 break
-    return transform_date_int(value)
+    return _date_int_basic(value) or on_error
 
 
-def transform_text_norm(value: Any) -> Optional[str]:
-    """text_norm 변환기: 표기 흔들림을 흡수한 대조용 정규화 문자열.
+transform_date_int_flex = transform_date_int  # 옛 이름. toolbox 재수출과 기존 import 를 유지한다.
+
+
+def transform_normalize(value: Any) -> Optional[str]:
+    """normalize 변환기: 표기 흔들림을 흡수한 대조용 정규화 문자열. 옛 이름 `text_norm` 은 별칭이다.
 
     모니모 TB_TERM.TERM_NORM("띄어쓰기와 대소문자를 고른 형태입니다. 같은 용어가 두 번
     등록되는 걸 막습니다") 용도. 유일키 `CLCM_C + TERM_NORM` 의 재료라 규칙이 곧 중복 판정
@@ -188,7 +201,10 @@ def transform_text_norm(value: Any) -> Optional[str]:
     return text.casefold() or None
 
 
-# ── 원천 값 → 사람이 읽는 평문 (`text`/`html_text` 변환기용) ─────────────────
+transform_text_norm = transform_normalize  # 옛 이름. toolbox 재수출과 기존 import 를 유지한다.
+
+
+# ── 원천 값 → 사람이 읽는 평문 (`to_text` 변환기용) ──────────────
 # 원천이 같은 컬럼에 JSON·HTML·평문을 섞어 보낸다(모니모 AI차트뷰 detail_desc). 정해진
 # 스키마가 없으므로 **종류를 자동 판별해 하나의 마크다운으로 수렴**시킨다. 설정은 없다.
 #
@@ -197,6 +213,9 @@ def transform_text_norm(value: Any) -> Optional[str]:
 # 파생 전용 블록이 그 일을 했는데, 그러면 원본 컬럼 생성이 강제되고 제자리 변환이 불가능했다.
 
 _BR_RE = re.compile(r"<\s*br\s*/?\s*>", re.IGNORECASE)
+# 연달아 붙은 `<BR>` 묶음. 하나면 줄넘김, 둘 이상이면 문단 구분이다. 태그 **사이**의 공백만
+# 묶음에 넣는다 — 마지막 태그 뒤의 공백까지 먹으면 `<BR>\n\n` 의 문단 구분이 공백 하나로 붙는다.
+_BR_RUN_RE = re.compile(r"(?:<\s*br\s*/?\s*>\s*)*<\s*br\s*/?\s*>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 # 인라인 태그만 있으면 경량 경로로 충분하다. 표·목록·문단 같은 **구조**가 섞여 있으면
 # docling 백엔드(json_records.html_to_text)에 태워야 행/열 대응이 살아남는다.
@@ -205,6 +224,12 @@ _STRUCTURAL_HTML_RE = re.compile(
     re.IGNORECASE,
 )
 _ANY_TAG_RE = re.compile(r"<\s*[a-zA-Z][a-zA-Z0-9]*\b[^>]*>")
+# `[` 로 시작하는데 파싱되지 않는 값이 JSON 배열 조각인지 본다. 첫 원소가 JSON 값 토큰
+# (배열·객체·문자열·숫자·true/false/null)이거나 빈 배열일 때만 조각이다. 숫자는 뒤에 `,`·`]`
+# 까지 확인한다 — `[1.자동차 사고부상] …` 같은 평문 제목이 숫자로 시작한다.
+_JSON_ARRAY_HEAD_RE = re.compile(
+    r"\[\s*(?:[\[{\"\]]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*[,\]]|(?:true|false|null)\s*[,\]])"
+)
 
 # 값이 이보다 짧은 스칼라면 헤딩을 만들지 않고 한 줄 불릿으로 붙인다.
 # 안 그러면 평평한 20필드 JSON 이 헤딩 20개가 되어 본문보다 제목이 많아진다.
@@ -233,6 +258,8 @@ def detect_payload_kind(value: Any) -> str:
     `broken_json` 은 `{`·`[` 로 시작하는데 파싱이 안 되는 경우다. 원천이 한 JSON 을
     문자 단위로 잘라 여러 행에 나눠 보내는 스키마가 있어(row_merge), 이 상태는 조용히
     넘기면 안 되는 신호다. 브레이스로 시작하지 않는 평문은 그냥 text 다.
+    `[보상콜] …`·`[안내] …` 처럼 `[` 로 시작해도 머리가 JSON 값 토큰이 아니면 평문 제목이므로
+    아래 html/html_inline/text 판별로 넘긴다. `{` 로 시작하는 값은 항상 broken_json 이다.
     """
     if value in (None, ""):
         return "empty"
@@ -244,9 +271,10 @@ def detect_payload_kind(value: Any) -> str:
     if text[0] in "{[":
         try:
             json.loads(text)
+            return "json"
         except (ValueError, TypeError):
-            return "broken_json"
-        return "json"
+            if text[0] == "{" or _JSON_ARRAY_HEAD_RE.match(text):
+                return "broken_json"
     if _STRUCTURAL_HTML_RE.search(text):
         return "html"
     if _ANY_TAG_RE.search(text) or _BR_RE.search(text):
@@ -379,13 +407,13 @@ def render_field_text(
     """원천 값 하나 → 청크 본문에 실을 평문. 종류는 자동 판별한다.
 
     `kind` 로 "json"/"html"/"text" 를 주면 판별을 건너뛰고 그 경로로 강제한다
-    (`transform: html_text` 가 `kind="html"` 로 쓴다).
+    (`html_select` 가 `kind="html"` 로 쓴다).
     `html_renderer` 는 구조 HTML 을 처리할 함수다(json_records.html_to_text). 주지 않으면
     경량 태그 제거로 폴백한다 — 표가 한 줄씩 뭉개지므로 표가 오는 경로에서는 반드시 넘긴다.
     """
     if kind == "html":
         # 원본을 그대로 넘긴다 — html_to_text 는 리스트(collect_key_map 결과)까지 처리하므로
-        # 여기서 문자열로 눌러 버리면 `html_text` 가 배열을 못 다룬다.
+        # 여기서 문자열로 눌러 버리면 배열을 못 다룬다.
         if html_renderer is not None:
             return str(html_renderer(value) or "").strip() or None
         return strip_inline_html(value) or None
@@ -403,7 +431,7 @@ def render_field_text(
     if detected == "broken_json":
         raw = str(value).strip()
         _log.warning(
-            f"[text] JSON 파싱 실패 — 원문을 평문화만 합니다"
+            f"[to_text] JSON 파싱 실패 — 원문을 평문화만 합니다"
             f"(len={len(raw)}, head={raw[:80]!r}). 여러 행으로 쪼개진 값이라면 "
             f"row_merge 의 group_by/order_by 를 확인하세요."
         )
@@ -417,6 +445,14 @@ def render_field_text(
 
     if detected == "html" and html_renderer is not None:
         return str(html_renderer(value) or "").strip() or None
+    if detected == "html_inline":
+        # 필드 값 전체가 인라인 조각일 때 홀로 쓰인 `<BR>` 은 제목을 화면 폭에 맞춰 넘긴
+        # 줄넘김이므로 공백으로 잇는다(옛 `html_text` 의 결과와 같다). 연달아 쓴 `<BR><BR>` 은
+        # 본문의 문단 구분(stock_insight detail_desc)이므로 빈 줄로 남긴다. JSON 리프 안의
+        # `<BR>` 은 `_leaf_text` 가 따로 처리하므로 바뀌지 않는다.
+        text = _BR_RUN_RE.sub(lambda m: " " if len(_BR_RE.findall(m.group())) == 1 else "\n\n",
+                              str(value))
+        return strip_inline_html(text) or None
 
     return strip_inline_html(value) or None
 
@@ -462,14 +498,15 @@ def extract_created_date_from_document_text(document: "DoclingDocument") -> int:
 # 신규 변환기/보조추출은 함수 작성 후 아래 dict 에 등록만 하면 설정에서 바로 사용 가능.
 VALUE_TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "date_int": transform_date_int,
-    "date_int_flex": transform_date_int_flex,
-    "text_norm": transform_text_norm,
+    "date_int_flex": transform_date_int,   # 옛 이름(별칭)
+    "normalize": transform_normalize,
+    "text_norm": transform_normalize,      # 옛 이름(별칭)
 }
 
 
 # ── 인자를 받는 변환기 ───────────────────────────────────────────────────────
-# 위 3종은 인자가 없어 "값에서 숫자만 남긴다", "패턴으로 잘라낸다" 같은 흔한 요건을
-# 표현하지 못했다. 그때마다 이 파일에 함수를 추가해 왔는데, 그게 곧 "새 요건 = 코드 수정"의
+# 위 값 변환기는 인자를 받지 않아(date_int 의 on_error 제외) "값에서 숫자만 남긴다",
+# "패턴으로 잘라낸다" 같은 흔한 요건을 표현하지 못했다. 그때마다 이 파일에 함수를 추가해 왔는데, 그게 곧 "새 요건 = 코드 수정"의
 # 주된 통로였다. 설정에서 인자를 줄 수 있으면 그 통로가 닫힌다.
 #
 # 화이트리스트를 유지하는 것이 중요하다 — yaml 이 임의 코드를 부르게 하지 않는다.
@@ -482,17 +519,21 @@ def transform_regex_sub(value: Any, *, pattern: str, repl: str = "") -> Any:
     return re.sub(pattern, repl, str(value))
 
 
-def transform_regex_extract(value: Any, *, pattern: str, group: int = 1) -> Any:
-    """정규식으로 오려낸다. 매칭이 없으면 None — 원값을 남기면 "안 뽑혔다"를 못 가린다."""
+def transform_regex_extract(value: Any, *, pattern: str, group: int = 1, on_error: Any = None) -> Any:
+    """정규식으로 오려낸다. 매칭이 없으면 `on_error`(기본 None) — 원값을 남기면 "안 뽑혔다"를 못 가린다.
+
+    그룹이 매칭에 참여하지 않은 경우(선택 그룹)도 뽑지 못한 것이므로 `on_error` 다. 빈 입력은 그대로 둔다.
+    """
     if value in (None, ""):
         return value
     match = re.search(pattern, str(value))
     if match is None:
-        return None
+        return on_error
     try:
-        return match.group(group)
+        extracted = match.group(group)
     except (IndexError, re.error):
-        return None
+        return on_error
+    return on_error if extracted is None else extracted
 
 
 def transform_hash(value: Any, *, length: int = 16, prefix: str = "") -> Any:
@@ -508,16 +549,19 @@ def transform_hash(value: Any, *, length: int = 16, prefix: str = "") -> Any:
 
 
 def transform_to_int(value: Any, *, on_error: Any = None) -> Any:
-    """숫자만 남겨 정수로. 콤마·단위가 섞인 금액에 쓴다(`"18,000원"` → 18000)."""
+    """정수 하나로. 천 단위 콤마·단위가 섞인 금액에 쓴다(`"18,000원"` → 18000).
+
+    숫자 덩어리가 둘 이상이거나(`"010-1234"`, `"3~5개"`) 소수(`"1.5"`)이면 `on_error` 를 낸다.
+    `-` 는 앞에 글자가 없을 때만 부호로 읽는다. 코드값 `"LIFE-CS-01"` 이 -1 이 되지 않게 한다.
+    """
     if value in (None, ""):
         return value
-    digits = re.sub(r"[^0-9-]", "", str(value))
-    if digits in ("", "-"):
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else on_error
+    numbers = re.findall(r"(?:(?<!\w)-)?[0-9.]*[0-9]", str(value).replace(",", ""))
+    if len(numbers) != 1 or "." in numbers[0]:
         return on_error
-    try:
-        return int(digits)
-    except ValueError:
-        return on_error
+    return int(numbers[0])
 
 
 def transform_truncate(value: Any, *, length: int, suffix: str = "") -> Any:
@@ -530,18 +574,18 @@ def transform_truncate(value: Any, *, length: int, suffix: str = "") -> Any:
     return text[: max(0, length - len(suffix))] + suffix
 
 
-def transform_html_text(value: Any, *, html_renderer: Optional[Callable[[str], str]] = None) -> Any:
-    """HTML 로 **강제** 평문화한다(표·목록 구조 유지). 옛 표기 `as: html` 과 같다."""
-    return render_field_text(value, kind="html", html_renderer=html_renderer)
-
-
-def transform_text(value: Any, *, html_renderer: Optional[Callable[[str], str]] = None) -> Any:
+def transform_to_text(value: Any, *, html_renderer: Optional[Callable[[str], str]] = None) -> Any:
     """값의 종류(JSON / HTML / 평문)를 자동 판별해 평문화한다. 옛 표기 `as: auto` 와 같다.
+    옛 이름 `text`·`html_text` 는 별칭이다.
 
     같은 컬럼에 세 종류가 섞여 오는 원천(모니모 AI차트뷰 `detail_desc`)이 있어 강제
     변환만으로는 부족하다.
     """
     return render_field_text(value, html_renderer=html_renderer)
+
+
+transform_text = transform_to_text  # 옛 이름. toolbox 재수출과 기존 import 를 유지한다.
+transform_html_text = transform_to_text  # 옛 이름. toolbox 재수출과 기존 import 를 유지한다.
 
 
 # `to_json` 의 스칼라 처리 방식. yaml 에서 `null` 은 널 값으로 파싱되므로 이름을 `drop` 으로
@@ -595,8 +639,9 @@ PARAM_TRANSFORMS: dict[str, Callable[..., Any]] = {
     "hash": transform_hash,
     "to_int": transform_to_int,
     "truncate": transform_truncate,
-    "html_text": transform_html_text,
-    "text": transform_text,
+    "to_text": transform_to_text,
+    "text": transform_to_text,             # 옛 이름(별칭)
+    "html_text": transform_to_text,        # 옛 이름(별칭)
     "to_json": transform_to_json,
 }
 
@@ -608,6 +653,7 @@ PARAM_TRANSFORM_REQUIRED: dict[str, tuple[str, ...]] = {
     "to_int": (),
     "truncate": ("length",),
     "html_text": (),
+    "to_text": (),
     "text": (),
     "to_json": (),
 }
@@ -615,7 +661,7 @@ PARAM_TRANSFORM_REQUIRED: dict[str, tuple[str, ...]] = {
 # 설정이 아니라 **런타임**이 주는 인자(`html_renderer`)를 받는 변환기. 표 모양을 살리려면
 # 요청의 table_format/compact_tables 를 물려야 해서 yaml 로는 표현할 수 없다 — 적용 시점에
 # 호출부가 주입한다(tabular_custom_fields.apply_transforms).
-RENDERER_TRANSFORMS = frozenset({"html_text", "text"})
+RENDERER_TRANSFORMS = frozenset({"html_text", "to_text", "text"})
 
 ALL_TRANSFORM_NAMES = tuple(sorted({*VALUE_TRANSFORMS, *PARAM_TRANSFORMS}))
 assert not (set(VALUE_TRANSFORMS) & set(PARAM_TRANSFORMS)), "변환기 이름이 겹칩니다"

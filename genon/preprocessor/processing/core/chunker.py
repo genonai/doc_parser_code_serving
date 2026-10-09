@@ -1,6 +1,6 @@
 """청킹 처리 본체 (#363 08).
 
-`facade/chunking_processor.py` 에서 통째로 옮겨 왔다. 고객이 여는 파일은 그쪽이고
+`activities/chunk.py` 에서 통째로 옮겨 왔다. 고객이 여는 파일은 그쪽이고
 여기는 열 일이 없다. 08-2 는 순수 이동이며 벡터 스키마·청커 옵션을 facade 로
 되돌리는 것과 훅은 08-3 이다.
 """
@@ -176,7 +176,7 @@ def _resolve_default_chunking_config_path() -> str:
     # processing/core/ 로 한 단계 깊어졌으므로 facade/ 를 기준으로 잡는다 —
     # 옮기기 전 이 헬퍼는 facade/ 에 있었고 아래 상대 경로가 그것을 전제한다.
     base_dir = Path(__file__).resolve().parents[1]
-    return str((base_dir / "../resource/chunking_processor_config.yaml").resolve())
+    return str((base_dir / "../resource/chunk_config.yaml").resolve())
 
 
 # 조각에 섹션 문맥을 물려주는 규칙은 공용 모듈 한 벌이다(표 기준 분리도 같은 함수를 쓴다).
@@ -299,7 +299,7 @@ class ChunkerCore:
         '''
         initialize Document Converter (config 기반)
 
-        config_path 가 None 이면 resource/chunking_processor_config.yaml 를 사용한다.
+        config_path 가 None 이면 resource/chunk_config.yaml 를 사용한다.
         GenOS 는 DocumentProcessor() 무인자로 호출하므로 기본 경로 resolve 필수.
         '''
         if config_path is None:
@@ -506,7 +506,10 @@ class ChunkerCore:
         ]
         # 이상 청크 검증(꺼져 있으면 None). 걸린 청크는 여기서 내주지 않으므로 첫 청크 전용
         # 접두는 살아남은 첫 청크가 받는다.
-        validation = notes["validation"] = cq.start(self, job, notes["marker_vectors"])
+        validation = notes["validation"] = cq.start(
+            self, job, notes["marker_vectors"],
+            display=lambda text: self.clean_text(job, gr.apply_to_text(
+                text, notes["sensitive_infos"], notes["masking"])[0]))
         for chunk_idx, chunk in enumerate(chunks):
             if chunk.kind == "marker":
                 continue
@@ -1057,7 +1060,7 @@ class ChunkerCore:
                 chunk_size=budget,
                 chunk_overlap=min(chunk_overlap, max(budget - 1, 0)),
                 # 마크다운 헤딩을 최우선 분리자로 둔다. 본문이 섹션으로 나뉘어 있으면 문장
-                # 한가운데가 아니라 섹션 경계에서 잘린다(custom_fields 의 text/html_text 렌더링,
+                # 한가운데가 아니라 섹션 경계에서 잘린다(custom_fields 의 to_text 렌더링,
                 # HTML/markdown 원천 모두 해당). 헤딩이 없는 평문은 종전 문단/문장 분리자로
                 # 조용히 폴백하므로 회귀가 없다.
                 separators=["\n## ", "\n### ", "\n#### ", "\n\n", "\n", " ", ""],
@@ -1131,7 +1134,8 @@ class ChunkerCore:
                 raise GenosServiceException(1, f"chunker 입력 파일 로드 실패({file_path}): {exc}") from exc
         if not raw_payload:
             raise GenosServiceException(
-                1, "chunker API: 'document'(인라인 JSON) 또는 file_path(.json) 입력이 필요합니다.")
+                1, "chunker API: 'document'(인라인 JSON) 또는 file_path(.json) 입력이 필요합니다.",
+                error_type="permanent")
 
         if isinstance(raw_payload, DoclingDocument):
             kind, data = "docling", raw_payload
@@ -1212,6 +1216,16 @@ class ChunkerCore:
         if fields is not None:
             fields.update(vm.chunk_fields(info.get("fields")))
         return out
+
+    def run_activity(self, arg: dict) -> dict:
+        """Temporal 액티비티 본문(청킹). 워커가 activities/<slug>.py 의 이 메서드를 slug 이름으로 등록한다.
+
+        처리는 이 인스턴스의 `__call__`(입력·라우트·출력 훅 전부)로 한다. 인자·반환·하트비트·오류
+        분류는 genon/preprocessor/worker/runtime.py — 파사드 파일은 상속만 하고 이 메서드를 고치지 않는다.
+        """
+        from genon.preprocessor.worker import runtime   # temporalio 는 워커에서만 import 한다
+
+        return runtime.execute(self, "chunk", arg)
 
     async def run_edit_input(self, kind, data, /, **kwargs):
         """edit_input 훅 호출부. facade 의 __call__ 이 부른다."""
@@ -1309,6 +1323,12 @@ class ChunkerCore:
                 if len(kept) != len(vector_metas):
                     vm.refresh_stats(kept)
                 vector_metas = kept
+            # 판정 결과는 요청 상태에 남기고 진입점이 성공 응답에 싣는다. 요청 단위 값이라
+            # 프로세서 속성에 두지 않는다. 같은 request 로 다시 청킹해도 앞 결과가 남지 않게
+            # 걸린 것이 없을 때도 덮어쓴다.
+            state = getattr(getattr(job, "request", None), "state", None)
+            if state is not None:
+                state.chunk_validation = validation.summary() if validation is not None else None
             return vector_metas
         finally:
             self._finish_chunk_job(job)

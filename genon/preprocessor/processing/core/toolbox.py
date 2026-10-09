@@ -18,14 +18,16 @@ from genon.preprocessor.processing.enrichment.field_transforms import (
     json_to_markdown,                       # JSON -> 청킹 친화 마크다운(## 섹션 자동)
     strip_inline_html,                      # 인라인 태그만 제거
     transform_date_int as date_int,         # 날짜 -> YYYYMMDD 정수
-    transform_date_int_flex as date_int_flex,   # 비표준 날짜 표기까지
-    transform_html_text as html_text,       # HTML 강제 평문화(html_renderer= 로 표 렌더 주입)
+    transform_date_int_flex as date_int_flex,   # date_int 의 옛 이름(별칭)
+    transform_html_text as html_text,       # to_text 의 옛 이름(별칭)
+    transform_normalize as normalize,       # 중복 판정 키(NFKC·양끝 공백 제거·연속 공백 축약·casefold)
     transform_regex_extract as regex_extract,
     transform_regex_sub as regex_sub,
-    transform_text as text,                 # JSON/HTML/평문 자동 판별 평문화
-    transform_text_norm as text_norm,       # 공백·문장부호 정규화
+    transform_text as text,                 # to_text 의 옛 이름(별칭)
+    transform_text_norm as text_norm,       # normalize 의 옛 이름(별칭)
     transform_to_int as to_int,
     transform_to_json as to_json,           # 적재 DB 의 JSON 컬럼용 — 항상 유효한 JSON 문자열
+    transform_to_text as to_text,           # JSON/HTML/평문 자동 판별 평문화(html_renderer= 로 표 렌더 주입)
     transform_truncate as truncate,
 )
 
@@ -158,7 +160,8 @@ def refresh_stats(vectors, reindex: bool = True):
 
 __all__ = [
     "json_to_markdown", "strip_inline_html", "date_int", "date_int_flex", "html_text",
-    "regex_extract", "regex_sub", "text", "text_norm", "to_int", "to_json", "truncate",
+    "normalize", "regex_extract", "regex_sub", "text", "text_norm", "to_int", "to_json", "to_text",
+    "truncate",
     "register_transform", "make_elements", "DROP",
     "load_sheets", "load_tables",
     "collect_text_fields", "detect_format",

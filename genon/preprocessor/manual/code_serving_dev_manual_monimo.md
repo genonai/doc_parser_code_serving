@@ -72,8 +72,8 @@
 
 | 엔드포인트 | facade 파일 | 이 문서에서 |
 |---|---|---|
-| `POST /parser` · `/parser_upload` | `facade/parser_processor.py` | **주 대상** |
-| `POST /chunker` | `facade/chunking_processor.py` | **주 대상** |
+| `POST /parser` · `/parser_upload` | `activities/parse.py` | **주 대상** |
+| `POST /chunker` | `activities/chunk.py` | **주 대상** |
 | `POST /preprocess` · `/preprocess_intelligent` | `intelligent_processor.py` | 다루지 않음 |
 | `POST /preprocess_convert` | `convert_processor.py` | 다루지 않음 |
 | `POST /preprocess_attachment` | `attachment_processor.py` | 다루지 않음 |
@@ -170,10 +170,10 @@ fields:                       # 각 목표필드의 설정은 YAML 매핑으로 
     alias: [질문, 문의내용]                    # 입력 데이터의 컬럼·key 이름들. 표기가 흔들리면 여러 개
   ANSWER:
     alias: [답변]
-    transform: text                           # 값 변환(체이닝 가능)
+    transform: to_text                        # 값 변환(체이닝 가능)
   REG_DT:
     alias: [등록일]
-    transform: date_int_flex                  # "26.07.01" -> 20260701
+    transform: date_int                       # "26.07.01" -> 20260701
   USE_YN:
     alias: [노출여부]
     values: {"Y": [노출, 사용], "N": [미노출]}  # 값 표기를 표준 코드로 통일합니다
@@ -208,8 +208,8 @@ body:                         # 청크 본문(= 임베딩 입력)을 어떻게 �
 `pack`은 순번과 LLM 출력까지 확정된 뒤에 적용합니다. 행·레코드형의 `filter`·`require`는 추가 LLM 생성보다
 앞서 적용되므로, LLM이 나중에 생성할 필드의 유효성은 결과 검증 단계에서 확인하세요.
 
-기본 변환기는 10종입니다. 인자가 필요 없는 사용법과 선택 인자를 받는 사용법은
-[부록 C.2](#c2-transform-10종)에 정리되어 있습니다. 목록에 없는 이름은 별도 등록하지 않으면 기동에 실패합니다.
+기본 변환기는 9종입니다. 인자가 필요 없는 사용법과 선택 인자를 받는 사용법은
+[부록 C.2](#c2-transform-9종)에 정리되어 있습니다. 목록에 없는 이름은 별도 등록하지 않으면 기동에 실패합니다.
 사이트 전용 변환기 등록은 [2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)을 참조하세요.
 
 > 여기 적는 이름이 **설정 표기**입니다. 오류 메시지에는 `column_map` · `text_fields` · `key_map`
@@ -238,7 +238,7 @@ body:                         # 청크 본문(= 임베딩 입력)을 어떻게 �
 ### 1.5 ④ 프로세서 설정에 등록합니다
 
 ```yaml
-# genon/preprocessor/resource/parser_processor_config.yaml의 enrichment 목록 끝에
+# genon/preprocessor/resource/parse_config.yaml의 enrichment 목록 끝에
 enrichment:
   # … 기존 항목 …
   - custom_fields:
@@ -321,8 +321,8 @@ genon/preprocessor/tools/config_precheck/precheck_custom_fields.sh
 
 ```bash
 # 실행 위치: 저장소 루트
-python -m genon.preprocessor.facade.parser_processor --config genon/preprocessor/resource/parser_processor_config.yaml 공지사항.xlsx --doc-type notice -o parsed.json
-python -m genon.preprocessor.facade.chunking_processor --config genon/preprocessor/resource/chunking_processor_config.yaml parsed.json --doc-type notice -o chunks.json
+python -m genon.preprocessor.activities.parse --config genon/preprocessor/resource/parse_config.yaml 공지사항.xlsx --doc-type notice -o parsed.json
+python -m genon.preprocessor.activities.chunk --config genon/preprocessor/resource/chunk_config.yaml parsed.json --doc-type notice -o chunks.json
 
 python - <<'PY'
 import json
@@ -396,8 +396,8 @@ cat > notice.csv <<'EOF'
 질문,답변,등록일,노출여부
 앱 알림은 어디서 설정하나요?,앱 설정에서 알림을 변경할 수 있습니다.,26.07.01,노출
 EOF
-python -m genon.preprocessor.facade.parser_processor --config genon/preprocessor/resource/parser_processor_config.yaml notice.csv --doc-type notice -o parsed.json
-python -m genon.preprocessor.facade.chunking_processor --config genon/preprocessor/resource/chunking_processor_config.yaml parsed.json --doc-type notice -o chunks.json
+python -m genon.preprocessor.activities.parse --config genon/preprocessor/resource/parse_config.yaml notice.csv --doc-type notice -o parsed.json
+python -m genon.preprocessor.activities.chunk --config genon/preprocessor/resource/chunk_config.yaml parsed.json --doc-type notice -o chunks.json
 ```
 
 `parsed.json`은 요소형이며 `elements`에 1건이 있어야 합니다. 해당 요소의 `metadata`와 최종 청크의
@@ -457,7 +457,8 @@ PY
 | 본문이 빈 레코드가 빠짐 | 정상입니다. 빈 벡터 적재를 막으려고 경고와 함께 제외합니다 |
 | xlsx가 행별로 나뉘지 않음 | 매칭되는 매핑이 없으면 `formats.xlsx.processing_mode`가 결정합니다 (`tabular` 인지 확인) |
 | `tabular custom_fields config 없음: …` | `config_file`은 **프로세서 config와 같은 폴더** 기준. 파일명만 적으세요 |
-| `등록되지 않은 transforms 변환기: …` | 기본 제공 10종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
+| `등록되지 않은 transforms 변환기: …` | 기본 제공 9종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
+| `… 에 쓸 수 없는 인자입니다: …` | 변환기 인자 이름의 오타입니다. 메시지의 `쓸 수 있는 인자` 목록과 대조합니다. `html_renderer`는 실행 시 자동으로 주입되므로 설정에 적지 않습니다 |
 | 필드는 안 붙는데 `doc_type`만 모든 청크에 붙음 | 매칭되는 등록이 없는 상태. 스탬프는 매칭 여부와 무관하게 동작합니다 |
 | csv/xlsx인데 `doc_type`도 안 붙음 | 매핑 없는 일반 tabular 경로인지 확인합니다. 매핑된 행 경로와 Docling 문서 경로는 별도로 확인합니다 |
 
@@ -478,7 +479,7 @@ PY
 | ① | 요청 `params` | 해당 요청 | 없음 ([5.3](#53-요청-params로-재배포-없이-값-변경)) |
 | ② | 프로세서 설정 YAML | 모든 문서 공통 동작 | `resource/*_processor_config.yaml` ([5장](#5-구성-yaml-옵션)) |
 | ③ | `custom_field_*.yaml` | 그 **문서유형**의 값 추출과 청크 본문 | `resource/custom_field_<유형>.yaml` ([1장](#1-새-문서-유형-추가하기)) |
-| ④ | **facade 2개** | 설정으로 표현할 수 없는 처리 | `facade/parser_processor.py` · `facade/chunking_processor.py` |
+| ④ | **facade 2개** | 설정으로 표현할 수 없는 처리 | `activities/parse.py` · `activities/chunk.py` |
 | ⑤ | 기타 | 앞선 네 가지 방법으로 처리할 수 없는 경우 | 담당자에게 문의 |
 
 **④ 까지가 고객 개발자의 범위입니다.** 처리 본체는 `processing/core/parser.py`와 `core/chunker.py`에
@@ -491,8 +492,8 @@ PY
 
 | 파일 | 구획 |
 |---|---|
-| `facade/parser_processor.py` | 파일 상단 주석(흐름 요약) → `ROUTES` → `CONFIG_BY_DOC_TYPE` → 훅 3종 → 오버라이드 |
-| `facade/chunking_processor.py` | `GenOSVectorMeta` → `GenosSmartChunker` → `ROW_CATEGORIES` → `CONFIG_BY_DOC_TYPE` → 훅 3종 |
+| `activities/parse.py` | 파일 상단 주석(흐름 요약) → `ROUTES` → `CONFIG_BY_DOC_TYPE` → 훅 3종 → 오버라이드 |
+| `activities/chunk.py` | `GenOSVectorMeta` → `GenosSmartChunker` → `ROW_CATEGORIES` → `CONFIG_BY_DOC_TYPE` → 훅 3종 |
 
 먼저 **파일 상단 주석**을 확인하세요. 처리 흐름 요약과 결과 형식이 포함되어 있습니다.
 
@@ -518,13 +519,13 @@ PY
 문서 유형별 설정은 훅이 아니라 이 표에 정의합니다. 두 facade 모두 동일한 위치에 설정합니다.
 
 ```python
-# facade/parser_processor.py
+# activities/parse.py
     CONFIG_BY_DOC_TYPE = {
         "press":    {"enrichment.table_description.enable": False},  # 표가 없어 불필요한 LLM 호출
         "contract": {"ocr.ocr_mode": "force"},                       # 스캔본이 많다
     }
 
-# facade/chunking_processor.py
+# activities/chunk.py
     CONFIG_BY_DOC_TYPE = {
         "contract": {"chunking.chunk_size": 1500},                   # 문서형 청크 크기
         "manual": {"chunking.chunk_mode": "split_only"},
@@ -573,10 +574,10 @@ PY
 
 | 파일 | 훅 메소드 | 자리 | 받는 것 |
 |---|---|---|---|
-| `parser_processor.py` | `edit_input(ext, doc_type, data, work_dir=None, **kwargs)` | 파싱 **전** | `.json`은 dict/list, `.md .html`은 str, 엑셀은 `{시트명: 2차원 행}`, 그 밖은 파일 경로 |
+| `activities/parse.py` | `edit_input(ext, doc_type, data, work_dir=None, **kwargs)` | 파싱 **전** | `.json`은 dict/list, `.md .html`은 str, 엑셀은 `{시트명: 2차원 행}`, 그 밖은 파일 경로 |
 | | `edit_document(job, doc)` | 파싱 후, **LLM enrichment 전** | `DoclingDocument` 객체 |
 | | `edit_output(ext, doc_type, result, **kwargs)` | 응답 직전 | 응답 dict |
-| `chunking_processor.py` | `edit_input(kind, data, **kwargs)` | 청킹 전 | `kind=="parse"` 면 `list[dict]`, `"docling"` 이면 직렬화된 dict |
+| `activities/chunk.py` | `edit_input(kind, data, **kwargs)` | 청킹 전 | `kind=="parse"` 면 `list[dict]`, `"docling"` 이면 직렬화된 dict |
 | | `edit_chunk(text, info, **kwargs)` | **청크 1건마다** | 본문 str + `info` dict |
 | | `edit_output(vector_metas, **kwargs)` | 응답 직전 | `GenOSVectorMeta` 목록 |
 
@@ -701,7 +702,7 @@ PY
             ]}
 ```
 
-적용 후 `DETAIL_TEXT`가 채워지고, 설정의 `transform: html_text`가 그때부터 동작합니다.
+적용 후 `DETAIL_TEXT`가 채워지고, 설정의 `transform: to_text`가 그때부터 동작합니다.
 
 #### 청커 훅 — 청크 단위 수정
 
@@ -821,7 +822,7 @@ PY
 
 > 새 category 이름을 만들기보다 `custom_fields_row`를 재사용하는 편이 안전합니다.
 > 청커는 `doc_type`이 아니라 `category`로 분기하므로, 기존 이름을 사용하면 청커를 수정할 필요가
-> 없습니다. 새 이름을 사용해야 한다면 `chunking_processor.py`의 `ROW_CATEGORIES`에 추가합니다.
+> 없습니다. 새 이름을 사용해야 한다면 `activities/chunk.py`의 `ROW_CATEGORIES`에 추가합니다.
 
 > 파서에서 청커로 넘기는 element 계약상, 행 기반 경로는 행 element만 청킹하고 **섞여 온 다른
 > element는 경고 한 줄을 남기고 버립니다.** category 문자열이 틀리면 조용히 일반 텍스트 분할로
@@ -886,7 +887,7 @@ fields:
 |---|---|---|
 | 그 **문서의 모든 청크**에 같은 값 | 파서의 `edit_output`에서 `tb.set_chunk_metadata(result, {...})` | `result["metadata"]`에 직접 쓰면 **이 API 응답에만** 남고 청크에는 반영되지 않습니다 |
 | **청크마다 다른 값** | 청커의 `edit_chunk`에서 `info["fields"]["RISK"] = "high"` | 본문·통계·순번 필드는 넣을 수 없습니다 |
-| **적재 컬럼으로 선언** | `chunking_processor.py`의 `GenOSVectorMeta` | 선언하면 타입까지 검사됩니다. 선언이 없어도 실립니다(`extra=allow`) |
+| **적재 컬럼으로 선언** | `activities/chunk.py`의 `GenOSVectorMeta` | 선언하면 타입까지 검사됩니다. 선언이 없어도 실립니다(`extra=allow`) |
 
 ```python
     def edit_output(self, ext, doc_type, result, **kwargs):
@@ -1000,8 +1001,8 @@ raise GenosServiceException(
 | 경로 | 설명 |
 |---|---|
 | `UPDATED_AT` | 갱신 시각 기록. **배포할 때마다 갱신합니다** ([4.3](#43-배포-절차)). 아직 없으면 4.3 에서 만듭니다 |
-| `genon/preprocessor/facade/parser_processor.py` | 파싱. 주 수정 대상 |
-| `genon/preprocessor/facade/chunking_processor.py` | 청킹. 주 수정 대상 |
+| `genon/preprocessor/activities/parse.py` | 파싱. 주 수정 대상 |
+| `genon/preprocessor/activities/chunk.py` | 청킹. 주 수정 대상 |
 | `genon/preprocessor/resource/` | config yaml + `custom_field_*.yaml` + 프롬프트 |
 | `genon/preprocessor/resource/templates/` | 새 문서 유형 템플릿 5종 |
 | `genon/preprocessor/examples/` | 훅·설정 예제 |
@@ -1035,8 +1036,8 @@ facade 두 파일은 **독립적으로 실행할 수 있습니다.** 서버를 �
 
 ```bash
 # 실행 위치: 저장소 루트 (import 경로 때문에 반드시 -m으로 실행합니다)
-python -m genon.preprocessor.facade.parser_processor --config genon/preprocessor/resource/parser_processor_config.yaml 계약서.pdf --doc-type contract -o parsed.json
-python -m genon.preprocessor.facade.chunking_processor --config genon/preprocessor/resource/chunking_processor_config.yaml parsed.json --doc-type contract -o chunks.json
+python -m genon.preprocessor.activities.parse --config genon/preprocessor/resource/parse_config.yaml 계약서.pdf --doc-type contract -o parsed.json
+python -m genon.preprocessor.activities.chunk --config genon/preprocessor/resource/chunk_config.yaml parsed.json --doc-type contract -o chunks.json
 ```
 
 위 명령은 **제공된 코드스페이스의 파이썬 환경을 전제로 합니다**([3.2](#32-사전-구성-항목)). 개인 PC처럼
@@ -1246,7 +1247,7 @@ git diff                                     # 아직 스테이징하지 않은 
 
 # 아래는 notice 설정을 추가한 예입니다. facade도 고쳤다면 해당 파일을 명시적으로 추가합니다.
 git add genon/preprocessor/resource/custom_field_notice.yaml \
-        genon/preprocessor/resource/parser_processor_config.yaml UPDATED_AT
+        genon/preprocessor/resource/parse_config.yaml UPDATED_AT
 git diff --cached --stat                     # 커밋할 파일 목록
 git diff --cached                            # 커밋할 실제 내용 확인
 git commit -m "공지사항 doc_type 추가"
@@ -1352,8 +1353,8 @@ git bundle verify "$BACKUP_DIR/customer.bundle"
 
 # 관련 Python 추출기·프롬프트·신규 설정 파일도 커밋되어 있어야 합니다.
 git diff --binary "$BASE_RELEASE" HEAD -- \
-  genon/preprocessor/facade/parser_processor.py \
-  genon/preprocessor/facade/chunking_processor.py \
+  genon/preprocessor/activities/parse.py \
+  genon/preprocessor/activities/chunk.py \
   genon/preprocessor/resource > "$BACKUP_DIR/my_change.patch"
 git apply --stat "$BACKUP_DIR/my_change.patch"
 ```
@@ -1403,8 +1404,8 @@ git diff
 
 | config 파일 (`genon/preprocessor/resource/`) | 엔드포인트 |
 |---|---|
-| `parser_processor_config.yaml` | `/parser`, `/parser_upload` |
-| `chunking_processor_config.yaml` | `/chunker` |
+| `parse_config.yaml` | `/parser`, `/parser_upload` |
+| `chunk_config.yaml` | `/chunker` |
 | `custom_field_*.yaml` (유형별 제공 파일) | 문서 유형별 값 추출과 청크 본문 ([1장](#1-새-문서-유형-추가하기)) |
 | `templates/custom_field_TEMPLATE_*.yaml` | 새 문서 유형을 만들 때 복사할 원본 5종. 등록하지 않습니다 |
 
@@ -1667,6 +1668,10 @@ facade의 `GenosSmartChunker` ClassVar는 청크 표기 방식을 정합니다.
 동작이 그렇다는 것이지 키를 적어도 된다는 뜻이 아닙니다. `body.split`·`body.repeat`을 적으면
 sections가 읽지 않는 키이므로 **기동에 실패합니다.**
 
+rows·records의 `body.fields`·`body.repeat` 값이 JSON·HTML이면 본문에는 `to_text`와 같은 방식으로
+평문화해 싣습니다(`to_text`를 지정한 필드는 이미 평문이므로 결과가 같습니다). 필드 값 자체는 바뀌지
+않으므로, **청크 메타(적재 컬럼)에도 평문이 필요하면** 여전히 `transform: to_text`를 지정합니다.
+
 **입력 데이터 구조 · 선별 · LLM**
 
 | 기능 | 설정 키 (내부 이름) | rows | records | sections | document | html |
@@ -1703,28 +1708,29 @@ HTML 원문이 입력으로 전달되어야 하며, JSON 안에 HTML이 들어 �
 | `require.fields` | `sections`만 **`required_shared_fields`**, 나머지는 `required` |
 | `llm` | `rows` · `records` · `sections`는 `llm_fields`. `document`는 항목이 **최상위 키로 펼쳐져** `output_fields` · `system_prompt` · `user_prompt` 같은 이름으로 나옵니다 |
 
-### C.2 `transform` 10종
+### C.2 `transform` 9종
 
-체이닝됩니다. 잘못된 이름·빠진 인자·컴파일되지 않는 정규식은 **기동 시** 걸립니다.
+체이닝됩니다. 잘못된 이름·빠진 인자·쓸 수 없는 인자·컴파일되지 않는 정규식은 **기동 시** 걸립니다.
 
 | 이름 | 인자 | 하는 일 |
 |---|---|---|
-| `date_int` | — | 날짜 텍스트 → `YYYYMMDD` 정수 |
-| `date_int_flex` | — | 위 + 2자리 연도(`26.07.01`)·구분자 없는 `260701` |
-| `text_norm` | — | NFKC + 공백 축약 + casefold (중복 판정용) |
+| `date_int` (옛 이름 `date_int_flex`) | `on_error` 기본 `0` | 날짜 텍스트 → `YYYYMMDD` 정수. 2자리 연도(`26.07.01`)·구분자 없는 `20260713`·`260701` 도 받는다. 날짜로 읽지 못하면 `on_error`, 빈 값은 항상 `0` |
+| `normalize` (옛 이름 `text_norm`) | — | NFKC + 양끝 공백 제거 + 연속 공백 축약 + casefold (중복 판정용). 영문은 소문자로 바뀌고, 단어 사이 공백은 한 칸으로 줄일 뿐 없애지 않는다 |
 | `regex_sub` | `pattern` 필수, `repl` 기본 `""` | 정규식 치환 (`"18,000원"` → `"18000"`) |
-| `regex_extract` | `pattern` 필수, `group` 기본 `1` | 정규식 오려내기. 미매칭 시 `None` |
+| `regex_extract` | `pattern` 필수, `group` 기본 `1`, `on_error` 기본 `null` | 정규식 오려내기. 미매칭 시 `on_error`, 빈 값은 그대로 |
 | `hash` | `length` 기본 `16`, `prefix` 기본 `""` | SHA-1 16진 코드화. 같은 값이면 같은 코드 |
-| `to_int` | `on_error` 기본 `null` | 숫자와 `-`를 남겨 정수화. 소수점 단위 변환은 하지 않음 |
+| `to_int` | `on_error` 기본 `null` | 정수 하나로 변환. 천 단위 콤마·단위는 무시하고, 소수이거나 숫자가 둘 이상이면 `on_error` |
 | `truncate` | `length` 필수, `suffix` 기본 `""` | 길이 자르기(적재 컬럼 길이 맞춤) |
-| `html_text` | — | HTML로 **강제** 평문화. 표·목록 유지 |
-| `text` | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
+| `to_text` (옛 이름 `text`·`html_text`) | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
 | `to_json` | `on_scalar`, `key` | 값을 **유효한 JSON 문자열**로 맞춤(적재 DB의 JSON 컬럼용) |
 
 `regex_extract`의 기본 `group: 1`은 첫 번째 캡처 그룹을 뜻합니다. 패턴에 그룹이 없으면 매칭되어도 `None`이
-나오므로 전체 매칭값을 원하면 `group: 0`을 지정합니다. `to_int("1.5")`는 `15`이므로 소수 금액·비율의
-변환에는 사용하지 마세요. `truncate`는 `suffix`가 `length`보다 길면 길이 상한을 넘을 수 있으므로 접미사는
-제한 길이 이하로 설정합니다.
+나오므로 전체 매칭값을 원하면 `group: 0`을 지정합니다. `to_int("1.5")`와 `to_int("3~5개")`는
+`on_error` 값이 되므로 소수 금액·비율이나 범위 표기의 변환에는 사용하지 마세요. `truncate`는 `suffix`가
+`length`보다 길면 길이 상한을 넘을 수 있으므로 접미사는 제한 길이 이하로 설정합니다.
+
+`on_error`는 값이 있는데 변환기가 값을 만들지 못했을 때 남길 값입니다. 빈 값(`null`·빈 문자열)에는 적용되지
+않으므로 `{name: date_int, on_error: 99991231}`은 `"진행중"`을 `99991231`로, 비어 있는 종료일은 `0`으로 둡니다.
 
 인자가 있는 변환기는 `{name: ...}` 형태로 적고, 여러 개를 이어 붙일 수 있습니다.
 
@@ -1762,7 +1768,7 @@ source:
 
 | 키 | 하는 일 |
 |---|---|
-| `records_at` | 레코드 배열의 key 이름. 생략하면 payload가 배열이면 원소마다 1건, 단일 object면 그 자체가 1건 |
+| `records_at` | 레코드 배열의 key 이름. 생략하면 payload가 배열이면 원소마다 1건이고, object면 그 안(배열 안은 제외)에서 dict 배열을 찾습니다. 하나면 그 배열, 여럿이면 `fields` alias가 더 많이 맞는 배열을 쓰고 구별되지 않으면 요청이 실패합니다. dict 배열이 없으면 object 자체가 1건 |
 | `on_missing` | `records`는 지정 배열을 못 찾았을 때, `sections`는 문서 공통 필수값이 없을 때의 정책. 두 경로 모두 `error`가 기본이며 `skip`은 경고 후 0건 처리 |
 | `merge_rows` | `group_by`가 같은 **연속** 건만 한 묶음으로 접습니다. 병합은 값 변환·파생보다 **먼저** 실행됩니다 |
 | `sections` | `kind: sections`의 섹션 표시 이름 |
@@ -1858,7 +1864,7 @@ source:
   on_missing: error
 fields:
   TITLE: {alias: [title]}
-  DETAIL: {alias: [detail], transform: text}
+  DETAIL: {alias: [detail], transform: to_text}
 require:
   fields: [TITLE]
 body:
@@ -2031,7 +2037,7 @@ def parse(llm_output, **kwargs):
 | 확인할 내용 | 소스와 진입점 |
 |---|---|
 | HTTP 입력·응답, 설정 경로, 요청 제한 시간 | `main.py`: `_cfg`, `_run`, `parse`, `parse_upload`, `chunker` |
-| facade의 변경 가능한 처리 흐름 | `genon/preprocessor/facade/parser_processor.py`, `chunking_processor.py` |
+| facade의 변경 가능한 처리 흐름 | `genon/preprocessor/activities/parse.py`, `activities/chunk.py` |
 | 파서 훅의 실제 인자·호출 위치 | `processing/core/parser.py`: `_hook_edit_input`, `_call_edit_document`, `_load_json_payload`, `_hook_tabular_sheets` 등 |
 | 청커 문서 유형·설정 덮어쓰기 | `processing/core/chunker.py`: `_start_chunk_job`, `_apply_config_overlay` |
 | 훅 kwargs·반환값 처리 | `processing/common/hooks.py`: `hook_kwargs`, `call_hook`, `call_chunk_hook` |

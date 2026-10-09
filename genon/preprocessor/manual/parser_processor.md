@@ -13,7 +13,7 @@
 
 1. [개요](#개요)
 2. [API 엔드포인트](#api-엔드포인트)
-3. [parser_processor_config.yaml 설정](#parser_processor_configyaml-설정)
+3. [parse_config.yaml 설정](#parse_configyaml-설정)
 4. [지원 파일 형식 및 전제조건](#지원-파일-형식-및-전제조건)
 5. [API 요청 파라미터](#api-요청-파라미터)
 6. [출력 데이터 구조](#출력-데이터-구조)
@@ -33,7 +33,7 @@
 - HWP/HWPX는 전용 SDK 백엔드 사용, 실패 시 단계별 폴백 적용
 - 오디오는 Whisper API를 통한 음성 전사
 - CSV/XLSX는 표 구조 그대로 반환
-- 출력 형식은 `parser_processor_config.yaml`의 `output.format`으로 제어 (`json` / `html` / `markdown` / `docling`)
+- 출력 형식은 `parse_config.yaml`의 `output.format`으로 제어 (`json` / `html` / `markdown` / `docling`)
 - `docling` 포맷은 복원 가능한 DoclingDocument 원본 JSON을 반환하며, Chunk API(`/chunker`)의 입력으로 사용
 
 ---
@@ -97,12 +97,12 @@ Content-Type: application/json
 
 ---
 
-## parser_processor_config.yaml 설정
+## parse_config.yaml 설정
 
-`파싱용 전처리기`는 `parser_processor_config.yaml` 파일을 읽어서 전처리기 수행에 필요한 정보를 설정합니다.
-`parser_processor_config.yaml` 파일은 Genos 전처리기의 `resource` 탭에 등록됩니다.
+`파싱용 전처리기`는 `parse_config.yaml` 파일을 읽어서 전처리기 수행에 필요한 정보를 설정합니다.
+`parse_config.yaml` 파일은 Genos 전처리기의 `resource` 탭에 등록됩니다.
 
-Genos에서 전처리기를 배포할 때 `parser_processor_config.yaml`파일도 함께 배포되어 전처리기 컨테이너에 적용됩니다. 따라서 `parser_processor_config.yaml`파일의 내용이 수정된 경우에는 전처리기를 재배포해야만 수정된 내용이 적용됩니다.
+Genos에서 전처리기를 배포할 때 `parse_config.yaml`파일도 함께 배포되어 전처리기 컨테이너에 적용됩니다. 따라서 `parse_config.yaml`파일의 내용이 수정된 경우에는 전처리기를 재배포해야만 수정된 내용이 적용됩니다.
 
 > **전처리기 최초 등록시 아래의 config 수정가이드를 참고해서 수정해 주세요.**
 
@@ -315,7 +315,8 @@ output:
   #   markdown — 전체 문서를 Markdown 문자열로 반환 (content 필드)
   #   docling  — 복원 가능한 DoclingDocument 원본 JSON 을 data.document 로 반환 (Chunk API 입력용)
   format: "json"
-  # 테이블 표현 형식: html | markdown (json, markdown 포맷의 테이블에 적용; docling 포맷에서는 무시)
+  # 테이블 표현 형식: html | markdown | auto (json, markdown 포맷의 테이블과 custom_fields 레코드형 문서의 표에 적용.
+  # 일반 문서의 docling 출력에는 무관. 최종 청크의 표 모양을 통일하려면 청커 설정의 같은 키와 맞춘다)
   table_format: "html"
   # markdown 표 컬럼 정렬 패딩 제거(대형 표 축소). html/docling 포맷엔 무관. refine 표에도 적용
   compact_tables: true
@@ -367,7 +368,7 @@ model_presets:
 ```
 
 ```yaml
-# parser_processor_config.yaml
+# parse_config.yaml
 model_presets_file: model_presets.yaml
 
 enrichment:
@@ -872,7 +873,7 @@ model_presets:
     workflow_id: 4932        # 민감정보 분류 워크플로우 ID
     api_key: "..."           # 워크플로우 호출 Bearer 인증키
 
-# parser_processor_config.yaml
+# parse_config.yaml
 guardrail:
   model_preset: guardrail
   timeout: 60
@@ -1097,7 +1098,7 @@ markdown:
 | `use_hwp_sdk` | `bool` | `true` | `true`: GenosHwpDocumentBackend 사용. `false`: 내장 백엔드(HwpDocumentBackend/HwpxDocumentBackend) 강제 사용 |
 | `dump_sdk_output` | `bool` | `false` | HWP SDK 내부 출력 덤프 여부 (`use_hwp_sdk=true`일 때만 유효) |
 
-> 이미지 설명 문맥 추출(`enrichment.image_description.*`)은 현재 `parser_processor_config.yaml` 설정값으로 제어합니다.
+> 이미지 설명 문맥 추출(`enrichment.image_description.*`)은 현재 `parse_config.yaml` 설정값으로 제어합니다.
 
 > LLM 호출 파일 캐시·실패 정책(`error_policy`)·요청 deadline(`request_deadline`)은 모든 형식 공통으로
 > `params` 로 opt-in 할 수 있습니다 — [9. LLM 호출 파일 캐시 / 실패 정책 / 요청 deadline (#329)](#9-llm-호출-파일-캐시--실패-정책--요청-deadline-329) 절 참고.
@@ -1175,7 +1176,7 @@ markdown:
 
 ### `output.format: html` 또는 `markdown`
 
-Docling 경로(PDF, HTML, HWP, HWPX, DOCX)에서 `parser_processor_config.yaml`의 `output.format`을 `html` 또는 `markdown`으로 설정하면, 전체 문서를 하나의 문자열로 직렬화하여 `content`에 담고 `elements`는 `[]`로 반환됩니다.
+Docling 경로(PDF, HTML, HWP, HWPX, DOCX)에서 `parse_config.yaml`의 `output.format`을 `html` 또는 `markdown`으로 설정하면, 전체 문서를 하나의 문자열로 직렬화하여 `content`에 담고 `elements`는 `[]`로 반환됩니다.
 
 ```json
 {
@@ -1201,7 +1202,7 @@ Docling 경로(PDF, HTML, HWP, HWPX, DOCX)에서 `parser_processor_config.yaml`�
 ```
 
 - 이 JSON은 `DoclingDocument.model_validate(data["document"])`로 **무손실 복원**할 수 있어, GenOS Temporal 파이프라인의 다음 단계인 **Chunk API(`/chunker`)의 입력**으로 그대로 전달합니다.
-- `output.table_format`은 `docling` 포맷에서는 무시됩니다(표 구조가 원본 그대로 보존되므로).
+- `output.table_format`은 일반 문서의 `docling` 출력에는 무관합니다(표 구조가 원본 그대로 보존되고, 청크의 표 모양은 청커 설정이 정합니다). 다만 custom_fields 레코드형 문서는 파서가 청크 본문을 완성해 넘기므로 이 값이 최종 청크의 표 모양이 됩니다. 두 설정의 `table_format` 을 같은 값으로 맞추세요.
 
 #### 연계 — Chunk API (`POST /preprocessor/{id}/chunker`)
 
@@ -1349,8 +1350,9 @@ fields:
 ```
 
 - `select` 는 CSS 선택자입니다. 여러 개가 걸리면 **첫 번째**를 씁니다.
-- `attr` 을 주면 그 속성값을 문자열 그대로 씁니다. 없으면 요소 텍스트를
-  `transform: html_text` 와 같은 방식으로 평문화합니다(표·목록 구조가 남습니다).
+- `attr` 을 주면 그 속성값을 문자열 그대로 씁니다. 없으면 요소 텍스트를 평문화합니다.
+  요소 안에 표가 있으면 `transform: to_text` 와 같은 렌더러로 표의 행·열 구조를 남기고,
+  표가 없으면 태그만 걷어냅니다. 이때 `<ul>`·`<ol>` 은 글머리표 없이 원천 마크업의 줄바꿈대로 나옵니다.
 - 선택자 문법 오류는 **기동 시** 잡힙니다.
 - 선언한 필드는 못 찾아도 키가 남고 값이 `null` 이 됩니다(경고 로그에 어느 선택자가
   안 걸렸는지 나옵니다).
@@ -1361,7 +1363,7 @@ fields:
 > `source.pre.json.body_from` 으로 그 값을 지목하면 됩니다. 선택자는 **파싱 전 원문**에
 > 걸리므로, docling 이 지워 버리는 class·속성·`alt` 를 모두 쓸 수 있습니다.
 
-> 등록 블록(`parser_processor_config.yaml`)의 `extractor` 는 **적지 않아도 됩니다.**
+> 등록 블록(`parse_config.yaml`)의 `extractor` 는 **적지 않아도 됩니다.**
 > 생략하면 설정 파일의 `source.kind` 에서 정해집니다(문서형은 `python:` 블록이 있으면
 > `python`, 없으면 `llm`. `kind: html` 이면 `html_select`). 같은 정보를 두 파일에 적으면 어긋날 수 있고, 어긋나면 "이
 > extractor 가 읽지 않는 키" 라는 메시지로 기동이 실패합니다 — 설정에 그 키를 적은
@@ -1480,6 +1482,10 @@ fields:
 그렇다는 것이지 키를 적어도 된다는 뜻이 아닙니다. `body.split`·`body.repeat` 을 적으면 sections 가
 읽지 않는 키이므로 **기동에 실패합니다**(`json_semantic` 지원 키 집합에 없음).
 
+rows·records 의 `body.fields`·`body.repeat` 값이 JSON·HTML 이면 본문에는 `to_text` 와 같은 방식으로
+평문화해 싣습니다(`to_text` 를 지정한 필드는 이미 평문이므로 결과가 같습니다). 필드 값 자체는 바뀌지
+않으므로, **청크 메타(적재 컬럼)에도 평문이 필요하면** 여전히 `transform: to_text` 를 지정합니다.
+
 **원천 구조 · 필터 · LLM**
 
 | 기능 | 설정 키 (내부 이름) | rows | records | sections | document |
@@ -1502,22 +1508,20 @@ fields:
 펼쳐져** `output_fields`·`system_prompt`·`user_prompt` 같은 이름으로 오류 메시지에 나옵니다.
 
 > **청크 텍스트 정제(`chunking.text_cleanup`)는 doc_type 별 설정이 아니라 프로세서 config** 입니다.
-> `parser_processor_config.yaml` 에는 없습니다 — 파서와 청커를 나눠 배포했다면 **청커 쪽 yaml** 에 적습니다.
+> `parse_config.yaml` 에는 없습니다 — 파서와 청커를 나눠 배포했다면 **청커 쪽 yaml** 에 적습니다.
 
-### `transform` 11종 — 체이닝됩니다
+### `transform` 9종 — 체이닝됩니다
 
 | 이름 | 인자 | 하는 일 |
 |---|---|---|
-| `date_int` | — | 날짜 텍스트 → `YYYYMMDD` 정수 |
-| `date_int_flex` | — | 위 + 2자리 연도(`26.07.01`)·구분자 없는 `260701` |
-| `text_norm` | — | NFKC + 공백 축약 + casefold (중복 판정용) |
+| `date_int` (옛 이름 `date_int_flex`) | `on_error` | 날짜 텍스트 → `YYYYMMDD` 정수. 2자리 연도(`26.07.01`)·구분자 없는 `20260713`·`260701` 도 받는다. 날짜로 읽지 못하면 `on_error`(기본 `0`), 빈 값은 항상 `0` |
+| `normalize` (옛 이름 `text_norm`) | — | NFKC + 양끝 공백 제거 + 연속 공백 축약 + casefold (중복 판정용). 영문은 소문자로 바뀌고, 단어 사이 공백은 한 칸으로 줄일 뿐 없애지 않는다 |
 | `regex_sub` | `pattern`, `repl` | 정규식 치환 (`"18,000원"` → `"18000"`) |
-| `regex_extract` | `pattern`, `group` | 정규식 오려내기. 미매칭 시 `None` |
+| `regex_extract` | `pattern`, `group`, `on_error` | 정규식 오려내기. 미매칭 시 `on_error`(기본 `None`), 빈 값은 그대로. `group` 이 패턴에 없으면 기동 실패 |
 | `hash` | `length`, `prefix` | SHA-1 16진 코드화(기본 16자리). 같은 값이면 같은 코드 |
-| `to_int` | `on_error` | 숫자만 남겨 정수화 |
+| `to_int` | `on_error` | 정수 하나로 변환. 천 단위 콤마·단위는 무시하고, 소수이거나 숫자가 둘 이상이면 `on_error` |
 | `truncate` | `length`, `suffix` | 길이 자르기(적재 컬럼 길이 맞춤) |
-| `html_text` | — | HTML 로 **강제** 평문화. 표·목록 유지 |
-| `text` | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
+| `to_text` (옛 이름 `text`·`html_text`) | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
 | `to_json` | `on_scalar`, `key` | 값을 **유효한 JSON 문자열**로 맞춤(적재 DB 의 JSON 컬럼용) |
 
 체이닝이 "새 요건 = 코드 수정" 을 막는 핵심 수단입니다.
@@ -1531,7 +1535,7 @@ fields:
       - {name: to_int}
 ```
 
-잘못된 이름·빠진 인자·컴파일 안 되는 정규식은 **기동 시** 잡힙니다.
+잘못된 이름·빠진 인자·쓸 수 없는 인자·컴파일 안 되는 정규식은 **기동 시** 잡힙니다.
 
 **`to_json` — 적재 DB 의 JSON 컬럼에 넣을 필드**
 
@@ -1543,8 +1547,9 @@ fields:
 ```yaml
 fields:
   PRODUCT_ATTRS:
-    llm: true
     transform: [{name: to_json, key: fee_text}]
+llm:
+  - out: [PRODUCT_ATTRS]
 ```
 
 | 값 | 산출 |
@@ -1665,7 +1670,7 @@ fields:
 
 ### 코드가 필요할 때 — 고칠 자리 3개
 
-`parser_processor.py` 파일 머리 주석에 같은 목록이 있습니다. **그 밖으로 나가야 한다면
+`activities/parse.py` 파일 머리 주석에 같은 목록이 있습니다. **그 밖으로 나가야 한다면
 설정이나 facade 로 풀 수 있는 일을 놓친 것입니다.**
 
 | # | 자리 | 언제 |
@@ -1879,10 +1884,10 @@ if result["code"] == 0:
         print(f"[Page {element['page']}][{element['category']}] {str(element['content'])[:80]}")
 ```
 
-### HTML 포맷으로 출력 (`parser_processor_config.yaml: output.format: html`)
+### HTML 포맷으로 출력 (`parse_config.yaml: output.format: html`)
 
 ```python
-# parser_processor_config.yaml에 output.format: html 설정 후
+# parse_config.yaml에 output.format: html 설정 후
 response = requests.post(
     f"{BASE_URL}/preprocessor/{PREPROCESSOR_ID}/run",
     headers={"Authorization": f"Bearer {AUTH_KEY}"},

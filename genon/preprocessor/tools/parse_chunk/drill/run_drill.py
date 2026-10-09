@@ -59,7 +59,7 @@ CASES = [
     ("b5",  "b5_type_drift.json",     "drill_b5",  "custom_field_drill_b5.yaml",
      "문자열/숫자/배열/null 혼재", "값 파이프라인으로 흡수"),
     ("b6",  "b6_html_table.json",     "drill_b6",  "custom_field_drill_b6.yaml",
-     "표가 HTML 문자열", "transform: html_text 로 됨"),
+     "표가 HTML 문자열", "transform: to_text 로 됨"),
     ("b7",  "b7_mixed.json",          "drill_b7",  "custom_field_drill_b7.yaml",
      "문서형 메타 + 레코드 배열 혼합", "레코드 밖 공통 필드가 문제"),
     ("b8",  "b8_deep_nesting.json",   "drill_b8",  "custom_field_drill_b8.yaml",
@@ -73,7 +73,7 @@ CASES = [
     ("b13", "b13_null_missing.json",  "drill_b13", "custom_field_drill_b13.yaml",
      "null 값과 결측 키", "default/require 상호작용"),
     ("b14", "b14_escaped_json.json",  "drill_b14", "custom_field_drill_b14.yaml",
-     "이스케이프된 중첩 JSON", "transform: text 가 판별하는지"),
+     "이스케이프된 중첩 JSON", "transform: to_text 가 판별하는지"),
     ("b15", "b15_empty_records.json", "drill_b15", "custom_field_drill_b15.yaml",
      "records 는 있는데 요소 0", "에러 경로가 갈림"),
     ("b17", "b17_many_records.json",  "drill_b17", "custom_field_drill_b17.yaml",
@@ -115,7 +115,7 @@ def build_drill_config(work: Path, cases: list) -> Path:
     for cfg in CONFIG_DIR.glob("custom_field_drill_*.yaml"):
         shutil.copy(cfg, work / "resource" / cfg.name)
 
-    parser_cfg = work / "resource" / "parser_processor_config.yaml"
+    parser_cfg = work / "resource" / "parse_config.yaml"
     cfg = yaml.safe_load(parser_cfg.read_text(encoding="utf-8"))
     # B12: .jsonl 을 .json 으로 보게 한다. 확장자 자체는 설정 한 줄로 받을 수 있고,
     # 그 뒤 내용(줄 단위 JSON)이 설정으로 되는지가 진짜 시험 대상이다.

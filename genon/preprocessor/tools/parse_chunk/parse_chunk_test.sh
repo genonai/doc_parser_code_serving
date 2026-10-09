@@ -126,7 +126,7 @@ MONIMO_CASES=(
 #      (실 원천에 `"price_pat` / `tern_desc":` 처럼 키 이름 중간에서 끊긴 사례가 있다)
 #      → row_merge(group_by=REGT_NO+JONG_CODE, order_by=NTC_OBJLINE_NO)가 구분자 없이 이어붙임
 #   3) detail_desc 에 **JSON·HTML·평문이 섞여** 오고 정해진 스키마가 없음
-#      → `transform: text` 가 종류를 자동 판별해 하나의 마크다운으로 수렴시킴
+#      → `transform: to_text` 가 종류를 자동 판별해 하나의 마크다운으로 수렴시킴
 # 샘플 4종목이 세 종류를 모두 덮는다:
 #   테슬라·엔비디아 = JSON, 팔란티어 = 구조 HTML(표 포함), 리게티 = 평문
 # 청커는 `## ` 를 우선 분리자로 써서 섹션 경계에서 자르고, 섹션 하나가 chunk_size 를 넘어
@@ -244,7 +244,7 @@ RUN="run-1"
 #   "${PYTHON}" -c "import json;d=json.load(open('${OUT}/생명FAQ_260712.chunks.json'));print(len(d));print(d[0])"
 
 # ── monimo 이벤트 JSON → parser(json_mapping 레코드별) → chunker (레코드마다 1청크) ──────────
-# genon/sites/monimo/resource/parser_processor_config.yaml 의 doc_type=monimo_event 블록이 켜져 있으면(--site monimo)
+# genon/sites/monimo/resource/parse_config.yaml 의 doc_type=monimo_event 블록이 켜져 있으면(--site monimo)
 # eventList[*] 가 레코드마다 청크 1개가 되고 TITLE/EVENT_FROM/EVENT_TO/DETAIL_HTML 이 청크 metadata 로 실린다.
 # 요약본문(SUMMARY_TEXT)은 LLM 생성이라 custom_field_monimo_event.yaml 의 llm_fields.url/model
 # 설정이 필요하다(LLM 연결·프롬프트까지 그 파일 하나에 인라인되어 있다).

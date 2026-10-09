@@ -3,7 +3,7 @@
 이 파일은 예전에 json_mapping(레코드 모드) 시절의 custom_field_product_hpp_json.yaml 을
 검증했다. 그 설정은 삭제됐고(레코드 1건 = 상품 1건이라는 전제가, 성격이 다른 내용이 섞인
 카드 WCMS JSON 에는 맞지 않아 json_semantic 으로 교체됐다 — json_semantic.py 모듈 docstring
-참고) parser_processor_config*.yaml 의 product_hpp 항목도 extractor: json_semantic +
+참고) parse_config*.yaml 의 product_hpp 항목도 extractor: json_semantic +
 config_file: custom_field_product_hpp.yaml 을 가리키도록 바뀌었다. 이 파일은 그
 출고 설정을 실제 두 샘플로 재검증한다.
 """
@@ -44,14 +44,13 @@ def test_product_hpp_wcms_sample_maps_to_sections():
     elements = result["elements"]
 
     # 개요 1 + 상품 문서(연회비/추가 서비스와 발급 기준/이용 유의사항/상품 안내) 4
-    # + 혜택 상세(bubble) 1 + 주요 혜택(benefit) 1 = 7.
+    # + 혜택 상세(bubble) 2 + 주요 혜택(benefit) 1 = 8.
     #
     # 접히는 섹션은 4건이다(식별자/빈 본문뿐). ksp 3건은 title 을 빼면 code 만 남는다.
-    # bubble 은 원천에 2건인데 1건만 남는다 — 본문에 해당하는 serviceUrl 을 사이트 운영
-    # 설정이 ignore_keys 에 두었고(커밋 263f53ea), 그러면 tabName 을 가진 쪽만 본문이
-    # 생긴다. tabName 이 없는 bubble(S-OIL 적립)은 제목만 남아 접힌다. 즉 이 7 은
-    # "설정이 혜택 상세 본문을 검색에서 뺀 상태" 를 고정한 값이다.
-    assert len(elements) == 7
+    # bubble 은 원천의 2건이 모두 남는다 — 사이트 설정이 serviceUrl 을 ignore_keys 에서
+    # 뺐으므로, tabName 이 없는 bubble(S-OIL 적립)도 serviceUrl 이 본문이 되어 접히지 않는다.
+    # serviceUrl 을 다시 ignore_keys 에 넣으면 S-OIL 섹션은 제목만 남아 접히고 7 이 된다.
+    assert len(elements) == 8
 
     contents = [e["content"] for e in elements]
 

@@ -11,8 +11,8 @@
 
 | 파일 | 줄수 | 고칠 자리 |
 |---|---:|---|
-| `facade/parser_processor.py` | 282 | `ROUTES` · `CONFIG_BY_DOC_TYPE` · `edit_input` · `edit_document` · `edit_output` |
-| `facade/chunking_processor.py` | 264 | `GenOSVectorMeta` · `GenosSmartChunker` · `ROW_CATEGORIES` · `CONFIG_BY_DOC_TYPE` · `edit_input` · `edit_chunk` · `edit_output` |
+| `activities/parse.py` | 282 | `ROUTES` · `CONFIG_BY_DOC_TYPE` · `edit_input` · `edit_document` · `edit_output` |
+| `activities/chunk.py` | 264 | `GenOSVectorMeta` · `GenosSmartChunker` · `ROW_CATEGORIES` · `CONFIG_BY_DOC_TYPE` · `edit_input` · `edit_chunk` · `edit_output` |
 
 처리 본체는 `processing/core/` 에 있고 **열어 볼 일이 없습니다.** 열어야 했다면 그건 훅 메소드가
 부족하다는 뜻이니 알려 주세요.
@@ -267,10 +267,10 @@ API 라 그 값은 호출자용 정보로 끝납니다. `tb.set_chunk_metadata()
 
 | 하고 싶은 것 | 바꿀 것 | 자리 |
 |---|---|---|
-| 청크 앞 `HEADER:` 라벨을 다른 말로 / 없애기 | `GenosSmartChunker.CHUNK_HEADER_PREFIX` (빈 문자열이면 경로만) | `chunking_processor.py` |
+| 청크 앞 `HEADER:` 라벨을 다른 말로 / 없애기 | `GenosSmartChunker.CHUNK_HEADER_PREFIX` (빈 문자열이면 경로만) | `activities/chunk.py` |
 | 섹션 경로 구분자 | `CHUNK_HEADER_SEP` · `CHUNK_PATH_SEP` · `CHUNK_PATH_MAX_LEAVES` | 〃 |
 | 파서가 만든 **새 category** 를 행 1개 = 청크 1개로 처리 | `ROW_CATEGORIES` 에 이름 추가 | 〃 |
-| 1024 보다 작은 청크 만들기 | `chunking.min_chunk_size` (0 이면 보정 안 함) | `chunking_processor_config.yaml` |
+| 1024 보다 작은 청크 만들기 | `chunking.min_chunk_size` (0 이면 보정 안 함) | `chunk_config.yaml` |
 
 `CHUNK_HEADER_PREFIX` 는 청크 크기 산정과 실제 부착이 같은 값을 보므로 여기만 바꾸면
 됩니다. `min_chunk_size` 는 docling 경로의 하한이라, 임베딩 모델의 입력 길이가 짧아
@@ -362,7 +362,7 @@ tb.refresh_stats(vectors, reindex=False)   # 본문만 고쳤을 때 — 통계�
 
 ## 청크 본문에서 특수문자 걷어내기
 
-RAG 검색용 정제는 **설정으로 하는 것이 기본**입니다. `chunking_processor_config.yaml` 의
+RAG 검색용 정제는 **설정으로 하는 것이 기본**입니다. `chunk_config.yaml` 의
 `chunking.text_cleanup` 에 규칙을 적으면 됩니다 — 코드를 고치지 않습니다.
 
 | 방식 | 정제하는 자리 | 쓰는 때 |
@@ -397,7 +397,7 @@ RAG 검색용 정제는 **설정으로 하는 것이 기본**입니다. `chunkin
 | 자리 | 무엇을 꽂나 | 어떻게 |
 |---|---|---|
 | **값 추출 자체** | 정규식 추출, 사내 마스터 조회처럼 **LLM 이 아닌 방법** | custom_fields 의 `extractor: python` |
-| 값 변환기 | 금액 파싱, 사번 → 부서명처럼 **사이트 전용 값 변환** | `tb.register_transform()` 후 yaml `transforms:` 에서 이름으로 |
+| 값 변환기 | 금액 파싱, 사번 → 부서명처럼 **사이트 전용 값 변환** | `tb.register_transform()` 후 yaml `transform:` 에서 이름으로 |
 | LLM 출력 파서 | 표준 JSON 이 아닌 응답 해석 | custom_fields yaml 의 `parser: {type: python, file, callable}` |
 | 라우트 | 표준 포맷으로 못 바꾸는 원천 | 위 [ROUTES 절](#그래도-안-되면--라우트를-직접-씁니다) |
 
@@ -457,7 +457,7 @@ def extract(text, document=None, output_fields=None, **kwargs):
 
 ### 값 변환기 등록
 
-`custom_field_*.yaml` 의 `transforms:` 는 등록된 이름만 받습니다. 사이트 전용 변환은
+`custom_field_*.yaml` 의 `transform:` 은 등록된 이름만 받습니다. 사이트 전용 변환은
 **core 를 고치지 말고** 전처리기 파일 최상위에서 등록하세요 — core 를 고치면 릴리스
 통째 갱신에서 사라집니다.
 
@@ -466,8 +466,8 @@ tb.register_transform("won_to_int", lambda v: int(str(v).replace(",", "").replac
 ```
 
 ```yaml
-transforms:
-  AMT: [won_to_int]        # '1,200원' -> 1200
+fields:
+  AMT: {alias: [연회비], transform: [won_to_int]}    # '1,200원' -> 1200
 ```
 
 설정으로 하던 변환과 **같은 파이프라인**을 타므로 `value_map` · `derive` 와 순서가
@@ -501,7 +501,7 @@ from genon.preprocessor.processing.core import toolbox as tb
 
 | 갈래 | 항목 |
 |---|---|
-| 값 변환 | `regex_sub` `regex_extract` `to_int` `to_json` `truncate` `html_text` `text` `date_int` `date_int_flex` `text_norm` `json_to_markdown` |
+| 값 변환 | `regex_sub` `regex_extract` `to_int` `to_json` `truncate` `to_text` `date_int` `normalize` `json_to_markdown` (옛 이름 별칭: `text` `html_text` `date_int_flex` `text_norm`) |
 | 엑셀 | `load_sheets` `load_tables` |
 | JSON | `collect_text_fields` `detect_format` |
 | 표 | `render_table` `render_plain_text` `sanitize_table_html` |
@@ -559,14 +559,14 @@ tools/parse_chunk/parse_chunk_golden.py --check
 
 ## 릴리스 갱신 때 내 수정분 지키기
 
-**전처리기 갱신은 릴리스 단위 통째 갱신입니다** — `facade/parser_processor.py` 와
-`facade/chunking_processor.py` 도 함께 덮어써집니다. 그래서 갱신 전에 보관하고 뒤에 다시
+**전처리기 갱신은 릴리스 단위 통째 갱신입니다** — `activities/parse.py` 와
+`activities/chunk.py` 도 함께 덮어써집니다. 그래서 갱신 전에 보관하고 뒤에 다시
 붙입니다.
 
 ```bash
 # 실행 위치: gitea_repo
-git diff -- genon/preprocessor/facade/parser_processor.py \
-             genon/preprocessor/facade/chunking_processor.py > my_change.patch
+git diff -- genon/preprocessor/activities/parse.py \
+             genon/preprocessor/activities/chunk.py > my_change.patch
 # … 릴리스 통째 갱신 …
 git apply my_change.patch          # 충돌하면 patch 를 보고 손으로 반영
 ```

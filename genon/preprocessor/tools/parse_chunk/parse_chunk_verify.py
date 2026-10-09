@@ -13,13 +13,15 @@ doc_type 마다 샘플을 파싱·청킹한 뒤, 그 doc_type 의 custom_field y
   - llm_fields / output_fields 는 실패해도 통과로 본다(on_error:null 정책). 다만
     null 비율을 리포트해 모델서빙이 죽었는지 눈에 보이게 한다.
   - 케이스별 추가 단정(EXTRA_CHECKS): 위 공통 규칙으로는 잡히지 않는 회귀를 고정한다.
-  - 이상 청크 검증(chunk_quality): custom_fields 와 무관한 별도 케이스로, `--only chunk_quality`
-    로 고를 때만 돈다. 청커 설정에
-    `chunking.validation: {enable: true, action: drop}` 을 얹어 불량 섹션이 빠지고 대조군이
-    남는지, 전부 불량인 문서가 CHUNK_ALL_REJECTED 로 실패하는지 단정한다.
+  - 분할 강제 케이스(FORCED_SPLIT_CASES): 기본 chunk_size 에서 나뉘지 않는 샘플을 작은
+    chunk_size 로 다시 실행해, 분할 뒤에도 같은 단정이 성립하는지 본다.
+  - 이상 청크 검증(chunk_quality): `--only chunk_quality` 로 고를 때만 도는 별도 케이스다. 청커
+    설정에 `chunking.validation: {enable: true, action: drop}` 을 얹어(기준값은 기본값) 불량
+    섹션·레코드가 빠지고 대조군이 남는지, 전부 불량인 문서가 CHUNK_ALL_REJECTED 로 실패하는지
+    단정한다. custom_fields 경로(faq 행 청크, product_ssf 문서형 청크) 샘플도 함께 돈다.
 
 doc_type → extractor/config 매핑은 모니모 사이트 완성본(genon/sites/monimo/resource/)의
-parser_processor_config.yaml 에서 직접 읽는다. 설정이 늘어나면 이 스크립트를 고치지 않아도
+parse_config.yaml 에서 직접 읽는다. 설정이 늘어나면 이 스크립트를 고치지 않아도
 따라간다. --resource-dir 로 다른 설정 폴더를 주면 매핑과 러너 설정을 모두 그 폴더에서 읽는다.
 모델은 로컬(VPN) 프리셋(genon/sites/dev/model_presets.yaml)으로 돈다(parse_chunk_test.py 가 지정).
 
@@ -70,13 +72,19 @@ MONIMO = SAMPLES / "monimo"
 CASES = [
     ("menu",          MONIMO / "monimo_menu_sample.xlsx",              "행 1개 = 청크 1개"),
     ("term",          MONIMO / "monimo_term_sample.xlsx",              "행 1개 = 청크 1개"),
+    # 완전 중복 행과 일부 컬럼만 다른 대조군 행(#412). 생성 스크립트는
+    # tools/parse_chunk/make_term_duplicate_rows_sample.py 다.
+    ("term",          MONIMO / "monimo_term_duplicate_rows_sample.xlsx", "완전 중복 행 제거"),
     ("faq",           MONIMO / "monimo_faq_json_sample.json",          "json_mapping"),
     ("monimo_event",  SAMPLES / "json" / "monimo_event_sample.json",   "협의용 한글 키 표기"),
     ("monimo_event",  MONIMO / "monimo_event_real_sample.json",        "실 payload 스키마"),
     ("monimo_event",  MONIMO / "monimo_event_table_sample.json",       "5열 표 빈 셀 보존"),
+    # 제목에 영문 대문자·<BR>·엔티티가 든 생성 샘플이다(#414).
+    ("monimo_event",  MONIMO / "monimo_event_title_sample.json",       "제목 대소문자 보존"),
     ("monimo_news",   MONIMO / "monimo_news_sample.json",              "json_mapping"),
     ("monimo_news",   MONIMO / "TD00008415_d_5199.html.json",          "실 파일명 → BIZ_ID"),
     ("cs_slf",        MONIMO / "monimo_cs_slf_sample.json",            "json_mapping"),
+    # 마지막 레코드는 제목에 영문 대문자·<BR>·엔티티가 든 생성 레코드다(#414).
     ("cs_ssf",        MONIMO / "monimo_cs_ssf_sample.dtms",            "|@| 구분 레코드"),
     # 본문이 셀 하나짜리 레이아웃 표인 레코드(#396). 실물 형식을 따라 만든 생성 샘플이다.
     ("cs_ssf",        MONIMO / "monimo_cs_ssf_layout_table_sample.dtms", "1셀 레이아웃 표 레코드"),
@@ -86,6 +94,8 @@ CASES = [
     ("cs_hpp",        MONIMO / ".INC_235488_02_20260626103138.html",   "section 1개"),
     ("cs_hpp",        MONIMO / ".INC_235489_01_20260626103139.html",   "section 3개"),
     ("cs_hpp",        MONIMO / "monimo_cs_hpp_rich_table_sample.html", "rich cell 표 + colspan 안내 셀"),
+    # JSON 레코드 원천. UD_DTM 이 "2026-08-25 16:04:41" 문자열로 온다(#455).
+    ("cs_hpp",        MONIMO / "monimo_cs_hpp_chunksize_sample.json",  "json_mapping(UD_DTM 날짜)"),
     # 같은 원천의 마크다운 산출물. 확장자가 표준이 아니라(*.parsed) 라우팅이 그 사실을
     # 설정/내용으로 알아내야 한다. 위 .html 과 쌍이므로 함께 둔다.
     ("cs_hpp",        MONIMO / ".INC_235488_02_20260626103138.html.parsed",
@@ -109,6 +119,9 @@ CASES = [
     ("product_hpp",   MONIMO / "monimo_product_hpp_fields_sample.json",
      "코드값·금액문자열·브랜드 분리 필드"),
     ("stock_insight", MONIMO / "monimo_stock_insight_sample.txt",      "구분자 텍스트 레코드"),
+    # 2026-10-01 현장 캡처 재현. 생성 스크립트는 tools/parse_chunk/make_stock_insight_split_sample.py 다.
+    ("stock_insight", MONIMO / "monimo_stock_insight_split_sample.txt",
+     "떨어진 행·등록번호 2개 병합"),
     # 개인 작업 디렉터리(gitignore)에 있는 실 원천. 없는 머신에서는 SKIP 된다.
     ("card",          REPO_ROOT / "shkim_labs" / "20260803_monimo" / "01_card" / "card01.flat.html",
                                                                       "llm(카드 12필드)"),
@@ -147,7 +160,7 @@ def check_card_annual_fee(chunks: list) -> list[str]:
     return []
 
 
-# 표준·모니모 설정은 table_format: html 이라 파싱된 표가 청크 본문에 `<table>` 로 다시 렌더된다.
+# table_format: html 이면 파싱된 표가 청크 본문에 `<table>` 로 다시 렌더된다.
 # 렌더 결과는 표 태그만 쓰고 속성을 싣지 않는다(병합 칸의 colspan/rowspan 만 예외). 원천 HTML 이
 # 파싱되지 않고 새어 나오면 표 밖 태그(span, div …)나 style 같은 속성이 함께 남으므로 그것으로 가른다.
 _RENDERED_TABLE_TAG = re.compile(
@@ -162,11 +175,12 @@ def raw_markup_leak(text: str) -> str | None:
 
 
 def check_product_hpp_table_format(chunks: list) -> list[str]:
-    """연회비 표의 행 라벨이 헤더가 아니라 각 행의 첫 칸으로 남는가(table_format: html).
+    """연회비 표의 행 라벨이 헤더가 아니라 각 행의 첫 칸으로 남는가(table_format: html·markdown).
 
     연회비 표는 행 라벨이 `<th scope="row">` 인 실제 WCMS 표다. 예전에는 행 라벨 `<th>` 때문에
     모든 행이 헤더 행으로 집계돼 계층 헤더 표로 오인됐다(table_shape.leading_header_row_count).
-    그러면 헤더 행이 반복되거나 행 라벨이 헤더 쪽으로 빠진다.
+    그러면 헤더 행이 반복되거나 행 라벨이 헤더 쪽으로 빠진다. 표기형태는 파서 설정의
+    `output.table_format` 을 따르므로(레코드형 문서) 두 형식 모두 같은 보장을 확인한다.
     """
     problems = []
     # 표 청크만 본다 — table_as_chunk 로 표와 표 설명이 다른 청크로 갈리므로, 설명 청크가
@@ -176,13 +190,20 @@ def check_product_hpp_table_format(chunks: list) -> list[str]:
     if fee is None:
         return ["연회비 표가 어느 청크에도 없습니다"]
 
-    if "<table" not in fee:
-        problems.append("연회비 표가 html 로 나오지 않았습니다(table_format: html)")
+    if "<table" in fee:
+        header = r">구분</th>"
+        first_cell_row = r"<tr><t[hd]>총 연회비</t[hd]><td>20,000 ?원</td>"
+    elif re.search(r"(?m)^\|(?: ?:?-+:? ?\|)+$", fee):
+        header = r"(?m)^\| 구분 \|"
+        first_cell_row = r"(?m)^\| 총 연회비 \| 20,000 ?원 \|"
+    else:
+        return ["연회비 표가 html 로도 markdown 으로도 나오지 않았습니다"]
     # 헤더 행은 한 번만 나와야 한다(행 라벨이 헤더로 오인되면 헤더 행이 늘어난다).
-    if fee.count(">구분</th>") != 1:
-        problems.append(f"헤더 행 '구분' 이 {fee.count('>구분</th>')}번 나왔습니다(1번 기대)")
+    header_count = len(re.findall(header, fee))
+    if header_count != 1:
+        problems.append(f"헤더 행 '구분' 이 {header_count}번 나왔습니다(1번 기대)")
     # 행 라벨은 자기 행의 첫 칸으로 남고, 바로 뒤에 그 행의 값이 와야 한다.
-    if not re.search(r"<tr><t[hd]>총 연회비</t[hd]><td>20,000원</td>", fee):
+    if not re.search(first_cell_row, fee):
         problems.append("행 라벨 '총 연회비' 가 첫 칸 데이터 행으로 남지 않았습니다")
     for value in ("20,000", "18,000", "15,000", "13,000", "국내전용"):
         if value not in fee:
@@ -190,14 +211,72 @@ def check_product_hpp_table_format(chunks: list) -> list[str]:
     return problems
 
 
+def _check_stock_insight_keeps_source_text(chunks: list) -> list[str]:
+    """세부내용의 영문 대소문자와 `<BR>` 문단 구분이 보존되어야 한다(#410).
+
+    중복 판정 키용 변환(normalize)이 걸리면 casefold 로 RSI·MACD 가 소문자가 되고 `<BR>` 이
+    공백으로 접힌다. 원천에는 소문자 rsi·macd 가 없으므로 나오면 변환이 바꾼 것이다.
+    DETAIL_DESC 는 `<BR>` 을 그대로 갖고, DETAIL_TEXT 는 그 자리를 개행으로 바꿔야 한다.
+    """
+    problems = []
+    lower = re.compile(r"(?<![A-Za-z])(?:rsi|macd)(?![A-Za-z])")
+    for idx, chunk in enumerate(chunks):
+        for field in ("DETAIL_DESC", "DETAIL_TEXT", "text"):
+            hit = lower.search(chunk.get(field) or "")
+            if hit:
+                problems.append(f"[{idx}] {field} 에서 지표 이름이 소문자로 바뀌었습니다: {hit.group()!r}")
+    if not any("RSI" in (c.get("text") or "") for c in chunks):
+        problems.append("청크 본문에 원천의 RSI 가 남지 않았습니다")
+
+    records = {(c.get("DETAIL_DESC") or "", c.get("DETAIL_TEXT") or "") for c in chunks}
+    if not any("<BR>" in desc for desc, _ in records):
+        problems.append("DETAIL_DESC 에서 원천의 <BR> 이 사라졌습니다(원본 미보관)")
+    for desc, detail_text in records:
+        # `<BR>` 바로 뒤 문장이 DETAIL_TEXT 에서 줄 첫머리로 와야 문단 구분이 살아 있는 것이다.
+        after = re.search(r"<BR>\s*([^<\"\\\s][^<\"\\]{5})", desc)
+        if after and f"\n{after.group(1)}" not in detail_text:
+            problems.append(f"DETAIL_TEXT 에서 <BR> 문단 구분이 개행으로 남지 않았습니다: {after.group(1)!r}")
+    return problems
+
+
+def _check_stock_insight_same_record_meta(chunks: list) -> list[str]:
+    """한 레코드(BIZ_ID)에서 나온 청크는 분할돼도 세부내용 원본·평문이 모두 같다(#419).
+
+    레코드가 chunk_size 를 넘으면 본문만 나뉘고 metadata 는 조각마다 레코드 전체 값으로 복사된다.
+    값이 둘 이상이면 병합이 갈렸거나 조각 값이 metadata 로 샌 것이다.
+    """
+    problems = []
+    by_biz: dict = {}
+    for chunk in chunks:
+        by_biz.setdefault(chunk.get("BIZ_ID"), []).append(chunk)
+    for biz_id, group in by_biz.items():
+        for field in ("DETAIL_DESC", "DETAIL_TEXT"):
+            values = {c.get(field) for c in group}
+            if len(values) != 1:
+                problems.append(f"{biz_id}: 청크 {len(group)}건의 {field} 가 {len(values)}종입니다")
+    return problems
+
+
+def check_stock_insight_split_per_record(chunks: list) -> list[str]:
+    """작은 chunk_size 로 돌렸을 때 모든 레코드가 실제로 둘 이상으로 나뉘었다(#419).
+
+    나뉘지 않으면 `_check_stock_insight_same_record_meta` 가 아무것도 검증하지 못한다.
+    """
+    counts: dict = {}
+    for chunk in chunks:
+        counts[chunk.get("BIZ_ID")] = counts.get(chunk.get("BIZ_ID"), 0) + 1
+    unsplit = sorted(str(biz_id) for biz_id, n in counts.items() if n < 2)
+    return [f"분할되지 않은 레코드가 있습니다: {unsplit}"] if unsplit else []
+
+
 def check_stock_insight_row_merge(chunks: list) -> list[str]:
     """AI차트뷰 원천은 세부내용을 여러 행에 문자 단위로 잘라 보낸다.
 
-    row_merge 가 등록번호+종목코드 연속 런을 게시물 라인번호 순으로 이어붙여
+    row_merge 가 종목코드+뉴스일자 묶음을 등록번호별 게시물 라인번호 순으로 이어붙여
     20행 → 4레코드(종목 4건)가 되어야 한다. 구분자가 끼거나 순서가 틀리면 복원되지 않는다.
 
     detail_desc 는 **JSON·HTML·평문 중 무엇이든** 올 수 있어 스키마를 못 박을 수 없다.
-    샘플에 세 종류를 모두 넣어 `transform: text` 의 자동 판별을 검증한다.
+    샘플에 세 종류를 모두 넣어 `transform: to_text` 의 자동 판별을 검증한다.
       테슬라·엔비디아 = JSON, 팔란티어 = 구조 HTML(표 포함), 리게티 = 평문
     레코드가 chunk_size 를 넘으므로 종목당 여러 청크로 갈라지고, 조각마다 종목명 접두가
     반복되며 분할 지점에는 직전 섹션 제목이 `(이어서)` 로 다시 붙는다.
@@ -268,8 +347,55 @@ def check_stock_insight_row_merge(chunks: list) -> list[str]:
     leaked = sorted({"md_stck_itm_c", "kosc_stck_itm_c", "nat_c"} & set(first))
     if leaked:
         problems.append(f"매핑하지 않은 원천 컬럼이 metadata 에 실렸습니다: {leaked}")
+    problems += _check_stock_insight_keeps_source_text(chunks)
+    problems += _check_stock_insight_same_record_meta(chunks)
     return problems
 
+
+
+def check_stock_insight_scattered_merge(chunks: list) -> list[str]:
+    """같은 종목코드·뉴스일자 행은 떨어져 있어도 한 레코드로 모인다(현장 캡처 재현).
+
+    테슬라는 4556 의 1~3행과 4~7행이 엔비디아를 사이에 두고 갈려 있다. 홀로그램은 4637
+    (1·2·3·5행)과 4721(4·6행)이 다른 종목 사이에 흩어져 있고, 라인번호는 등록번호마다 따로
+    매겨진다. 홀로그램은 원천에 빠진 행이 있어 JSON 으로 복원되지 않으므로 등록번호 순서만
+    본다(두 문서는 개행으로 이어진다).
+    """
+    problems = []
+    by_stock: dict = {}
+    for chunk in chunks:
+        by_stock.setdefault(chunk.get("JONG_NM"), []).append(chunk)
+    expected = {"테슬라", "엔비디아", "마이크로클라우드 홀로그램", "팔란티어 테크놀로지스",
+                "리게티 컴퓨팅", "애플"}
+    if set(by_stock) != expected:
+        problems.append(f"종목 {len(expected)}건 기대, 실제 {sorted(by_stock, key=str)}")
+
+    for name, group in by_stock.items():
+        # 한 레코드에서 나온 청크는 metadata 가 같다. 값이 둘 이상이면 레코드가 갈린 것이다.
+        descs = {c.get("DETAIL_DESC") for c in group}
+        biz_ids = {c.get("BIZ_ID") for c in group}
+        if len(descs) != 1 or len(biz_ids) != 1:
+            problems.append(f"{name}: 레코드가 {len(descs)}건으로 갈렸습니다(BIZ_ID {sorted(map(str, biz_ids))})")
+            continue
+        desc = descs.pop() or ""
+        if name == "마이크로클라우드 홀로그램":
+            first = desc.find("현재 종가 1.75는")          # 4637 1행
+            second = desc.find("반전 신호의 신뢰도가")     # 4721 6행
+            if not 0 <= first < second:
+                problems.append(f"{name}: 4637 → 4721 순서로 결합되지 않았습니다: {desc[:60]!r}")
+            # 재전송된 4637 1행은 한 번만, kosc 코드만 다른 대조군 3행은 두 번 실려야 한다(#412).
+            if desc.count("현재 종가 1.75는 5일선(1.71)을") != 1:
+                problems.append(f"{name}: 완전 중복 행(4637 1행)이 제거되지 않았습니다")
+            if desc.count("1.66까지 내려갔으나") != 2:
+                problems.append(f"{name}: 일부 컬럼만 다른 대조군 행(4637 3행)이 유지되지 않았습니다")
+            continue
+        try:
+            json.loads(desc)
+        except ValueError:
+            problems.append(f"{name}: DETAIL_DESC 가 JSON 으로 복원되지 않았습니다(조각 순서 오류)")
+    problems += _check_stock_insight_keeps_source_text(chunks)
+    problems += _check_stock_insight_same_record_meta(chunks)
+    return problems
 
 
 def check_cs_hpp_degenerate_table(chunks: list) -> list[str]:
@@ -581,11 +707,46 @@ def check_cs_ssf_delimited(chunks: list) -> list[str]:
     return problems
 
 
+def check_title_kept(*titles: str):
+    """제목(CUSTOM_TITLE)이 대소문자를 보존한 채 `<BR>`·HTML 엔티티만 풀려 실리는가(#414).
+
+    `normalize` 는 중복 판정 키를 만드는 변환이라 영문을 소문자로 바꾸고(`OTP` → `otp`)
+    연속 공백을 한 칸으로 접는다. 제목에 걸리면 청크 본문과 화면 제목이 함께 바뀐다.
+    """
+    def _check(chunks: list) -> list[str]:
+        problems: list[str] = []
+        found = {chunk.get("CUSTOM_TITLE") for chunk in chunks}
+        body = "\n".join(chunk.get("text") or "" for chunk in chunks)
+        seen = "\n".join(map(str, found)) + "\n" + body
+        for title in titles:
+            if title not in found:
+                problems.append(f"CUSTOM_TITLE 에 {title!r} 가 없습니다")
+            if title not in body:
+                problems.append(f"청크 본문에 제목 {title!r} 가 없습니다")
+            for word in re.findall(r"[A-Za-z]*[A-Z][A-Za-z]*", title):
+                if re.search(rf"(?<![A-Za-z]){word.lower()}(?![A-Za-z])", seen):
+                    problems.append(f"제목의 {word!r} 가 소문자로 바뀌었습니다")
+        return problems
+    return _check
+
+
 def check_biz_id_from_filename(expected: str):
     """파일명 원천(`alias: [$file]`)으로 만든 BIZ_ID 가 모든 청크에 실렸는가."""
     def _check(chunks: list) -> list[str]:
         found = {chunk.get("BIZ_ID") for chunk in chunks}
         return [] if found == {expected} else [f"BIZ_ID 가 {expected} 가 아닙니다: {sorted(map(str, found))}"]
+    return _check
+
+
+def check_last_mod_dt(expected: int):
+    """SRC_LAST_MOD_DT 가 정수 YYYYMMDD(값이 없으면 0)로 모든 청크에 실렸는가(#455).
+
+    문자열이나 null 이 섞이면 기간 필터·최신순 정렬에서 그 문서유형만 빠진다.
+    """
+    def _check(chunks: list) -> list[str]:
+        found = {chunk.get("SRC_LAST_MOD_DT") for chunk in chunks}
+        ok = found == {expected} and all(isinstance(v, int) for v in found)
+        return [] if ok else [f"SRC_LAST_MOD_DT 가 정수 {expected} 가 아닙니다: {sorted(map(repr, found))}"]
     return _check
 
 
@@ -596,7 +757,15 @@ def check_valid_period(chunks: list) -> list[str]:
     return [] if found == expected else [f"VALID_FROM/VALID_TO 가 {expected} 가 아닙니다: {sorted(map(str, found))}"]
 
 
+def check_term_duplicate_rows(chunks: list) -> list[str]:
+    """완전 중복 행(SLF_0001 재전송)은 한 번만, 최종수정일만 다른 대조군(HPP_0001)은 둘 다 남는다(#412)."""
+    found = sorted((str(c.get("BIZ_ID")), str(c.get("SRC_LAST_MOD_DT"))) for c in chunks)
+    expected = [("HPP_0001", "20260601"), ("HPP_0001", "20260615"), ("SLF_0001", "20260601")]
+    return [] if found == expected else [f"(BIZ_ID, 최종수정일) {expected} 기대, 실제 {found}"]
+
+
 EXTRA_CHECKS = {
+    ("term", "monimo_term_duplicate_rows_sample.xlsx"): check_term_duplicate_rows,
     ("product_slf", "monimo_product_slf_fields_sample.md"): check_valid_period,
     ("product_slf", "monimo_product_slf_sample.md"):
         lambda chunks: check_front_matter(chunks) + check_product_attrs_once(chunks),
@@ -609,10 +778,49 @@ EXTRA_CHECKS = {
     ("cs_hpp", ".INC_235488_02_20260626103138.html.parsed"): check_cs_hpp_parsed_ext,
     ("product_hpp", "monimo_product_hpp_rich_table_sample.json"): check_product_hpp_link_labels,
     ("stock_insight", "monimo_stock_insight_sample.txt"): check_stock_insight_row_merge,
-    ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_cs_ssf_delimited,
+    ("stock_insight", "monimo_stock_insight_split_sample.txt"): check_stock_insight_scattered_merge,
+    ("cs_ssf", "monimo_cs_ssf_sample.dtms"): lambda chunks: check_cs_ssf_delimited(chunks) + check_title_kept(
+        "[보상콜] OTP 인증 오류 시 사고 접수 & 보상 안내")(chunks),
+    ("cs_slf", "monimo_cs_slf_sample.json"): check_title_kept(
+        "보험계약대출 이자 금액이 차이나는 이유가 무엇인가요? (추가대출고객,중도이자상환고객,CD/ATM 이용고객 등)",
+        "모니모 앱에서 OTP 재발급 신청 & 해지는 어떻게 하나요?"),
+    ("monimo_event", "monimo_event_title_sample.json"): check_title_kept(
+        "KB국민카드 & monimo Pay 첫 결제 최대 5만원 캐시백"),
     ("cs_ssf", "monimo_cs_ssf_layout_table_sample.dtms"): check_cs_ssf_layout_table,
+    ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_last_mod_dt(0),
+    ("cs_sss", "monimo_cs_sss_sample.json"): check_last_mod_dt(0),
+    ("cs_hpp", "monimo_cs_hpp_chunksize_sample.json"): check_last_mod_dt(20260825),
     ("monimo_news", "TD00008415_d_5199.html.json"): check_biz_id_from_filename("TD00008415"),
 }
+
+
+def check_no_json_parse_warning(output: str) -> list[str]:
+    """`[보상콜] …`·`[1.자동차 사고부상] …` 처럼 `[` 로 시작하는 제목을 JSON 조각으로 오판하지 않는가(#437)."""
+    n = output.count("JSON 파싱 실패")
+    return [] if n == 0 else [f"JSON 파싱 실패 경고 {n}건(기대 0건)"]
+
+
+def check_row_merge_warning_kept(output: str) -> list[str]:
+    """병합 후에도 JSON 으로 복원되지 않는 홀로그램 조각은 계속 경고하는가(#437, `{` 조각 신호 보존)."""
+    n = sum(1 for line in output.splitlines() if "JSON 파싱 실패" in line and "row_merge" in line)
+    return [] if n else ["row_merge 조각 경고가 없습니다(기대 1건 이상)"]
+
+
+# 실행 로그(stdout+stderr)에 대한 단정. 변환기 경고처럼 청크에 남지 않는 신호를 본다.
+OUTPUT_CHECKS = {
+    ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_no_json_parse_warning,
+    ("cs_ssf", "monimo_cs_ssf_layout_table_sample.dtms"): check_no_json_parse_warning,
+    ("stock_insight", "monimo_stock_insight_split_sample.txt"): check_row_merge_warning_kept,
+}
+
+# 기본 chunk_size 에서는 나뉘지 않는 샘플을 작은 chunk_size 로 한 번 더 실행한다(#419).
+# CASES 와 같은 샘플이므로 EXTRA_CHECKS 단정을 그대로 받고, 마지막 항목의 단정을 덧붙인다.
+# CASES 의 튜플 형태는 골든 하네스(parse_chunk_golden.py)가 함께 쓰므로 여기에 따로 둔다.
+# (doc_type, 샘플, chunk_size, 추가 단정, 비고)
+FORCED_SPLIT_CASES = [
+    ("stock_insight", MONIMO / "monimo_stock_insight_split_sample.txt", 200,
+     check_stock_insight_split_per_record, "떨어진 행 병합 후 분할"),
+]
 
 # 이상 청크 검증(chunking.validation) 케이스. 샘플 생성 스크립트는
 # tools/parse_chunk/make_chunk_quality_sample.py 다. custom_fields 블록이 없는 원천이라
@@ -640,10 +848,45 @@ def check_quality_rows(chunks: list) -> list[str]:
     return problems
 
 
+def check_quality_text(chunks: list) -> list[str]:
+    """쪽 번호만 남은 평문 청크만 빠지고 앞뒤 문단은 순번대로 남는다."""
+    texts = [c.get("text") or "" for c in chunks]
+    problems = [] if len(texts) == 2 and not any(t.strip() == "1." for t in texts) else [
+        f"정상 문단 2건만 기대, 실제 {[t[:10] for t in texts]}"]
+    if [c.get("i_chunk_on_doc") for c in chunks] != list(range(len(chunks))):
+        problems.append("순번이 0부터 이어지지 않습니다")
+    return problems
+
+
+def check_quality_faq(chunks: list) -> list[str]:
+    """깨짐·반복 답변 레코드만 빠지고 원래 레코드와 경계 아래 대조군은 남는다."""
+    from make_chunk_quality_sample import FAQ_BAD_ANSWERS, FAQ_CONTROL_ANSWERS
+
+    text = "\n".join(c.get("text") or "" for c in chunks)
+    problems = [f"불량 레코드가 남음: {q!r}" for q, _ in FAQ_BAD_ANSWERS.values() if q in text]
+    keep = ["설정한 홈 화면을 변경하고 싶어요.", *(q for q, _ in FAQ_CONTROL_ANSWERS.values())]
+    problems += [f"대조군 레코드가 빠짐: {q!r}" for q in keep if q not in text]
+    return problems
+
+
+def check_quality_ssf(chunks: list) -> list[str]:
+    """변환에 실패한 5·6쪽만 빠지고 나머지 쪽은 남는다."""
+    text = "\n".join(c.get("text") or "" for c in chunks)
+    problems = [f"불량 쪽이 남음: {p!r}" for p in ("원문 5쪽", "원문 6쪽") if p in text]
+    problems += [f"정상 쪽이 빠짐: {p!r}" for p in ("원문 1쪽", "원문 4쪽", "원문 7쪽")
+                 if p not in text]
+    return problems
+
+
+# (doc_type, 원천, 단정, 비고). doc_type 이 있으면 설정 폴더의 custom_fields 블록을 탄다.
 QUALITY_CASES = [
-    (SAMPLES / "chunk_quality_sample.md", check_quality_sample, "불량 섹션 제외·대조군 보존"),
-    (SAMPLES / "chunk_quality_rows.json", check_quality_rows, "빈 행·기호 행 제외"),
-    (SAMPLES / "chunk_quality_all_bad.md", None, "전부 불량 → CHUNK_ALL_REJECTED"),
+    (None, SAMPLES / "chunk_quality_sample.md", check_quality_sample, "불량 섹션 제외·대조군 보존"),
+    (None, SAMPLES / "chunk_quality_rows.json", check_quality_rows, "빈 행·기호 행 제외"),
+    (None, SAMPLES / "chunk_quality_all_bad.md", None, "전부 불량 → CHUNK_ALL_REJECTED"),
+    (None, SAMPLES / "chunk_quality_text.json", check_quality_text, "쪽 번호만 남은 평문 제외"),
+    ("faq", MONIMO / "monimo_faq_quality_sample.json", check_quality_faq, "깨짐·반복 답변 레코드 제외"),
+    ("product_ssf", MONIMO / "monimo_product_ssf_quality_sample.md", check_quality_ssf,
+     "변환 실패 쪽 제외"),
 ]
 
 
@@ -659,9 +902,9 @@ def verify_chunker_config() -> Path:
     global _VERIFY_CHUNKER_CONFIG
     if _VERIFY_CHUNKER_CONFIG is None:
         cfg = yaml.safe_load(
-            (RESOURCE_DIR / "chunking_processor_config.yaml").read_text(encoding="utf-8")) or {}
+            (RESOURCE_DIR / "chunk_config.yaml").read_text(encoding="utf-8")) or {}
         cfg.setdefault("output", {})["table_text_formats"] = ["html", "markdown"]
-        path = Path(tempfile.mkdtemp(prefix="parse_chunk_verify_cfg_")) / "chunking_processor_config.yaml"
+        path = Path(tempfile.mkdtemp(prefix="parse_chunk_verify_cfg_")) / "chunk_config.yaml"
         path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         _VERIFY_CHUNKER_CONFIG = path
     return _VERIFY_CHUNKER_CONFIG
@@ -682,12 +925,12 @@ def run_quality_cases(python: str, out_root: Path) -> list[tuple]:
     out_dir = out_root / QUALITY_DOC_TYPE
     out_dir.mkdir(parents=True, exist_ok=True)
     config = quality_chunker_config(out_root)
-    for src, check, note in QUALITY_CASES:
+    for doc_type, src, check, note in QUALITY_CASES:
         label = f"{QUALITY_DOC_TYPE}:{src.name}"
         if not src.exists():
             rows.append((label, "SKIP", "샘플 없음(make_chunk_quality_sample.py 실행)", "-", "-"))
             continue
-        ok, err, output = run_case(python, None, src, out_dir,
+        ok, err, output = run_case(python, doc_type, src, out_dir,
                                    ["--chunker-config", str(config)])
         chunks_path = out_dir / (src.stem + ".chunks.json")
         chunks = json.loads(chunks_path.read_text(encoding="utf-8")) if chunks_path.exists() else []
@@ -718,8 +961,8 @@ EXTRACTOR_BY_SUFFIX = {
 
 
 def load_custom_field_blocks() -> list[dict]:
-    """parser_processor_config.yaml 의 enable 된 custom_fields 블록 목록."""
-    cfg = yaml.safe_load((RESOURCE_DIR / "parser_processor_config.yaml").read_text(encoding="utf-8"))
+    """parse_config.yaml 의 enable 된 custom_fields 블록 목록."""
+    cfg = yaml.safe_load((RESOURCE_DIR / "parse_config.yaml").read_text(encoding="utf-8"))
     out = []
     for item in cfg.get("enrichment") or []:
         if not isinstance(item, dict):
@@ -805,7 +1048,7 @@ def run_case(python: str, doc_type: str | None, src: Path, out_dir: Path,
     doc_type_args = ["--doc_type", doc_type] if doc_type else []
     # 설정은 RESOURCE_DIR 의 파서 설정과 검증용 청커 설정이다. extra_args 를 뒤에 두어 호출자가 준
     # 인자(예: 이상 청크 검증의 --chunker-config)가 우선하게 한다.
-    config_args = ["--config", str(RESOURCE_DIR / "parser_processor_config.yaml"),
+    config_args = ["--config", str(RESOURCE_DIR / "parse_config.yaml"),
                    "--chunker-config", str(verify_chunker_config())]
     cmd = [python, str(SCRIPT_DIR / "parse_chunk_test.py"),
            *doc_type_args, *config_args, *(extra_args or []), str(src), str(out_dir) + "/"]
@@ -893,23 +1136,35 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
     rows, failed, skipped = [], 0, 0
 
-    for doc_type, src, note in cases:
-        label = f"{doc_type}:{src.name}"
+    runs = [(doc_type, src, note, None, None) for doc_type, src, note in cases]
+    runs += [(doc_type, src, note, size, check)
+             for doc_type, src, size, check, note in FORCED_SPLIT_CASES
+             if not args.only or doc_type in args.only]
+    for doc_type, src, note, chunk_size, split_check in runs:
+        label = f"{doc_type}:{src.name}" + (f"@chunk_size={chunk_size}" if chunk_size else "")
         if not src.exists():
             rows.append((label, "SKIP", "샘플 없음", "-", "-")); skipped += 1; continue
         block = pick_block(blocks, doc_type, src.suffix)
         if block is None:
             rows.append((label, "SKIP", "설정에 doc_type 없음", "-", "-")); skipped += 1; continue
 
-        out_dir = out_root / doc_type
+        # 같은 샘플을 chunk_size 만 바꿔 다시 돌리므로 산출물이 덮이지 않게 폴더를 가른다.
+        out_dir = out_root / (doc_type if chunk_size is None else f"{doc_type}_chunk{chunk_size}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        ok, err, _out = run_case(args.python, doc_type, src, out_dir)
+        extra_args = ["--chunk-size", str(chunk_size)] if chunk_size else None
+        ok, err, output = run_case(args.python, doc_type, src, out_dir, extra_args)
         if not ok:
             rows.append((label, "FAIL", err, "-", "-")); failed += 1; continue
 
         problems = verify(doc_type, src, out_dir, block)
+        # 같은 샘플을 chunk_size 만 바꿔 다시 돌리는 분할 강제 실행에는 다시 걸지 않는다.
+        output_check = OUTPUT_CHECKS.get((doc_type, src.name)) if chunk_size is None else None
+        if output_check is not None:
+            problems += output_check(output)
         chunks_path = out_dir / (src.stem + ".chunks.json")
         chunks = json.loads(chunks_path.read_text(encoding="utf-8")) if chunks_path.exists() else []
+        if split_check is not None and chunks:
+            problems += split_check(chunks)
         _req, _const, llm = expected_from_yaml(block)
         n_chunks = str(len(chunks))
         nulls = llm_null_rate(chunks, llm)

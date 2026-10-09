@@ -26,7 +26,7 @@ from pathlib import Path
 OUT = Path(__file__).resolve().parents[2] / "sample_files" / "monimo" / "monimo_stock_insight_sample.txt"
 
 # 필드 구분자. custom_field_stock_insight.yaml 의 separator 와 같아야 한다.
-SEPARATOR = "\x1f|"
+SEPARATOR = "\x0f|"
 
 # 가상 데이터. 실 원천과 같은 키 구성이고 값 안에 <BR>/<strong> 을 섞는다.
 # 분량도 실 원천에 맞춘다 — 종목당 detail_desc 가 3,000자를 넘어야 chunk_size 1500 에서
@@ -226,7 +226,7 @@ STOCKS = [
     },
     {
         # detail_desc 가 **구조 HTML** 인 종목. 원천이 WCMS 표를 그대로 실어 보내는 경우다.
-        # `transform: text` 가 자동 판별해 docling 백엔드로 보내므로 표의 행/열이 보존된다.
+        # `transform: to_text` 가 자동 판별해 docling 백엔드로 보내므로 표의 행/열이 보존된다.
         "jong_name": "팔란티어 테크놀로지스",
         "jong_code": "NQQUSAPLTR",
         "regt_no": "4560",

@@ -1,6 +1,6 @@
 """파싱 처리 본체 (#363 08).
 
-`facade/parser_processor.py` 에서 통째로 옮겨 왔다. 고객이 여는 파일은 그쪽이고
+`activities/parse.py` 에서 통째로 옮겨 왔다. 고객이 여는 파일은 그쪽이고
 여기는 열 일이 없다. 08-1 은 순수 이동이며 훅·이름 변경은 08-3 이다.
 """
 from __future__ import annotations
@@ -216,7 +216,7 @@ def _resolve_default_parser_config_path() -> str:
     # processing/core/ 로 한 단계 깊어졌으므로 facade/ 를 기준으로 잡는다 —
     # 옮기기 전 이 헬퍼는 facade/ 에 있었고 아래 상대 경로가 그것을 전제한다.
     base_dir = Path(__file__).resolve().parents[1]
-    return str((base_dir / "../resource/parser_processor_config.yaml").resolve())
+    return str((base_dir / "../resource/parse_config.yaml").resolve())
 
 
 # ============================================================
@@ -385,39 +385,6 @@ class GenericDocumentLoader:
         else:
             return UnstructuredFileLoader(file_path)
 
-    def _load_image_documents_fallback(self, file_path: str) -> list[Document]:
-        """UnstructuredImageLoader의 __str__ NoneType 오류를 우회해 이미지 요소를 안전하게 적재."""
-        from unstructured.partition.image import partition_image
-
-        elements = partition_image(filename=file_path, languages=["kor", "eng"])
-        documents: list[Document] = []
-
-        for element in elements:
-            text = getattr(element, "text", "")
-            if text is None:
-                text = ""
-            elif not isinstance(text, str):
-                text = str(text)
-
-            metadata: dict[str, Any] = {"source": file_path}
-            if hasattr(element, "metadata") and element.metadata is not None:
-                try:
-                    metadata.update(element.metadata.to_dict())
-                except Exception:
-                    pass
-
-            if hasattr(element, "category"):
-                metadata["category"] = element.category
-
-            if hasattr(element, "to_dict"):
-                element_id = element.to_dict().get("element_id")
-                if element_id:
-                    metadata["element_id"] = element_id
-
-            documents.append(Document(page_content=text, metadata=metadata))
-
-        return documents
-
     def load_documents(self, file_path: str, **kwargs: dict) -> list:
         try:
             loader = self.get_loader(file_path, kwargs.get("_pdf_policy"))
@@ -431,14 +398,10 @@ class GenericDocumentLoader:
                 f"처리할 포맷을 지정하세요: {os.path.basename(file_path)}",
             ) from exc
         ext = os.path.splitext(file_path)[-1].lower()
-        try:
+        if ext in ['.jpg', '.jpeg', '.png']:
+            documents = ld.load_image_documents(loader, file_path)
+        else:
             documents = loader.load()
-        except TypeError as exc:
-            if ext in ['.jpg', '.jpeg', '.png'] and "__str__ returned non-string" in str(exc):
-                _log.warning(f"[GenericDocumentLoader] Image loader fallback: {file_path} ({exc})")
-                documents = self._load_image_documents_fallback(file_path)
-            else:
-                raise
 
         if ext in ['.jpg', '.jpeg', '.png']:
             if not documents or not any((doc.page_content or "").strip() for doc in documents):
@@ -1273,7 +1236,7 @@ class ParserCore:
                 if getattr(mapper, "file_fields", None) else {}
             )
             try:
-                # custom_fields 의 html_text/text 변환 표 모양을 docling 경로와 같은 설정으로 맞춘다
+                # custom_fields 의 to_text 변환 표 모양을 docling 경로와 같은 설정으로 맞춘다
                 # (output.table_format: html=<table> / markdown=파이프 표).
                 fields_list = mapper.build_fields(
                     payload, doc_type,
@@ -1291,7 +1254,12 @@ class ParserCore:
             )
             # json 매퍼의 to_parse_format 은 이미 만들어진 fields 목록을 받는다
             # (tabular 는 같은 이름이 원시 data_dict 를 받아 이름이 어긋나 있다).
-            results.append(mapper.to_parse_format(fields_list, doc_type))
+            # 표 모양은 본문 조립 시 JSON·HTML 값 평문화에도 쓰이므로 build_fields 와 같게 넘긴다.
+            results.append(mapper.to_parse_format(
+                fields_list, doc_type,
+                table_format=getattr(self, "_table_format", "html"),
+                compact_tables=bool(getattr(self, "_compact_tables", True)),
+            ))
         return merge_parse_formats(results)
 
     async def _parse_tabular_records(
@@ -1322,7 +1290,11 @@ class ParserCore:
             claimed_pages.update(claimed_row_pages(fields_list))
             fields_list = await self._apply_llm_fields(mapper, fields_list)
             _log.info(f"[parser] tabular_mapping 행 {len(fields_list)}건 → element")
-            results.append(mapper.to_parse_format_from_fields(fields_list, runtime_doc_type))
+            results.append(mapper.to_parse_format_from_fields(
+                fields_list, runtime_doc_type,
+                table_format=getattr(self, "_table_format", "html"),
+                compact_tables=bool(getattr(self, "_compact_tables", True)),
+            ))
 
         if multi:
             sheets = data_dict.get("data", []) or []
@@ -2041,7 +2013,8 @@ class ParserCore:
             if bad_reason:
                 _log.warning(f"[parser] 비정상 파일 감지({bad_reason}) — 처리 중단: {file_path}")
                 raise GenosServiceException(
-                    "1", f"{bad_reason} 입니다. 정상 문서로 다시 업로드하세요: {os.path.basename(file_path)}"
+                    "1", f"{bad_reason} 입니다. 정상 문서로 다시 업로드하세요: {os.path.basename(file_path)}",
+                    error_type="permanent",
                 )
 
             if ext != raw_ext:
@@ -2147,3 +2120,13 @@ class ParserCore:
             return await self._call_route(job)
         finally:
             self._finish_job(job)
+
+    def run_activity(self, arg: dict) -> dict:
+        """Temporal 액티비티 본문(파싱). 워커가 activities/<slug>.py 의 이 메서드를 slug 이름으로 등록한다.
+
+        처리는 이 인스턴스의 `__call__`(입력·라우트·출력 훅 전부)로 한다. 인자·반환·하트비트·오류
+        분류는 genon/preprocessor/worker/runtime.py — 파사드 파일은 상속만 하고 이 메서드를 고치지 않는다.
+        """
+        from genon.preprocessor.worker import runtime   # temporalio 는 워커에서만 import 한다
+
+        return runtime.execute(self, "parse", arg)
