@@ -170,10 +170,10 @@ fields:                       # 각 목표필드의 설정은 YAML 매핑으로 
     alias: [질문, 문의내용]                    # 입력 데이터의 컬럼·key 이름들. 표기가 흔들리면 여러 개
   ANSWER:
     alias: [답변]
-    transform: text                           # 값 변환(체이닝 가능)
+    transform: to_text                        # 값 변환(체이닝 가능)
   REG_DT:
     alias: [등록일]
-    transform: date_int_flex                  # "26.07.01" -> 20260701
+    transform: date_int                       # "26.07.01" -> 20260701
   USE_YN:
     alias: [노출여부]
     values: {"Y": [노출, 사용], "N": [미노출]}  # 값 표기를 표준 코드로 통일합니다
@@ -208,8 +208,8 @@ body:                         # 청크 본문(= 임베딩 입력)을 어떻게 �
 `pack`은 순번과 LLM 출력까지 확정된 뒤에 적용합니다. 행·레코드형의 `filter`·`require`는 추가 LLM 생성보다
 앞서 적용되므로, LLM이 나중에 생성할 필드의 유효성은 결과 검증 단계에서 확인하세요.
 
-기본 변환기는 10종입니다. 인자가 필요 없는 사용법과 선택 인자를 받는 사용법은
-[부록 C.2](#c2-transform-10종)에 정리되어 있습니다. 목록에 없는 이름은 별도 등록하지 않으면 기동에 실패합니다.
+기본 변환기는 9종입니다. 인자가 필요 없는 사용법과 선택 인자를 받는 사용법은
+[부록 C.2](#c2-transform-9종)에 정리되어 있습니다. 목록에 없는 이름은 별도 등록하지 않으면 기동에 실패합니다.
 사이트 전용 변환기 등록은 [2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)을 참조하세요.
 
 > 여기 적는 이름이 **설정 표기**입니다. 오류 메시지에는 `column_map` · `text_fields` · `key_map`
@@ -457,7 +457,8 @@ PY
 | 본문이 빈 레코드가 빠짐 | 정상입니다. 빈 벡터 적재를 막으려고 경고와 함께 제외합니다 |
 | xlsx가 행별로 나뉘지 않음 | 매칭되는 매핑이 없으면 `formats.xlsx.processing_mode`가 결정합니다 (`tabular` 인지 확인) |
 | `tabular custom_fields config 없음: …` | `config_file`은 **프로세서 config와 같은 폴더** 기준. 파일명만 적으세요 |
-| `등록되지 않은 transforms 변환기: …` | 기본 제공 10종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
+| `등록되지 않은 transforms 변환기: …` | 기본 제공 9종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
+| `… 에 쓸 수 없는 인자입니다: …` | 변환기 인자 이름의 오타입니다. 메시지의 `쓸 수 있는 인자` 목록과 대조합니다. `html_renderer`는 실행 시 자동으로 주입되므로 설정에 적지 않습니다 |
 | 필드는 안 붙는데 `doc_type`만 모든 청크에 붙음 | 매칭되는 등록이 없는 상태. 스탬프는 매칭 여부와 무관하게 동작합니다 |
 | csv/xlsx인데 `doc_type`도 안 붙음 | 매핑 없는 일반 tabular 경로인지 확인합니다. 매핑된 행 경로와 Docling 문서 경로는 별도로 확인합니다 |
 
@@ -701,7 +702,7 @@ PY
             ]}
 ```
 
-적용 후 `DETAIL_TEXT`가 채워지고, 설정의 `transform: html_text`가 그때부터 동작합니다.
+적용 후 `DETAIL_TEXT`가 채워지고, 설정의 `transform: to_text`가 그때부터 동작합니다.
 
 #### 청커 훅 — 청크 단위 수정
 
@@ -1415,7 +1416,7 @@ git diff
 | 섹션 · 키 | 적용 파일 | 기본값 | 가능한 값 | 변경 시점 |
 |---|---|---|---|---|
 | `output.format` | **parser 전용** | `docling` | `json` / `html` / `markdown` / `docling` | Docling 문서의 구조를 청커에 보존하려면 `docling`. 요소형 `elements`도 청커 입력으로 지원됩니다 |
-| `ocr.ocr_mode` | parser | `auto` | `auto` / `force` / `disable` | 스캔 문서가 많으면 `force`, OCR 서버가 없으면 `disable` |
+| `ocr.ocr_mode` | parser | `disable` | `disable` / `auto` / `force` | 기본은 OCR 안 함. 판정이 필요한 문서는 요청 파라미터·문서유형 설정으로 `auto`(판정 불가는 재OCR 안 함), 스캔 문서가 많으면 `force` |
 | `chunking.chunk_size` | chunking | `1000` | 정수 | 크기 기준. 문서형은 양수일 때 `min_chunk_size` 하한을 적용합니다. 요소형은 별도 분할 경로를 사용합니다 |
 | `chunking.min_chunk_size` | chunking | `1024` | 정수 | **문서형 경로 전용** 크기 하한. `0` 이하이면 하한 보정을 끕니다. 기본 설정의 문서형 실효 크기는 `1024`입니다 |
 | `chunking.chunk_mode` | chunking | `split_only` | `split_only` / `resize_all` | `split_only`는 섹션 구조 유지(작은 청크 다수), `resize_all`은 크기 기준 재조립(균일) |
@@ -1667,6 +1668,10 @@ facade의 `GenosSmartChunker` ClassVar는 청크 표기 방식을 정합니다.
 동작이 그렇다는 것이지 키를 적어도 된다는 뜻이 아닙니다. `body.split`·`body.repeat`을 적으면
 sections가 읽지 않는 키이므로 **기동에 실패합니다.**
 
+rows·records의 `body.fields`·`body.repeat` 값이 JSON·HTML이면 본문에는 `to_text`와 같은 방식으로
+평문화해 싣습니다(`to_text`를 지정한 필드는 이미 평문이므로 결과가 같습니다). 필드 값 자체는 바뀌지
+않으므로, **청크 메타(적재 컬럼)에도 평문이 필요하면** 여전히 `transform: to_text`를 지정합니다.
+
 **입력 데이터 구조 · 선별 · LLM**
 
 | 기능 | 설정 키 (내부 이름) | rows | records | sections | document | html |
@@ -1703,28 +1708,29 @@ HTML 원문이 입력으로 전달되어야 하며, JSON 안에 HTML이 들어 �
 | `require.fields` | `sections`만 **`required_shared_fields`**, 나머지는 `required` |
 | `llm` | `rows` · `records` · `sections`는 `llm_fields`. `document`는 항목이 **최상위 키로 펼쳐져** `output_fields` · `system_prompt` · `user_prompt` 같은 이름으로 나옵니다 |
 
-### C.2 `transform` 10종
+### C.2 `transform` 9종
 
-체이닝됩니다. 잘못된 이름·빠진 인자·컴파일되지 않는 정규식은 **기동 시** 걸립니다.
+체이닝됩니다. 잘못된 이름·빠진 인자·쓸 수 없는 인자·컴파일되지 않는 정규식은 **기동 시** 걸립니다.
 
 | 이름 | 인자 | 하는 일 |
 |---|---|---|
-| `date_int` | — | 날짜 텍스트 → `YYYYMMDD` 정수 |
-| `date_int_flex` | — | 위 + 2자리 연도(`26.07.01`)·구분자 없는 `260701` |
-| `text_norm` | — | NFKC + 공백 축약 + casefold (중복 판정용) |
+| `date_int` (옛 이름 `date_int_flex`) | `on_error` 기본 `0` | 날짜 텍스트 → `YYYYMMDD` 정수. 2자리 연도(`26.07.01`)·구분자 없는 `20260713`·`260701` 도 받는다. 날짜로 읽지 못하면 `on_error`, 빈 값은 항상 `0` |
+| `normalize` (옛 이름 `text_norm`) | — | NFKC + 양끝 공백 제거 + 연속 공백 축약 + casefold (중복 판정용). 영문은 소문자로 바뀌고, 단어 사이 공백은 한 칸으로 줄일 뿐 없애지 않는다 |
 | `regex_sub` | `pattern` 필수, `repl` 기본 `""` | 정규식 치환 (`"18,000원"` → `"18000"`) |
-| `regex_extract` | `pattern` 필수, `group` 기본 `1` | 정규식 오려내기. 미매칭 시 `None` |
+| `regex_extract` | `pattern` 필수, `group` 기본 `1`, `on_error` 기본 `null` | 정규식 오려내기. 미매칭 시 `on_error`, 빈 값은 그대로 |
 | `hash` | `length` 기본 `16`, `prefix` 기본 `""` | SHA-1 16진 코드화. 같은 값이면 같은 코드 |
-| `to_int` | `on_error` 기본 `null` | 숫자와 `-`를 남겨 정수화. 소수점 단위 변환은 하지 않음 |
+| `to_int` | `on_error` 기본 `null` | 정수 하나로 변환. 천 단위 콤마·단위는 무시하고, 소수이거나 숫자가 둘 이상이면 `on_error` |
 | `truncate` | `length` 필수, `suffix` 기본 `""` | 길이 자르기(적재 컬럼 길이 맞춤) |
-| `html_text` | — | HTML로 **강제** 평문화. 표·목록 유지 |
-| `text` | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
+| `to_text` (옛 이름 `text`·`html_text`) | — | JSON/HTML/평문 **자동 판별** 후 평문화 |
 | `to_json` | `on_scalar`, `key` | 값을 **유효한 JSON 문자열**로 맞춤(적재 DB의 JSON 컬럼용) |
 
 `regex_extract`의 기본 `group: 1`은 첫 번째 캡처 그룹을 뜻합니다. 패턴에 그룹이 없으면 매칭되어도 `None`이
-나오므로 전체 매칭값을 원하면 `group: 0`을 지정합니다. `to_int("1.5")`는 `15`이므로 소수 금액·비율의
-변환에는 사용하지 마세요. `truncate`는 `suffix`가 `length`보다 길면 길이 상한을 넘을 수 있으므로 접미사는
-제한 길이 이하로 설정합니다.
+나오므로 전체 매칭값을 원하면 `group: 0`을 지정합니다. `to_int("1.5")`와 `to_int("3~5개")`는
+`on_error` 값이 되므로 소수 금액·비율이나 범위 표기의 변환에는 사용하지 마세요. `truncate`는 `suffix`가
+`length`보다 길면 길이 상한을 넘을 수 있으므로 접미사는 제한 길이 이하로 설정합니다.
+
+`on_error`는 값이 있는데 변환기가 값을 만들지 못했을 때 남길 값입니다. 빈 값(`null`·빈 문자열)에는 적용되지
+않으므로 `{name: date_int, on_error: 99991231}`은 `"진행중"`을 `99991231`로, 비어 있는 종료일은 `0`으로 둡니다.
 
 인자가 있는 변환기는 `{name: ...}` 형태로 적고, 여러 개를 이어 붙일 수 있습니다.
 
@@ -1762,7 +1768,7 @@ source:
 
 | 키 | 하는 일 |
 |---|---|
-| `records_at` | 레코드 배열의 key 이름. 생략하면 payload가 배열이면 원소마다 1건, 단일 object면 그 자체가 1건 |
+| `records_at` | 레코드 배열의 key 이름. 생략하면 payload가 배열이면 원소마다 1건이고, object면 그 안(배열 안은 제외)에서 dict 배열을 찾습니다. 하나면 그 배열, 여럿이면 `fields` alias가 더 많이 맞는 배열을 쓰고 구별되지 않으면 요청이 실패합니다. dict 배열이 없으면 object 자체가 1건 |
 | `on_missing` | `records`는 지정 배열을 못 찾았을 때, `sections`는 문서 공통 필수값이 없을 때의 정책. 두 경로 모두 `error`가 기본이며 `skip`은 경고 후 0건 처리 |
 | `merge_rows` | `group_by`가 같은 **연속** 건만 한 묶음으로 접습니다. 병합은 값 변환·파생보다 **먼저** 실행됩니다 |
 | `sections` | `kind: sections`의 섹션 표시 이름 |
@@ -1858,7 +1864,7 @@ source:
   on_missing: error
 fields:
   TITLE: {alias: [title]}
-  DETAIL: {alias: [detail], transform: text}
+  DETAIL: {alias: [detail], transform: to_text}
 require:
   fields: [TITLE]
 body:

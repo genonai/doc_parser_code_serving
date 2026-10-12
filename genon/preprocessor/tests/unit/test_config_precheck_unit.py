@@ -103,6 +103,16 @@ def test_precheck_passes_on_shipped_resource():
         # 제거된 키
         (lambda c: c.update({"nulls": ["BIZ_ID"]}), "nulls"),
         (lambda c: c.update({"json_text_fields": {"D": "SRC"}}), "json_text_fields"),
+        # transform 은 키 대조가 아니라 컴파일 단계에서 걸린다
+        (lambda c: c["fields"]["Q"].update({"transform": {"name": "hash", "lenght": 8}}),
+         "쓸 수 없는 인자"),
+        # 생성자 검증 — 키 대조·transform 컴파일은 통과하지만 기동은 실패한다(#457)
+        (lambda c: c["fields"].update({"T": {"template": "{{Q}} {{QQ}}"}}), "참조하는"),
+        (lambda c: (c["fields"].update({"P": {"pack": ["Q"]}}), c["body"]["fields"].append("P")),
+         "pack 필드"),
+        (lambda c: c["fields"].update({"title": {"alias": ["제목"]}}), "예약 필드"),
+        (lambda c: (c.update({"source": {"kind": "html"}, "fields": {"Q": {"select": "p >>"}}}),
+                    c.pop("body")), "선택자를 해석할 수 없습니다"),
     ],
 )
 def test_precheck_detects_blocking_problems(tmp_path, mutate, expect):
@@ -113,8 +123,8 @@ def test_precheck_detects_blocking_problems(tmp_path, mutate, expect):
     (tmp_path / "custom_field_x.yaml").write_text(
         yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8"
     )
-    block = {"doc_type": "t", "extractor": "tabular_mapping",
-             "config_file": "custom_field_x.yaml"}
+    # extractor 는 기동처럼 source.kind 에서 유도한다(rows → tabular_mapping, html → html_select).
+    block = {"doc_type": "t", "config_file": "custom_field_x.yaml"}
     problems = precheck.check_block("cfg.yaml", block, tmp_path, set())
     assert any(expect in p and p.startswith("[기동실패]") for p in problems), problems
 
@@ -198,3 +208,23 @@ def test_precheck_detects_undefined_preset(tmp_path):
     problems = precheck.check_model_presets(tmp_path)
     blocking = [p for p in problems if p.startswith("[기동실패]")]
     assert any("기븐" in p and "custom_field_demo.yaml" in p for p in blocking), problems
+
+
+@pytest.mark.parametrize(
+    "parser_output, chunker_output, warned",
+    [
+        ({"table_format": "markdown"}, {"table_format": "markdown"}, False),
+        ({}, {"table_format": "markdown"}, True),  # 파서는 키가 없으면 html 이다
+        ({"table_format": "html"}, {"export_to_html": 0}, True),  # 청커의 레거시 플래그
+    ],
+    ids=["same", "parser_key_missing", "chunker_legacy_flag"],
+)
+def test_precheck_warns_table_format_mismatch(tmp_path, parser_output, chunker_output, warned):
+    """레코드형 문서는 파서 값, 일반 문서는 청커 값으로 표가 나가므로 둘이 다르면 경고한다."""
+    precheck = _load_precheck()
+    (tmp_path / "parser_processor_config.yaml").write_text(
+        yaml.safe_dump({"output": parser_output}), encoding="utf-8")
+    (tmp_path / "chunking_processor_config.yaml").write_text(
+        yaml.safe_dump({"output": chunker_output}), encoding="utf-8")
+    problems = precheck.check_table_format_pairs(tmp_path)
+    assert bool(problems) is warned and all(p.startswith("[경고]") for p in problems), problems

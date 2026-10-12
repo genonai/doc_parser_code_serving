@@ -14,6 +14,7 @@ extractor=tabular_mapping 설정을 적용해 행별 metadata element를 만든�
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import re
@@ -37,7 +38,7 @@ from .custom_fields_enricher import (
     normalize_doc_type,
     normalize_doc_types,
 )
-from .field_transforms import VALUE_TRANSFORMS, render_field_text
+from .field_transforms import VALUE_TRANSFORMS, detect_payload_kind, render_field_text
 
 # 표 출력 포맷 기본값은 json_records 와 한 벌을 쓴다 — 경로마다 기본값이 갈리면
 # 같은 원천이 kind 에 따라 다른 표 모양으로 적재된다.
@@ -377,10 +378,17 @@ def collect_target_field_names(cfg: dict) -> set[str]:
 # 그래서 기본 separator 는 빈 문자열이다. 구분자를 끼우면 JSON 이 복원되지 않는다.
 #
 #   row_merge:
-#     group_by: [REGT_NO, JONG_CODE]   # 이 값이 같은 "연속" 행이 한 묶음
-#     order_by: NTC_OBJLINE_NO         # 묶음 안 정렬 기준(숫자 우선)
+#     group_by: [JONG_CODE, NEWS_DATE] # 이 값이 같은 행이 한 묶음(떨어져 있어도 모은다)
+#     part_by:  REGT_NO                # 묶음 안의 문서 경계(선택). order_by 는 이 안에서만 유효
+#     order_by: NTC_OBJLINE_NO         # 문서 안 정렬 기준(숫자 우선)
 #     concat:   [DETAIL_DESC]          # 순서대로 이어붙일 필드
 #     separator: ""                    # 기본값
+#
+# 같은 종목·일자가 등록번호를 달리해 여러 번 오고, 그 행들이 원천 안에서 떨어져 있는 사례가
+# 있다(AI차트뷰 실측). 게시물 라인번호는 등록번호마다 1부터 다시 매겨지므로 묶음 전체를
+# 라인번호 하나로 정렬하면 두 문서의 조각이 섞인다. 그래서 part_by 로 문서를 먼저 가른다.
+# 문서가 둘 이상이고 모두 JSON 으로 복원되면 `[문서1,문서2]` 배열로 합친다 — 그냥 이어붙이면
+# `{..}{..}` 가 되어 JSON 이 깨진다. 복원되지 않는 문서가 섞이면 개행으로만 잇는다.
 #
 # 이름은 원천 컬럼명이 아니라 **목표필드명**을 쓴다(column_map 을 거친 뒤 이름). yaml 안에서
 # 어휘를 하나로 유지하려는 것이고, 오타는 아래 검증이 기동 시에 잡는다.
@@ -405,13 +413,14 @@ def compile_row_merge(cfg: dict, *, label: str) -> dict | None:
     group_by = as_list("group_by")
     concat = as_list("concat")
     order_by = str(spec.get("order_by") or "").strip() or None
+    part_by = str(spec.get("part_by") or "").strip() or None
     if not group_by:
         raise ValueError(f"{label}: row_merge 에는 group_by 가 필요합니다(묶음 경계를 정하는 필드).")
     if not concat:
         raise ValueError(f"{label}: row_merge 에는 concat 이 필요합니다(이어붙일 필드).")
 
     known = collect_target_field_names(cfg)
-    unknown = sorted({*group_by, *concat, *([order_by] if order_by else [])} - known)
+    unknown = sorted({*group_by, *concat, *(f for f in (order_by, part_by) if f)} - known)
     if unknown:
         raise ValueError(
             f"{label}: row_merge 의 {unknown} 를 만드는 설정이 없습니다. "
@@ -421,6 +430,7 @@ def compile_row_merge(cfg: dict, *, label: str) -> dict | None:
     return {
         "group_by": group_by,
         "order_by": order_by,
+        "part_by": part_by,
         "concat": concat,
         "separator": str(spec.get("separator", "") or ""),
     }
@@ -436,63 +446,105 @@ def _order_key(value: Any) -> tuple[int, float, str]:
         return (1, 0.0, str(value))
 
 
+def _join_parts(parts: list[str]) -> str:
+    """part_by 로 가른 문서들을 합친다. 모두 JSON 이면 배열로, 아니면 개행으로 잇는다."""
+    if len(parts) == 1:
+        return parts[0]
+    try:
+        for part in parts:
+            json.loads(part)
+    except ValueError:
+        return "\n".join(parts)
+    return "[" + ",".join(parts) + "]"
+
+
+def _merge_key(value: Any) -> Any:
+    """묶음·문서 키로 쓸 값. JSON 레코드의 배열·객체 값도 dict 키가 되도록 정규화 문자열로 바꾼다."""
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return value
+
+
+def drop_duplicate_records(records: list[tuple[dict, dict]]) -> list[tuple[dict, dict]]:
+    """`(목표필드 dict, 원본 row dict)` 목록에서 원본 row 가 완전히 같은 것을 뺀다.
+
+    원천이 같은 행을 다시 보내는 사례가 있다(모니모 AI차트뷰). 그대로 두면 같은 청크·같은
+    BIZ_ID 가 두 번 생기고, `row_merge` 에서는 같은 조각이 두 번 이어붙어 JSON 이 깨진다.
+    비교 대상은 원본 row 전체다. 일부 컬럼만 같은 행은 서로 다른 행이므로 유지한다.
+    처음 나온 행을 남기고 순서를 보존한다. 키 순서는 무시하고, 배열·객체 값은 정규화 문자열로
+    비교한다(해시할 수 없는 값이 와도 실패하지 않게 한다).
+    판정은 로더가 넘겨준 값 기준이다. xlsx 로더는 셀을 문자열로 읽으므로 숫자 1 과 텍스트 '1' 은
+    같은 행이 된다. 이후 단계에서도 두 값은 구별되지 않으므로 남겨도 같은 청크가 두 번 생길 뿐이다.
+    """
+    seen: set[str] = set()
+    kept: list[tuple[dict, dict]] = []
+    for fields, row in records:
+        key = json.dumps(
+            {str(k): v for k, v in row.items()}, ensure_ascii=False, sort_keys=True, default=str
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append((fields, row))
+    return kept
+
+
 def merge_row_records(
     records: list[tuple[dict, dict]],
     spec: dict,
     resolved: dict[str, str | None],
 ) -> list[tuple[dict, dict]]:
-    """`(목표필드 dict, 원본 row dict)` 목록을 group_by 연속 런 단위로 접는다.
+    """`(목표필드 dict, 원본 row dict)` 목록을 group_by 값이 같은 것끼리 접는다.
 
-    **연속 런** 기준인 이유: 멀리 떨어진 동일 키를 끌어와 붙이면 원천이 같은 등록번호를
-    재사용했을 때 서로 다른 게시물이 한 덩어리로 뭉개진다. 원천은 조각을 붙여서 보내므로
-    연속으로 충분하고, 그렇지 않은 데이터를 조용히 이어붙이지 않는 쪽이 안전하다.
+    떨어져 있는 행도 모은다. 같은 종목·일자가 원천 안에서 흩어져 오는 사례가 있기 때문이다.
+    병합된 레코드는 그 묶음이 처음 나온 자리에 둔다.
+
+    part_by 가 있으면 묶음 안을 그 값(숫자 우선 오름차순)으로 문서별로 가르고, 문서마다
+    order_by 로 정렬해 이어붙인 뒤 `_join_parts` 로 합친다. 없으면 묶음 전체가 문서 하나다.
 
     concat 이외 필드는 정렬 후 **첫 행** 값을 쓴다. 원본 row dict 도 첫 행 것을 쓰되
     concat 대상의 원천 컬럼만 이어붙인 값으로 덮는다(폴백 본문이 조각만 갖지 않게).
     """
     group_by = spec["group_by"]
     order_by = spec["order_by"]
+    part_by = spec.get("part_by")
     concat = spec["concat"]
     separator = spec["separator"]
 
-    merged: list[tuple[dict, dict]] = []
-    run: list[tuple[dict, dict]] = []
-    run_key: Any = object()
+    def sort_key(item: tuple[dict, dict]) -> tuple:
+        part = _order_key(item[0].get(part_by)) if part_by else ()
+        line = _order_key(item[0].get(order_by)) if order_by else ()
+        return (part, line)
 
-    def flush() -> None:
-        if not run:
-            return
-        ordered = sorted(run, key=lambda item: _order_key(item[0].get(order_by))) if order_by else run
+    groups: dict[tuple, list[tuple[dict, dict]]] = {}
+    for fields, row in records:
+        key = tuple(_merge_key(fields.get(name)) for name in group_by)
+        groups.setdefault(key, []).append((fields, row))
+
+    merged: list[tuple[dict, dict]] = []
+    for run in groups.values():
+        ordered = sorted(run, key=sort_key) if (order_by or part_by) else run
         fields = dict(ordered[0][0])
         row = dict(ordered[0][1])
         for target in concat:
-            pieces = [
-                str(item[0].get(target))
-                for item in ordered
-                if item[0].get(target) not in (None, "")
-            ]
-            value = separator.join(pieces) if pieces else None
+            docs: dict[Any, list[str]] = {}
+            for item in ordered:
+                if item[0].get(target) not in (None, ""):
+                    doc = _merge_key(item[0].get(part_by)) if part_by else None
+                    docs.setdefault(doc, []).append(str(item[0].get(target)))
+            value = _join_parts([separator.join(p) for p in docs.values()]) if docs else None
             fields[target] = value
             source = resolved.get(target)
             if source is not None:
                 row[source] = value
         merged.append((fields, row))
-        run.clear()
-
-    for fields, row in records:
-        key = tuple(fields.get(name) for name in group_by)
-        if run and key != run_key:
-            flush()
-        run_key = key
-        run.append((fields, row))
-    flush()
     return merged
 
 
 # ── 값 변환(transforms) — 이름만 쓰는 형태와 인자를 주는 형태 둘 다 ──────────
 #
 #   transforms:
-#     OPEN_DT: date_int_flex                              # 인자 없는 변환기(종전 표기)
+#     OPEN_DT: date_int                                   # 인자 없는 변환기(종전 표기)
 #     FEE_AMT:                                            # 인자를 주는 변환기, 순서대로 적용
 #       - {name: regex_sub, pattern: "[^0-9]", repl: ""}
 #       - {name: to_int}
@@ -538,7 +590,8 @@ def compile_transforms(spec: Any, *, label: str, cfg: Any = None) -> dict[str, l
             chain.append(_compile_transform_step(name, kwargs, target=str(target), label=label))
         # to_json 뒤에 다른 단계가 오면 산출이 더 이상 JSON 이 아니다(truncate 는 잘라서
         # 깨뜨리고, text 는 다시 평문으로 만든다). 조용히 깨지므로 여기서 막는다.
-        if "to_json" in names and names[-1] != "to_json":
+        # 마지막 단계만 보면 `[to_json, text, to_json]` 이 통과하므로 마지막을 뺀 전체를 본다.
+        if "to_json" in names[:-1]:
             raise ValueError(
                 f"{label}: transforms.{target} 의 to_json 은 체인 **맨 뒤**여야 합니다 "
                 f"(현재: {names}) — 뒤에 다른 변환이 오면 JSON 이 깨집니다."
@@ -582,27 +635,73 @@ def _compile_transform_step(name: str, kwargs: dict, *, target: str, label: str)
     )
 
     if name in VALUE_TRANSFORMS:
+        # 인자 없이도 부를 수 있는 변환기다(메타 경로 apply_field_transforms 가 그렇게 부른다).
+        # 키워드 전용 인자(`date_int` 의 `on_error`)만 설정에서 받는다. register_transform 으로
+        # 등록한 함수나 시그니처를 읽을 수 없는 내장 함수는 인자를 받지 않는다.
         if kwargs:
-            raise ValueError(
-                f"{label}: transforms.{target} 의 '{name}' 은 인자를 받지 않습니다: {sorted(kwargs)}"
-            )
-        return (VALUE_TRANSFORMS[name], {}, False)
+            try:
+                allowed = {
+                    p.name for p in inspect.signature(VALUE_TRANSFORMS[name]).parameters.values()
+                    if p.kind is p.KEYWORD_ONLY
+                }
+            except (TypeError, ValueError):
+                allowed = set()
+            unknown = sorted(set(kwargs) - allowed)
+            if unknown:
+                raise ValueError(
+                    f"{label}: transforms.{target} 의 '{name}' 에 쓸 수 없는 인자입니다: {unknown} "
+                    f"(쓸 수 있는 인자: {sorted(allowed)})"
+                )
+        return (VALUE_TRANSFORMS[name], dict(kwargs), False)
     if name not in PARAM_TRANSFORMS:
         raise ValueError(
             f"{label}: 등록되지 않은 transforms 변환기: {name!r} "
             f"(사용 가능: {list(ALL_TRANSFORM_NAMES)})"
         )
 
+    # 허용 인자는 변환기 시그니처에서 얻는다. 별도 표를 두면 함수와 어긋난다. `html_renderer`
+    # 는 런타임이 주입하는 인자라 설정에 적어도 apply_transforms 가 덮어써 조용히 무시된다.
+    allowed = {
+        p.name for p in inspect.signature(PARAM_TRANSFORMS[name]).parameters.values()
+        if p.kind is p.KEYWORD_ONLY
+    } - {"html_renderer"}
+    unknown = sorted(set(kwargs) - allowed)
+    if unknown:
+        raise ValueError(
+            f"{label}: transforms.{target} 의 '{name}' 에 쓸 수 없는 인자입니다: {unknown} "
+            f"(쓸 수 있는 인자: {sorted(allowed)})"
+        )
     missing = [k for k in PARAM_TRANSFORM_REQUIRED[name] if k not in kwargs]
     if missing:
         raise ValueError(f"{label}: transforms.{target} 의 '{name}' 에 {missing} 인자가 필요합니다.")
     if "pattern" in kwargs:
+        # 검사한 값과 실행하는 값이 같아야 한다. 문자열로 바꿔 넘기면 `pattern: null` 이
+        # "None" 정규식이 되는 식으로 의도하지 않은 값까지 받아들이므로 문자열만 허용한다.
+        if not isinstance(kwargs["pattern"], str):
+            raise ValueError(
+                f"{label}: transforms.{target} 의 '{name}' pattern 은 문자열이어야 합니다: "
+                f"{kwargs['pattern']!r} — 숫자처럼 읽히는 패턴은 따옴표로 감쌉니다."
+            )
         try:
-            re.compile(str(kwargs["pattern"]))
+            compiled = re.compile(str(kwargs["pattern"]))
         except re.error as exc:
             raise ValueError(
                 f"{label}: transforms.{target} 의 정규식이 잘못됐습니다: {exc}"
             ) from exc
+        if name == "regex_extract":
+            # 없는 그룹은 실행 시 IndexError 가 삼켜져 값이 항상 None 이 되므로 기동 시에 막는다.
+            group = kwargs.get("group", 1)
+            if isinstance(group, str):
+                valid = group in compiled.groupindex
+            else:
+                # bool 은 int 의 하위형이라 `group: true` 가 1번 그룹으로 통과하지 않게 막는다.
+                valid = (isinstance(group, int) and not isinstance(group, bool)
+                         and 0 <= group <= compiled.groups)
+            if not valid:
+                raise ValueError(
+                    f"{label}: transforms.{target} 의 '{name}' group {group!r} 이 패턴에 "
+                    f"없습니다 (캡처 그룹 {compiled.groups}개, 이름 {sorted(compiled.groupindex)})."
+                )
     if name == "to_json" and "on_scalar" in kwargs:
         # yaml 의 `on_scalar: null` 은 널 값으로 파싱돼 여기 None 으로 온다. 기본값으로
         # 조용히 돌아가지 않게 이름으로만 받는다.
@@ -617,7 +716,7 @@ def _compile_transform_step(name: str, kwargs: dict, *, target: str, label: str)
 def apply_transforms(fields: dict, compiled: dict[str, list], html_renderer: Any = None) -> None:
     """컴파일된 변환 체인을 제자리 적용한다.
 
-    `html_renderer` 는 `html_text`/`text` 변환기에만 주입한다 — 표 모양을 살리려면 요청의
+    `html_renderer` 는 `to_text` 변환기에만 주입한다 — 표 모양을 살리려면 요청의
     table_format/compact_tables 를 물려야 해서 설정으로는 표현할 수 없는 인자다. 기본값이
     None 이라 렌더러가 필요 없는 호출부는 그대로 둔다(표가 오는 경로에서는 반드시 넘긴다).
     """
@@ -1088,16 +1187,28 @@ def _has_chunk_text_value(value: Any) -> bool:
     return True
 
 
-def _chunk_text_value(value: Any) -> str:
+# 본문에 실을 때 평문화하는 값의 종류. `broken_json` 은 원문 그대로 둔다 — 잘린 JSON 은
+# 평문화해도 복원되지 않고, 그 경고는 `to_text` 를 지정한 필드에서만 의미가 있다.
+_CHUNK_PLAINTEXT_KINDS = frozenset({"json", "html", "html_inline"})
+
+
+def _chunk_text_value(value: Any, html_renderer: Any = None) -> str:
     """본문에 실을 문자열. 배열은 항목을 `, ` 로 잇는다(파이썬 repr 을 내보내지 않는다).
 
     줄바꿈이 아니라 쉼표로 잇는 이유: 라벨(`키워드: …`)은 여러 줄 블록에 붙지 않으므로,
     줄바꿈으로 이으면 항목이 둘 이상일 때만 항목명이 조용히 사라진다.
+
+    값이 JSON·HTML 이면 `to_text` 변환과 같은 함수(`render_field_text`)로 평문화한다.
+    설정에 `to_text` 를 빠뜨려도 태그·JSON 원문이 임베딩 입력에 실리지 않게 하기 위함이다.
+    **필드 값 자체는 바꾸지 않는다** — 메타·적재 컬럼과 해시 입력은 설정이 정한 값 그대로다.
+    이미 `to_text` 를 거친 값은 평문이라 다시 판정해도 `text` 로 나와 그대로 통과한다.
     """
     if isinstance(value, (list, tuple)):
         return ", ".join(
             str(item) for item in value if item is not None and item != ""
         )
+    if detect_payload_kind(value) in _CHUNK_PLAINTEXT_KINDS:
+        return render_field_text(value, html_renderer=html_renderer) or ""
     return str(value)
 
 
@@ -1109,11 +1220,14 @@ def build_chunk_text(
     fallback_text: str = "",
     column_map: dict | None = None,
     field_labels: dict | None = None,
+    html_renderer: Any = None,
 ) -> tuple[str, str]:
     """본문과 모든 분할 조각에 반복할 접두를 함께 만든다.
 
     접두 필드는 본문에서 제외해 제목이 두 번 들어가지 않게 한다. 반환한 ``content`` 는
     접두가 있으면 반드시 그 문자열로 시작하므로 chunking processor 의 재부착 계약을 만족한다.
+    `html_renderer` 는 JSON·HTML 값을 본문용 평문으로 바꿀 때 표를 렌더링하는 콜백이다
+    (`structural_html_renderer`). 주지 않으면 표가 있는 HTML 은 태그 제거로 폴백한다.
     """
     column_map = column_map or {}
     field_labels = field_labels or {}
@@ -1145,7 +1259,7 @@ def build_chunk_text(
     def labeled(name: str) -> str:
         """`항목명: 값`. 값이 여러 줄이면 항목명만 한 줄로 앞세워 블록 구조를 지킨다.
 
-        여러 줄이면 항목명을 통째로 버리는 규칙이었다. 근거는 `text`/`html_text` 변환이 만든
+        여러 줄이면 항목명을 통째로 버리는 규칙이었다. 근거는 `to_text` 변환이 만든
         값이 자기 제목을 가진 마크다운 블록이라는 것이었는데, 실제 산출은 표·목록으로 시작해
         제목이 없는 경우가 대부분이라 설정에 적어 둔 이름이 조용히 사라졌다. 사람이 적어 준
         이름은 그래서 여러 줄 값에도 낸다 — 다만 `내용: | 구 분 |` 처럼 첫 줄에 붙이면 표가
@@ -1154,7 +1268,7 @@ def build_chunk_text(
         원천 헤더로 폴백한 이름은 종전대로 여러 줄 값에 붙이지 않는다. 그 헤더가 그 블록을
         설명한다는 근거가 사람이 적어 준 이름만큼 강하지 않다.
         """
-        value = _chunk_text_value(fields[name])
+        value = _chunk_text_value(fields[name], html_renderer)
         label = explicit_label(name)
         if label:
             return f"{label}:\n{value}" if "\n" in value else f"{label}: {value}"
@@ -1274,7 +1388,7 @@ class CustomFieldsMapperBase:
         (bca0e926 "defaults 와 constants 의 적용 순서를 세 extractor 에서 맞춤"). 그래서
         여기 한 벌만 둔다.
 
-        `html_renderer` 는 `html_text`/`text` 변환이 쓰는 구조 HTML 평문화 콜백이고,
+        `html_renderer` 는 `to_text` 변환이 쓰는 구조 HTML 평문화 콜백이고,
         `context` 는 값 정규화 경고에 붙일 위치 문자열이다. 둘 다 원천마다 다르므로
         호출측이 넘긴다 — 파이프라인의 순서는 그대로 두고 재료만 갈아 끼운다.
         """
@@ -1415,19 +1529,19 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
         안에 실어 보내고 `to_parse_format` 이 pop 한다.
 
         3단으로 나뉘어 있다.
-          1. 원시 매핑 — 행마다 `column_map` 값만 채운다.
-          2. 병합 — `row_merge` 가 있으면 연속 런을 한 레코드로 접는다.
+          1. 원시 매핑 — 행마다 `column_map` 값만 채운다. 원본 행이 완전히 같은 행은 뺀다.
+          2. 병합 — `row_merge` 가 있으면 group_by 가 같은 행을 한 레코드로 접는다.
           3. 레코드 마감 — defaults/constants/value_map/transforms/derive/required.
         순서가 중요하다. transforms 와 required 는 **병합이 끝난 값**을 봐야 한다 —
         조각 하나만 보고 날짜를 변환하거나 필수값을 판정하면 결과가 달라진다.
-        `row_merge` 미선언이면 런 길이가 1이라 종전과 동일하다.
+        `row_merge` 미선언이면 행 1개가 레코드 1개라 종전과 동일하다.
         """
         column_map = self.config.get("column_map") or {}
         required_fields = set(self.config.get("required") or [])
         doc_type = self.canonical_doc_type(runtime_doc_type)
 
         # 구조 HTML 이 섞여 올 수 있으므로 렌더러를 준비한다(변환이 없으면 만들지 않는다).
-        # `html_text`/`text` 변환기만 이것을 받는다. 표 모양을 docling 경로·records 경로와
+        # `to_text` 변환기만 이것을 받는다. 표 모양을 docling 경로·records 경로와
         # 같은 설정으로 맞춘다 — 인자를 주지 않으면 항상 <table> 이 되어, 같은 파일 안에서도
         # kind 마다 표가 다르게 나온다.
         html_renderer = structural_html_renderer(
@@ -1479,6 +1593,15 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
                         self._context_value(target, column_map[target], sheet_context)
                     )
                 records.append((fields, row))
+
+            # 원천이 다시 보낸 완전 중복 행은 병합 전에 뺀다. 같은 조각이 두 번 이어붙지 않게 한다.
+            unique = drop_duplicate_records(records)
+            if len(unique) != len(records):
+                _log.info(
+                    f"[tabular_custom_fields] 완전 중복 행 {len(records) - len(unique)}건 제거 "
+                    f"(sheet={sheet_name})"
+                )
+            records = unique
 
             # 2단계 — 병합. 시트 경계는 넘지 않는다(시트마다 page 가 다르다).
             if self.row_merge and records:
@@ -1557,12 +1680,24 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
         repack_records(self, fields_list)
         return fields_list
 
-    def to_parse_format_from_fields(self, fields_list: list[dict], runtime_doc_type: Any) -> dict:
-        """행별 목표필드 목록 → parse-format(청커 행 기반 경로가 소비하는 형태)."""
+    def to_parse_format_from_fields(
+        self, fields_list: list[dict], runtime_doc_type: Any, *,
+        table_format: str = DEFAULT_TABLE_FORMAT, compact_tables: bool = True,
+    ) -> dict:
+        """행별 목표필드 목록 → parse-format(청커 행 기반 경로가 소비하는 형태).
+
+        `table_format`/`compact_tables` 는 본문 조립 시 JSON·HTML 값을 평문화할 때의 표 모양이다.
+        `build_fields` 의 `to_text` 와 같은 설정을 받아 두 경로의 표 모양을 맞춘다.
+        """
         text_fields = list(self.config.get("text_fields") or [])
         doc_type = self.canonical_doc_type(runtime_doc_type)
 
         column_map = dict(self.config.get("column_map") or {})
+        # 변환 유무와 상관없이 만든다 — 본문 평문화는 `to_text` 지정 여부와 무관하게 적용된다.
+        # 콜백만 만들어 두므로 표가 있는 HTML 이 실제로 올 때만 docling 을 탄다.
+        html_renderer = structural_html_renderer(
+            table_format=table_format, compact_tables=compact_tables
+        )
 
         elements: list[dict] = []
         max_page = 0
@@ -1577,6 +1712,7 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
                 fallback_text=fallback_text,
                 column_map=column_map,
                 field_labels=self.field_labels,
+                html_renderer=html_renderer,
             )
             element = {
                 "category": "custom_fields_row",
