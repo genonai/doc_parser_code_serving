@@ -115,6 +115,30 @@ def test_plain_transform_name_still_works(tmp_path):
     assert rows[0]["DT"] == 20260701
 
 
+def test_on_error_separates_unparsable_from_empty(tmp_path):
+    """`date_int` 의 on_error 는 해석 실패에만 쓰이고 빈 입력은 0 으로 남는다(#431).
+
+    행 1은 monimo_product_slf_fields_sample.md(제목·sales_period), 행 2는 sales_period 가 없는
+    monimo_product_slf_sample.md(제목)의 값이다. 체인은 출고 VALID_TO 의 regex_sub 우회를
+    on_error 로 바꾼 형태다.
+    """
+    rows = _rows(tmp_path, """
+        schema: v2
+        source: {kind: rows}
+        fields:
+          T: {alias: [제목]}
+          VALID_TO:
+            alias: [sales_period]
+            transform:
+              - {name: regex_extract, pattern: '~\\s*(.*?)\\s*$'}
+              - {name: date_int, on_error: 99991231}
+        body:
+          fields: [T]
+    """, [{"제목": "든든한 여행상해보험(2601)(무배당) 상품요약서", "sales_period": "2025-12-1 ~ 진행중"},
+          {"제목": "삼성 s교통상해보험(2501)(무배당) 상품요약서"}])
+    assert [r["VALID_TO"] for r in rows] == [99991231, 0]
+
+
 def test_derive_combines_fields(tmp_path):
     """두 필드를 metadata 필드로 합치는 방법이 없었다(text_fields 는 청크 본문이다)."""
     rows = _rows(tmp_path, """
@@ -512,7 +536,7 @@ def test_json_path_gets_the_same_features(tmp_path):
          'body: {fields: [T]}\n', "정규식"),
         ("schema: v2\nsource: {kind: rows}\n"
          "fields: {T: {alias: [제목], transform: {name: date_int, pattern: x}}}\n"
-         "body: {fields: [T]}\n", "인자를 받지 않"),
+         "body: {fields: [T]}\n", "쓸 수 없는 인자"),
         ('schema: v2\nsource: {kind: rows}\n'
          'fields: {T: {alias: [제목]}, D: {template: "{{NOPE}}"}}\n'
          'body: {fields: [T]}\n', "만드는 설정이 없"),
@@ -557,6 +581,21 @@ def test_json_path_gets_the_same_features(tmp_path):
         ("schema: v2\nsource: {kind: rows}\n"
          "fields: {T: {alias: [제목], transform: [to_json, {name: truncate, length: 5}]}}\n"
          "body: {fields: [T]}\n", "맨 뒤"),
+        # 마지막 단계만 보면 체인 중간의 to_json 을 놓친다.
+        ("schema: v2\nsource: {kind: rows}\n"
+         "fields: {T: {alias: [제목]}, U: {const: x, transform: [to_json, text, to_json]}}\n"
+         "body: {fields: [T]}\n", "맨 뒤"),
+        # 옵션 이름 오타는 요청 때 TypeError 가 된다. 런타임 주입 인자(html_renderer)도 막는다.
+        ("schema: v2\nsource: {kind: rows}\n"
+         "fields: {T: {alias: [제목], transform: [{name: hash, lenght: 8}]}}\n"
+         "body: {fields: [T]}\n", "쓸 수 없는 인자"),
+        ("schema: v2\nsource: {kind: rows}\n"
+         "fields: {T: {alias: [제목], transform: [{name: text, html_renderer: x}]}}\n"
+         "body: {fields: [T]}\n", "쓸 수 없는 인자"),
+        # 따옴표 없는 숫자 패턴은 int 로 파싱돼 실행 시 re 가 거부한다.
+        ("schema: v2\nsource: {kind: rows}\n"
+         "fields: {T: {alias: [제목], transform: [{name: regex_sub, pattern: 2024}]}}\n"
+         "body: {fields: [T]}\n", "문자열이어야"),
         # 변환은 필드를 제자리에서 덮으므로, 본문에도 쓰이는 필드에 걸면 본문에 JSON 이 실린다.
         ("schema: v2\nsource: {kind: rows}\n"
          "fields: {T: {alias: [제목], transform: [to_json]}}\n"
@@ -583,6 +622,44 @@ def test_misconfiguration_is_caught_at_startup(tmp_path, body, expect):
     """요청 때 터지면 어느 설정이 문제인지 로그만 보고는 알 수 없다."""
     with pytest.raises(ValueError, match=expect):
         _rows(tmp_path, body, [{"제목": "x"}])
+
+
+@pytest.mark.parametrize(
+    "pattern, group, ok",
+    [
+        (r"^TD\d+", None, False),           # 괄호를 빠뜨린 실수
+        (r"^(?P<id>TD\d+)", "id", True),
+        (r"^(?P<id>TD\d+)", "nope", False),
+        (r"^(TD\d+)", True, False),          # yaml 의 true 가 1번 그룹으로 통과하지 않게
+    ],
+)
+def test_regex_extract_group_is_checked_on_shipped_config(pattern, group, ok):
+    """모니모 관심소식 출고 설정의 BIZ_ID 추출(#422).
+
+    없는 그룹은 실행 시 IndexError 가 삼켜져 BIZ_ID 가 조용히 항상 None 으로 적재된다.
+    """
+    import yaml
+
+    from genon.preprocessor.processing.enrichment import config_v2 as cv2
+    from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
+        compile_transforms,
+    )
+    from shipped_config import PREPROCESSOR_DIR, SITE_MONIMO
+
+    path = PREPROCESSOR_DIR / SITE_MONIMO / "custom_field_monimo_news.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    step = raw["fields"]["BIZ_ID"]["transform"]
+    assert step == {"name": "regex_extract", "pattern": r"^(TD\d+)"}, "출고 설정이 바뀌었다"
+    step["pattern"] = pattern
+    if group is not None:
+        step["group"] = group
+    internal, _ = cv2.load(raw, label=path.name)
+
+    if ok:
+        compile_transforms(internal["transforms"], label=path.name, cfg=internal)
+    else:
+        with pytest.raises(ValueError, match="패턴에 없습니다"):
+            compile_transforms(internal["transforms"], label=path.name, cfg=internal)
 
 
 @pytest.mark.parametrize(

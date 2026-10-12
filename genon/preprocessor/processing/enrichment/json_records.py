@@ -53,7 +53,6 @@ from .custom_fields_enricher import (
     normalize_doc_types,
 )
 from . import file_source
-from .field_transforms import VALUE_TRANSFORMS
 from .tabular_custom_fields import (
     CustomFieldsMapperBase,
     apply_sequence,
@@ -67,6 +66,7 @@ from .tabular_custom_fields import (
     compile_sequence,
     compile_transforms,
     compile_value_map,
+    drop_duplicate_records,
     merge_row_records,
     normalize_column_name,
     passes_filter,
@@ -229,6 +229,7 @@ def collect_records(payload: Any, records_key: str | None) -> list[dict] | None:
     """레코드(dict) 목록을 뽑는다. 키를 못 찾으면 None(호출측이 정책 결정).
 
     - `records_key` 미지정: payload 가 목록이면 그 안의 dict 들, dict 면 1건짜리 목록.
+      매퍼는 dict payload 를 여기로 보내지 않고 `find_record_arrays` 로 배열을 먼저 찾는다.
     - `records_key` 지정: 임의 깊이에서 그 이름의 키를 찾아 값이 list 면 그 안의 dict 들,
       dict 하나면 1건짜리 목록으로 본다.
     """
@@ -255,6 +256,33 @@ def collect_records(payload: Any, records_key: str | None) -> list[dict] | None:
         elif isinstance(node, list):
             queue.extend(node)
     return None
+
+
+def find_record_arrays(payload: dict) -> list[tuple[int, str, list[dict]]]:
+    """`records_at` 을 생략한 object payload 에서 레코드 배열 후보를 `(깊이, 키, 배열)` 로 모은다.
+
+    후보는 비어 있지 않고 원소가 모두 dict 인 배열이다(문자열 배열·빈 배열은 제외).
+    object 안으로만 내려가고 배열 안으로는 들어가지 않는다 — 레코드 안의 하위 배열
+    (`evtAtentnList` 등)을 레코드 배열로 오인하지 않기 위해서다.
+    """
+    found: list[tuple[int, str, list[dict]]] = []
+    level: list[dict] = [payload]
+    depth = 0
+    while level:
+        depth += 1
+        next_level: list[dict] = []
+        for node in level:
+            for key, value in node.items():
+                if isinstance(value, list) and value and all(isinstance(i, dict) for i in value):
+                    found.append((depth, str(key), value))
+                elif isinstance(value, dict):
+                    next_level.append(value)
+        level = next_level
+    return found
+
+
+# 후보 배열이 여럿일 때 alias 매칭 점수를 셀 앞쪽 레코드 수.
+_AUTO_RECORDS_SAMPLE = 5
 
 
 # docling HTML 백엔드 전용 경량 컨버터(lazy 싱글턴). HTML 백엔드는 순수 bs4 라 모델
@@ -620,7 +648,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         self.sequence = compile_sequence(cfg, label=label)
 
         # 원천이 값 하나를 여러 레코드에 쪼개 보내는 스키마용. tabular 와 같은 구현을 공유한다
-        # (연속 런 기준 병합 — 멀리 떨어진 동일 키는 다른 레코드로 남긴다).
+        # (group_by 가 같으면 떨어져 있어도 모은다).
         self.row_merge = compile_row_merge(cfg, label=label)
         self.llm_field_specs = build_llm_field_specs(cfg)
 
@@ -643,6 +671,8 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
     # ── 변환 ─────────────────────────────────────────────────────────────────
     def extract_records(self, payload: Any) -> list[dict]:
         """payload 에서 레코드 목록을 뽑는다. 못 찾으면 missing_policy 에 따라 처리."""
+        if self.records_key is None and isinstance(payload, dict):
+            return self._auto_records(payload)
         records = collect_records(payload, self.records_key)
         if records is None:
             msg = f"records 키 '{self.records_key}' 를 JSON 에서 찾지 못했습니다."
@@ -651,6 +681,51 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
             _log.warning(f"[json_records] {msg} — 레코드 0건으로 진행합니다.")
             return []
         return records
+
+    def _auto_records(self, payload: dict) -> list[dict]:
+        """`records_at` 없이 object payload 에서 레코드 배열을 고른다.
+
+        후보가 없으면 object 전체가 1건, 하나면 그 배열이다. 여럿이면 앞쪽 레코드에서
+        alias 가 값을 찾는 필드 수로 고르고, 동점이면 얕은 쪽을 쓴다. 그래도 구별되지 않거나
+        어느 배열도 맞지 않으면 설정 문제로 보고 missing_policy 와 무관하게 실패시킨다.
+        """
+        candidates = find_record_arrays(payload)
+        if not candidates:
+            return [payload]
+        if len(candidates) == 1:
+            _, key, records = candidates[0]
+            _log.info(f"[json_records] records_at 생략 — '{key}' 배열을 레코드로 사용합니다.")
+            return records
+
+        alias_specs = [
+            (names, target in self.raw_fields) for target, names in self.key_map.items()
+        ] + [(names, False) for names in self.collect_key_map.values()]
+
+        def score(records: list[dict]) -> int:
+            # 키만 있고 값이 빈 필드는 세지 않는다(require 와 같은 "값 없음" 기준).
+            sample = records[:_AUTO_RECORDS_SAMPLE]
+            return sum(
+                1 for names, raw in alias_specs
+                if any(find_field(record, names, raw=raw) not in (None, "") for record in sample)
+            )
+
+        ranked = sorted(
+            ((score(records), -depth, key, records) for depth, key, records in candidates),
+            key=lambda item: item[:2],
+            reverse=True,
+        )
+        best = ranked[0]
+        if best[0] == 0 or ranked[1][:2] == best[:2]:
+            keys = [key for _, key, _ in candidates]
+            raise ValueError(
+                f"레코드 배열 후보 {keys} 를 fields 의 alias 로 구별할 수 없습니다. "
+                f"source.records_at 에 배열 키를 지정하세요."
+            )
+        _log.info(
+            f"[json_records] records_at 생략 — 후보 {[k for _, k, _ in candidates]} 중 "
+            f"'{best[2]}' 배열을 레코드로 사용합니다(alias 일치 {best[0]}개)."
+        )
+        return best[3]
 
     def map_record(
         self,
@@ -661,7 +736,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
     ) -> dict:
         """레코드 1건 → 목표필드 dict(변환/기본값/파생 필드까지 적용).
 
-        `table_format`/`compact_tables` 는 `html_text`/`text` 변환의 표 모양을 정한다
+        `table_format`/`compact_tables` 는 `to_text` 변환의 표 모양을 정한다
         (파서가 config 의 `output.*` 를 그대로 넘긴다). 그 변환이 없으면 무시된다.
         """
         return self.apply_value_pipeline(
@@ -694,7 +769,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
 
         표가 섞인 HTML 은 docling 백엔드로 보낸다(행/열·빈 셀 보존). 파서가 넘겨준
         `output.table_format`/`compact_tables` 를 그대로 물려 docling 경로와 모양을 맞춘다.
-        `html_text`/`text` 변환기만 이 렌더러를 받는다.
+        `to_text` 변환기만 이 렌더러를 받는다.
 
         적용 순서(defaults → constants → value_map → transforms → derive)는 매퍼 3종이
         공유하므로 여기서 다시 쓰지 않는다.
@@ -727,6 +802,11 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         raw: list[tuple[dict, dict]] = [
             (self.map_record_raw(record), record) for record in records
         ]
+        # 원천이 다시 보낸 완전 중복 레코드는 병합 전에 뺀다(tabular 와 같은 규칙).
+        unique = drop_duplicate_records(raw)
+        if len(unique) != len(raw):
+            _log.info(f"[json_records] 완전 중복 레코드 {len(raw) - len(unique)}건 제거")
+        raw = unique
 
         # 2단계 — 병합. 값 파이프라인 **전에** 접어야 조각마다 transforms 가 돌지 않는다.
         # resolved(목표필드 → 원천 컬럼명)는 tabular 전용 개념이라 빈 dict 를 넘긴다 — json 은
@@ -797,20 +877,31 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         )
         return content
 
-    def to_parse_format(self, fields_list: list[dict], runtime_doc_type: Any) -> dict:
+    def to_parse_format(
+        self, fields_list: list[dict], runtime_doc_type: Any, *,
+        table_format: str = DEFAULT_TABLE_FORMAT, compact_tables: bool = True,
+    ) -> dict:
         """목표필드 목록 → parse-format(청커 행 기반 경로가 소비하는 형태).
 
         본문이 빈 레코드는 element 로 내보내지 않는다. 청커의 행 경로는 빈 content 도 청크로
         만들기 때문에(tabular 와 동일), 그대로 두면 text 가 빈 벡터가 적재된다. text_fields 가
         LLM 생성 필드뿐인 설정에서 호출이 실패하면 바로 이 상황이 되므로 건수를 경고로 남긴다.
+
+        `table_format`/`compact_tables` 는 본문 조립 시 JSON·HTML 값을 평문화할 때의 표 모양이다
+        (`build_fields` 의 `to_text` 와 같은 설정을 받는다).
         """
         doc_type = self.canonical_doc_type(runtime_doc_type)
+        table_format = normalize_table_format(table_format)
+        html_renderer = lambda value: html_to_text(  # noqa: E731
+            value, table_format=table_format, compact_tables=compact_tables
+        )
         elements = []
         empty = 0
         for fields in fields_list:
             content, prefix = build_chunk_text(
                 fields, self.text_fields, self.chunk_prefix_fields,
                 field_labels=self.field_labels,
+                html_renderer=html_renderer,
             )
             if not content.strip():
                 empty += 1

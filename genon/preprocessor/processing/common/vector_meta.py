@@ -228,7 +228,8 @@ class VectorMetaBuilderBase:
         return self
 
     def set_table_info(self, doc_items: list, split_totals: Optional[dict] = None,
-                       seen_counts: Optional[dict] = None):
+                       seen_counts: Optional[dict] = None,
+                       table_kinds: Optional[dict] = None):
         """청크가 담은 표를 메타데이터로 드러낸다.
 
         예전에는 chunk_bboxes 안 type 을 파헤쳐야만 표 청크인지 알 수 있었다. 하이브리드
@@ -241,12 +242,24 @@ class VectorMetaBuilderBase:
         레이아웃용 표(`table_shape.degenerate_reason`)는 세지 않는다. 청커가 평문으로 내고
         텍스트처럼 자르므로 표가 아니다. 레코드·텍스트 경로의 `table_blocks.has_table` 도
         같은 표를 세지 않는다. 판정 인자는 `table_html.render_degenerate` 와 같다.
+
+        ``table_kinds`` 는 호출부가 문서 단위로 들고 다니는 {self_ref: 표로 셀지 여부} 다.
+        ``TableData.grid`` 는 읽을 때마다 셀 전체를 새로 만들므로, 행 단위로 나뉜 표의
+        조각마다 다시 판정하면 비용이 행 수의 제곱으로 늘어난다. 넘기지 않으면 호출마다 판정한다.
         """
-        refs = [item.self_ref for item in doc_items
-                if isinstance(item, TableItem)
-                and not degenerate_reason(item.data.grid, item.data.num_cols)]
+        kinds = {} if table_kinds is None else table_kinds
+        refs = []
+        for item in doc_items:
+            if not isinstance(item, TableItem):
+                continue
+            if item.self_ref not in kinds:
+                kinds[item.self_ref] = not degenerate_reason(item.data.grid, item.data.num_cols)
+            if kinds[item.self_ref]:
+                refs.append(item.self_ref)
         self.has_table = bool(refs)
         self.table_refs = json.dumps(refs) if refs else None
+        self.table_split_index = -1
+        self.table_split_total = -1
         if not refs or not split_totals or seen_counts is None:
             return self
         # 한 청크에 표가 여럿이면 조각 순서라는 개념이 성립하지 않으므로 비워 둔다.
@@ -294,7 +307,11 @@ def refresh_stats(vectors, reindex: bool = True):
     for item in items:
         page = page_of(item)
         per_page[page] = per_page.get(page, 0) + 1
-    n_page = max(per_page) if per_page else 1
+    # n_page 는 문서 전체 쪽수다. 청크를 버린 뒤 남은 청크의 페이지로만 다시 세면 마지막 쪽
+    # 청크가 빠졌을 때 쪽수가 줄어든다. 이미 채워진 값보다 작아지지 않게 한다.
+    known = [n for n in (getattr(item, "n_page", None) for item in items)
+             if isinstance(n, int) and not isinstance(n, bool)]
+    n_page = max([max(per_page) if per_page else 1] + known)
     seen: dict = {}
     for index, item in enumerate(items):
         page = page_of(item)

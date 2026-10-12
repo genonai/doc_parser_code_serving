@@ -16,6 +16,7 @@ from genon.preprocessor.processing.enrichment.json_records import (
     find_fields,
     html_to_text,
 )
+from genon.preprocessor.processing.enrichment.tabular_custom_fields import TabularCustomFieldsMapper
 from shipped_config import SITE_MONIMO
 
 pytestmark = pytest.mark.unit
@@ -103,6 +104,30 @@ def test_collect_records_ignores_non_dict_items():
 def test_collect_records_without_key_uses_payload():
     assert collect_records({"a": 1}, None) == [{"a": 1}]
     assert collect_records([{"a": 1}, {"b": 2}], None) == [{"a": 1}, {"b": 2}]
+
+
+_EV1, _EV2 = SAMPLE_PAYLOAD["eventList"]
+_NO_RECORDS_AT = {"ID": "x", "tags": ["a", "b"], "emptyList": []}
+
+
+@pytest.mark.parametrize("payload, expected", [
+    ({"resultCode": "0", "eventList": [_EV1, _EV2]}, [_EV1, _EV2]),      # 감싼 배열
+    ({"data": {"body": {"eventList": [_EV1]}}}, [_EV1]),                 # 깊이 감싼 배열
+    ({"links": [{"url": "u"}], "eventList": [_EV1, _EV2]}, [_EV1, _EV2]),  # alias 로 구별
+    ({"aList": [_EV1], "bList": [_EV1]}, ValueError),                    # 구별 불가
+    ({"draft": [{"ID": "d", "제목": ""}],                                 # 빈 값은 점수에서 제외
+      "events": [{"제목": "실제 제목", "이벤트 시작일": "26.07.01"}]},
+     [{"제목": "실제 제목", "이벤트 시작일": "26.07.01"}]),
+    (_NO_RECORDS_AT, [_NO_RECORDS_AT]),                                  # 후보 없음 → 1건
+])
+def test_extract_records_without_records_at_finds_array(tmp_path, payload, expected):
+    """records_at 을 생략해도 object 안의 레코드 배열을 찾는다(#461)."""
+    mapper = write_mapper(tmp_path, BASE_CONFIG.replace("  records_at: eventList\n", ""))
+    if expected is ValueError:
+        with pytest.raises(ValueError, match="records_at"):
+            mapper.extract_records(payload)
+    else:
+        assert mapper.extract_records(payload) == expected
 
 
 def test_collect_records_returns_none_when_key_missing():
@@ -760,6 +785,7 @@ def test_shipped_monimo_event_config_maps_real_payload_schema(resource_dir):
     ("202699", 20260101),        # 날짜가 아니면 압축 표기로 보지 않고 기존 경로(연도만)
     ("", 0),
     (None, 0),
+    (True, 0),                   # bool 은 int 의 하위형이지만 날짜가 아니다
 ])
 def test_date_int_flex_handles_compact_forms(raw, expected):
     assert transform_date_int_flex(raw) == expected
@@ -834,8 +860,8 @@ def test_row_merge_folds_split_records_before_value_pipeline(tmp_path):
     assert "SK하이닉스" in str(rows[1]["DETAIL_JSON"])
 
 
-def test_row_merge_only_folds_consecutive_runs(tmp_path):
-    """떨어진 동일 키는 합치지 않는다 — 등록번호 재사용 시 다른 건이 뭉개지는 것을 막는다."""
+def test_row_merge_folds_scattered_keys(tmp_path):
+    """떨어진 동일 키도 한 레코드로 모으고, 첫 등장 자리에 둔다."""
     mapper = write_mapper(tmp_path, """
         schema: v2
         source:
@@ -856,4 +882,67 @@ def test_row_merge_only_folds_consecutive_runs(tmp_path):
         {"regtNo": "R2", "body": "b"},
         {"regtNo": "R1", "body": "c"},
     ], "stock")
-    assert [r["BODY"] for r in rows] == ["a", "b", "c"]
+    assert [r["BODY"] for r in rows] == ["ac", "b"]
+
+
+def test_row_merge_accepts_array_valued_key(tmp_path):
+    """JSON 레코드의 배열 값도 묶음 키가 된다(dict 키로 쓰다 TypeError 가 나던 회귀)."""
+    mapper = write_mapper(tmp_path, """
+        schema: v2
+        source:
+          kind: records
+          merge_rows:
+            group_by: [TAGS]
+            part_by:  TAGS
+            concat:   [BODY]
+        fields:
+          TAGS:
+            alias: [tags]
+          BODY:
+            alias: [body]
+        body:
+          fields: [BODY]
+    """, doc_type="stock")
+    rows = mapper.build_fields([
+        {"tags": ["A"], "body": "a"},
+        {"tags": ["B"], "body": "b"},
+        {"tags": ["A"], "body": "c"},
+    ], "stock")
+    assert [r["BODY"] for r in rows] == ["ac", "b"]
+
+
+@pytest.mark.parametrize("kind", ["rows", "records"])
+def test_exact_duplicate_rows_are_dropped_before_mapping(tmp_path, kind):
+    """원본 행 전체가 같은 것만 빠진다. 키 순서는 무시하고, 일부 컬럼만 다른 행은 남는다.
+
+    매핑되지 않는 컬럼(tags)만 다른 행도 원본이 다르므로 유지한다. 객체 값이 섞여도 실패하지 않는다.
+    """
+    config = f"""
+        schema: v2
+        source:
+          kind: {kind}
+        fields:
+          ID:
+            alias: [id]
+          BODY:
+            alias: [body]
+        body:
+          fields: [BODY]
+    """
+    source = [
+        {"id": "A", "body": "x", "tags": {"k": [1]}},
+        {"id": "A", "body": "y", "tags": {"k": [1]}},
+        {"tags": {"k": [1]}, "body": "x", "id": "A"},
+        {"id": "A", "body": "x", "tags": {"k": [2]}},
+    ]
+    if kind == "rows":
+        path = tmp_path / "custom_field_rows.yaml"
+        path.write_text(textwrap.dedent(config), encoding="utf-8")
+        mapper = TabularCustomFieldsMapper(
+            doc_type="dup", extractor="tabular_mapping",
+            config_file=path.name, resource_path=str(tmp_path),
+        )
+        rows = mapper.build_fields({"data": [{"sheet_name": "S", "data_rows": source}]}, "dup")
+    else:
+        rows = write_mapper(tmp_path, config, doc_type="dup").build_fields(source, "dup")
+    assert [r["BODY"] for r in rows] == ["x", "y", "x"]

@@ -554,6 +554,8 @@ class DocxProcessor:
 
         current_page = None
         chunk_index_on_page = 0
+        # 표마다 표로 셀지 판정한 결과. 같은 표의 조각마다 다시 판정하지 않는다.
+        table_kinds: dict = {}
         vectors = []
         upload_tasks = []
         scheduled_upload_paths = set()  # 청크 간 동일 이미지(헤더 그림 등) 중복 업로드 방지
@@ -581,7 +583,7 @@ class DocxProcessor:
                       .set_global_metadata(**global_metadata)
                       .set_chunk_bboxes(doc_items, document)
                       .set_media_files(doc_items)
-                      .set_table_info(doc_items)
+                      .set_table_info(doc_items, table_kinds=table_kinds)
                       .set_guardrail_categories(sorted(chunk_cats) if chunk_cats else None)
                       ).build()
             vectors.append(vector)
@@ -762,6 +764,8 @@ class HwpProcessor:
 
         current_page = None
         chunk_index_on_page = 0
+        # 표마다 표로 셀지 판정한 결과. 같은 표의 조각마다 다시 판정하지 않는다.
+        table_kinds: dict = {}
         vectors = []
         upload_tasks = []
 
@@ -790,7 +794,7 @@ class HwpProcessor:
                       .set_global_metadata(**global_metadata)
                       .set_chunk_bboxes(doc_items, document)
                       .set_media_files(doc_items)
-                      .set_table_info(doc_items)
+                      .set_table_info(doc_items, table_kinds=table_kinds)
                       .set_guardrail_categories(sorted(chunk_cats) if chunk_cats else None)
                       ).build()
             vectors.append(vector_obj)
@@ -1348,10 +1352,13 @@ class DocumentProcessor:
             use_pdf_sdk=kwargs.get('use_pdf_sdk', True),
             image_ocr_languages=kwargs.get("image_ocr_languages"),
         )
-        documents = loader.load()
-
         # 이미지 파일의 경우 텍스트 추출 안되었을 시 기본 텍스트 제공
         ext = os.path.splitext(file_path)[-1].lower()
+        if ext in ['.jpg', '.jpeg', '.png']:
+            documents = ld.load_image_documents(loader, file_path)
+        else:
+            documents = loader.load()
+
         if ext in ['.jpg', '.jpeg', '.png']:
             # documents가 없거나, 있어도 모든 page_content가 비어있는 경우
             if not documents or not any(doc.page_content.strip() for doc in documents):

@@ -506,7 +506,10 @@ class ChunkerCore:
         ]
         # 이상 청크 검증(꺼져 있으면 None). 걸린 청크는 여기서 내주지 않으므로 첫 청크 전용
         # 접두는 살아남은 첫 청크가 받는다.
-        validation = notes["validation"] = cq.start(self, job, notes["marker_vectors"])
+        validation = notes["validation"] = cq.start(
+            self, job, notes["marker_vectors"],
+            display=lambda text: self.clean_text(job, gr.apply_to_text(
+                text, notes["sensitive_infos"], notes["masking"])[0]))
         for chunk_idx, chunk in enumerate(chunks):
             if chunk.kind == "marker":
                 continue
@@ -719,7 +722,8 @@ class ChunkerCore:
                 .set_media_files(chunk.source.meta.doc_items, include_tables=self.table_image_enabled)
                 .set_table_info(chunk.source.meta.doc_items,
                                 getattr(self, "_table_split_totals", {}),
-                                notes["table_piece_seen"])
+                                notes["table_piece_seen"],
+                                notes["table_kinds"])
                 .set_guardrail_categories(
                     sorted(notes["chunk_cats"]) if notes["chunk_cats"] else None)
                 ).build(self.VECTOR_META)
@@ -762,6 +766,7 @@ class ChunkerCore:
             first_prefix_pending=False,
             appendix_list=[],
             table_piece_seen={},
+            table_kinds={},
             current_page=None,
             chunk_index_on_page=0,
             variant_values={},
@@ -875,6 +880,7 @@ class ChunkerCore:
             page_chunk_counts=self.page_chunk_counts,
             # 같은 표의 조각이 연속해서 나오는 순서가 곧 조각 번호다.
             table_piece_seen={},
+            table_kinds={},
             current_page=None,
             chunk_index_on_page=0,
             variant_values={},
@@ -1057,7 +1063,7 @@ class ChunkerCore:
                 chunk_size=budget,
                 chunk_overlap=min(chunk_overlap, max(budget - 1, 0)),
                 # 마크다운 헤딩을 최우선 분리자로 둔다. 본문이 섹션으로 나뉘어 있으면 문장
-                # 한가운데가 아니라 섹션 경계에서 잘린다(custom_fields 의 text/html_text 렌더링,
+                # 한가운데가 아니라 섹션 경계에서 잘린다(custom_fields 의 to_text 렌더링,
                 # HTML/markdown 원천 모두 해당). 헤딩이 없는 평문은 종전 문단/문장 분리자로
                 # 조용히 폴백하므로 회귀가 없다.
                 separators=["\n## ", "\n### ", "\n#### ", "\n\n", "\n", " ", ""],
@@ -1309,6 +1315,12 @@ class ChunkerCore:
                 if len(kept) != len(vector_metas):
                     vm.refresh_stats(kept)
                 vector_metas = kept
+            # 판정 결과는 요청 상태에 남기고 진입점이 성공 응답에 싣는다. 요청 단위 값이라
+            # 프로세서 속성에 두지 않는다. 같은 request 로 다시 청킹해도 앞 결과가 남지 않게
+            # 걸린 것이 없을 때도 덮어쓴다.
+            state = getattr(getattr(job, "request", None), "state", None)
+            if state is not None:
+                state.chunk_validation = validation.summary() if validation is not None else None
             return vector_metas
         finally:
             self._finish_chunk_job(job)

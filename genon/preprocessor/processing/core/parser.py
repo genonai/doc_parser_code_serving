@@ -385,39 +385,6 @@ class GenericDocumentLoader:
         else:
             return UnstructuredFileLoader(file_path)
 
-    def _load_image_documents_fallback(self, file_path: str) -> list[Document]:
-        """UnstructuredImageLoader의 __str__ NoneType 오류를 우회해 이미지 요소를 안전하게 적재."""
-        from unstructured.partition.image import partition_image
-
-        elements = partition_image(filename=file_path, languages=["kor", "eng"])
-        documents: list[Document] = []
-
-        for element in elements:
-            text = getattr(element, "text", "")
-            if text is None:
-                text = ""
-            elif not isinstance(text, str):
-                text = str(text)
-
-            metadata: dict[str, Any] = {"source": file_path}
-            if hasattr(element, "metadata") and element.metadata is not None:
-                try:
-                    metadata.update(element.metadata.to_dict())
-                except Exception:
-                    pass
-
-            if hasattr(element, "category"):
-                metadata["category"] = element.category
-
-            if hasattr(element, "to_dict"):
-                element_id = element.to_dict().get("element_id")
-                if element_id:
-                    metadata["element_id"] = element_id
-
-            documents.append(Document(page_content=text, metadata=metadata))
-
-        return documents
-
     def load_documents(self, file_path: str, **kwargs: dict) -> list:
         try:
             loader = self.get_loader(file_path, kwargs.get("_pdf_policy"))
@@ -431,14 +398,10 @@ class GenericDocumentLoader:
                 f"처리할 포맷을 지정하세요: {os.path.basename(file_path)}",
             ) from exc
         ext = os.path.splitext(file_path)[-1].lower()
-        try:
+        if ext in ['.jpg', '.jpeg', '.png']:
+            documents = ld.load_image_documents(loader, file_path)
+        else:
             documents = loader.load()
-        except TypeError as exc:
-            if ext in ['.jpg', '.jpeg', '.png'] and "__str__ returned non-string" in str(exc):
-                _log.warning(f"[GenericDocumentLoader] Image loader fallback: {file_path} ({exc})")
-                documents = self._load_image_documents_fallback(file_path)
-            else:
-                raise
 
         if ext in ['.jpg', '.jpeg', '.png']:
             if not documents or not any((doc.page_content or "").strip() for doc in documents):
@@ -1273,7 +1236,7 @@ class ParserCore:
                 if getattr(mapper, "file_fields", None) else {}
             )
             try:
-                # custom_fields 의 html_text/text 변환 표 모양을 docling 경로와 같은 설정으로 맞춘다
+                # custom_fields 의 to_text 변환 표 모양을 docling 경로와 같은 설정으로 맞춘다
                 # (output.table_format: html=<table> / markdown=파이프 표).
                 fields_list = mapper.build_fields(
                     payload, doc_type,
@@ -1291,7 +1254,12 @@ class ParserCore:
             )
             # json 매퍼의 to_parse_format 은 이미 만들어진 fields 목록을 받는다
             # (tabular 는 같은 이름이 원시 data_dict 를 받아 이름이 어긋나 있다).
-            results.append(mapper.to_parse_format(fields_list, doc_type))
+            # 표 모양은 본문 조립 시 JSON·HTML 값 평문화에도 쓰이므로 build_fields 와 같게 넘긴다.
+            results.append(mapper.to_parse_format(
+                fields_list, doc_type,
+                table_format=getattr(self, "_table_format", "html"),
+                compact_tables=bool(getattr(self, "_compact_tables", True)),
+            ))
         return merge_parse_formats(results)
 
     async def _parse_tabular_records(
@@ -1322,7 +1290,11 @@ class ParserCore:
             claimed_pages.update(claimed_row_pages(fields_list))
             fields_list = await self._apply_llm_fields(mapper, fields_list)
             _log.info(f"[parser] tabular_mapping 행 {len(fields_list)}건 → element")
-            results.append(mapper.to_parse_format_from_fields(fields_list, runtime_doc_type))
+            results.append(mapper.to_parse_format_from_fields(
+                fields_list, runtime_doc_type,
+                table_format=getattr(self, "_table_format", "html"),
+                compact_tables=bool(getattr(self, "_compact_tables", True)),
+            ))
 
         if multi:
             sheets = data_dict.get("data", []) or []
