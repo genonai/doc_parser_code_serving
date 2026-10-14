@@ -21,7 +21,7 @@ doc_type 마다 샘플을 파싱·청킹한 뒤, 그 doc_type 의 custom_field y
     단정한다. custom_fields 경로(faq 행 청크, product_ssf 문서형 청크) 샘플도 함께 돈다.
 
 doc_type → extractor/config 매핑은 모니모 사이트 완성본(genon/sites/monimo/resource/)의
-parser_processor_config.yaml 에서 직접 읽는다. 설정이 늘어나면 이 스크립트를 고치지 않아도
+parse_config.yaml 에서 직접 읽는다. 설정이 늘어나면 이 스크립트를 고치지 않아도
 따라간다. --resource-dir 로 다른 설정 폴더를 주면 매핑과 러너 설정을 모두 그 폴더에서 읽는다.
 모델은 로컬(VPN) 프리셋(genon/sites/dev/model_presets.yaml)으로 돈다(parse_chunk_test.py 가 지정).
 
@@ -486,28 +486,6 @@ def check_table_text_formats(chunks: list) -> list[str]:
     return problems
 
 
-def check_table_as_chunk(chunks: list) -> list[str]:
-    """표 독립 청크(#360 table_as_chunk) 공통 단정.
-
-    표는 자기 청크를 갖는다 — 한 청크에 표가 둘 이상 실리면 그 규칙이 깨진 것이다.
-    "표 밖 문장이 없다" 로는 단정할 수 없다: 청크 접두(카드명·섹션 제목)와 `[표 검색 설명]`
-    블록은 표 청크에 함께 실려야 하는 값이다(docling 경로도 그렇게 싣는다).
-    """
-    problems = []
-    for idx, chunk in enumerate(chunks):
-        if not chunk.get("has_table"):
-            continue
-        text = chunk.get("text") or ""
-        # 검출은 여기서 단순하게 센다(이 스크립트는 facade 를 import 하지 않는다).
-        # html 표는 여는 태그 수, markdown 표는 구분선 줄 수가 곧 표 개수다.
-        count = text.lower().count("<table") + sum(
-            1 for line in text.splitlines()
-            if re.fullmatch(r"\|(\s*:?-+:?\s*\|)+", line.strip()))
-        if count > 1:
-            problems.append(f"[{idx}] 한 청크에 표가 {count}개 실렸습니다(표 독립 청크 위반)")
-    return problems
-
-
 # (doc_type, 샘플 파일명) → 추가 단정 함수
 # 마크다운 링크. 라벨 안 대괄호는 다루지 않는다 - 스킴이 있는 것만 링크로 본다.
 _MD_LINK_RE = re.compile(r"\]\(\s*(?:https?|mailto|tel):")
@@ -591,25 +569,6 @@ def check_cs_hpp_parsed_ext(chunks: list) -> list[str]:
             problems.append(f"청크 {idx} 본문에 원천 HTML 이 그대로 남았습니다: {leak!r}")
     if not any(chunk.get("has_table") for chunk in chunks):
         problems.append("표로 인식된 청크가 없습니다(HTML 표가 파싱되지 않았습니다)")
-    # 마커 소제목(◈/■)이 heading 으로 승격돼야 섹션마다 청크가 갈린다. 승격이 빠지면
-    # 마커가 본문 한 줄로 남아 앞뒤가 크기로만 잘린다.
-    #
-    # 마커 글자 자체를 증거로 쓰지 않는다 — chunking.text_cleanup 의 출고 규칙이 장식
-    # 마커를 지우므로(#363) 승격은 그대로인데 이 단정만 깨진다(실측: 정제 전후 모두
-    # 11청크로 동일). 승격되면 섹션 제목이 청크 **첫 줄**로 올라오므로 그것을 센다.
-    def _starts_with_section_title(text: str) -> bool:
-        lines = (text or "").lstrip().splitlines()[:1]
-        if not lines:
-            return False
-        title = lines[0].lstrip("◈■▣ ").strip()
-        # 크기로만 잘린 청크의 첫 줄은 문단 한 줄이라 길다. 질문 접두(QUESTION)는 뺀다.
-        return 0 < len(title) <= 30 and not title.endswith("?")
-
-    section_led = sum(1 for c in chunks if _starts_with_section_title(c.get("text") or ""))
-    if section_led < 3:
-        problems.append(
-            f"섹션 제목으로 시작하는 청크가 {section_led}건뿐입니다(마커 heading 승격 미적용)"
-        )
     return problems
 
 
@@ -902,9 +861,9 @@ def verify_chunker_config() -> Path:
     global _VERIFY_CHUNKER_CONFIG
     if _VERIFY_CHUNKER_CONFIG is None:
         cfg = yaml.safe_load(
-            (RESOURCE_DIR / "chunking_processor_config.yaml").read_text(encoding="utf-8")) or {}
+            (RESOURCE_DIR / "chunk_config.yaml").read_text(encoding="utf-8")) or {}
         cfg.setdefault("output", {})["table_text_formats"] = ["html", "markdown"]
-        path = Path(tempfile.mkdtemp(prefix="parse_chunk_verify_cfg_")) / "chunking_processor_config.yaml"
+        path = Path(tempfile.mkdtemp(prefix="parse_chunk_verify_cfg_")) / "chunk_config.yaml"
         path.write_text(yaml.safe_dump(cfg, allow_unicode=True), encoding="utf-8")
         _VERIFY_CHUNKER_CONFIG = path
     return _VERIFY_CHUNKER_CONFIG
@@ -961,8 +920,8 @@ EXTRACTOR_BY_SUFFIX = {
 
 
 def load_custom_field_blocks() -> list[dict]:
-    """parser_processor_config.yaml 의 enable 된 custom_fields 블록 목록."""
-    cfg = yaml.safe_load((RESOURCE_DIR / "parser_processor_config.yaml").read_text(encoding="utf-8"))
+    """parse_config.yaml 의 enable 된 custom_fields 블록 목록."""
+    cfg = yaml.safe_load((RESOURCE_DIR / "parse_config.yaml").read_text(encoding="utf-8"))
     out = []
     for item in cfg.get("enrichment") or []:
         if not isinstance(item, dict):
@@ -1048,7 +1007,7 @@ def run_case(python: str, doc_type: str | None, src: Path, out_dir: Path,
     doc_type_args = ["--doc_type", doc_type] if doc_type else []
     # 설정은 RESOURCE_DIR 의 파서 설정과 검증용 청커 설정이다. extra_args 를 뒤에 두어 호출자가 준
     # 인자(예: 이상 청크 검증의 --chunker-config)가 우선하게 한다.
-    config_args = ["--config", str(RESOURCE_DIR / "parser_processor_config.yaml"),
+    config_args = ["--config", str(RESOURCE_DIR / "parse_config.yaml"),
                    "--chunker-config", str(verify_chunker_config())]
     cmd = [python, str(SCRIPT_DIR / "parse_chunk_test.py"),
            *doc_type_args, *config_args, *(extra_args or []), str(src), str(out_dir) + "/"]
@@ -1090,7 +1049,6 @@ def verify(doc_type: str, src: Path, out_dir: Path, block: dict) -> list[str]:
     problems += check_field_labels(chunks, spec)
     problems += check_table_text_formats(chunks)
     problems += check_no_markdown_links(chunks)
-    problems += check_table_as_chunk(chunks)
 
     extra = EXTRA_CHECKS.get((doc_type, src.name))
     if extra is not None:

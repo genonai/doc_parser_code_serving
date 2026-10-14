@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unicodedata
 from pathlib import Path
 from typing import ClassVar
@@ -15,6 +17,28 @@ from .base import BackendName
 _log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SEC = 600
+
+# soffice 는 사용자 프로필 폴더에 락을 잡는다. 같은 파드의 프로세스들이 기본 프로필을 공유하면 동시 변환이
+# 서로를 막거나 실패하므로 프로세스마다 프로필 하나를 둔다(#481 F-G). 호출마다 새로 만들면 매번 프로필
+# 초기화(수 초)를 치르므로 프로세스당 한 번만 만든다.
+_profile_lock = threading.Lock()
+_profile_dir: str | None = None
+
+# 프로필이 프로세스당 하나이므로, 같은 프로세스의 스레드 둘이 동시에 soffice 를 띄우면 한 프로필을 함께
+# 열게 되어 뒤 호출이 실패하거나 멈춘다(#515). 프로세스 안에서는 변환을 한 번에 하나씩 돌린다.
+# 프로세스가 다르면 프로필도 다르므로 병렬 그대로다. 변환은 CPU 구간이라 1~2 코어 파드에서는 직렬이 손해가 아니다.
+_convert_lock = threading.Lock()
+
+
+def _process_profile_dir() -> str:
+    global _profile_dir
+    with _profile_lock:
+        if _profile_dir is None or not os.path.isdir(_profile_dir):
+            _profile_dir = tempfile.mkdtemp(prefix=f"soffice_profile_{os.getpid()}_")
+            # 프로세스가 정상 종료할 때 지운다. os._exit 로 죽는 워커 재기동은 못 지우므로 이름에
+            # pid 를 넣어 두어 잔여 폴더를 운영에서 구분할 수 있게 한다.
+            atexit.register(shutil.rmtree, _profile_dir, ignore_errors=True)
+        return _profile_dir
 
 
 def _convert_arg_for(ext: str) -> str:
@@ -60,11 +84,13 @@ class LibreOfficeConverter:
             for cand in candidates:
                 cmd = [
                     "soffice", "--headless",
+                    f"-env:UserInstallation={Path(_process_profile_dir()).as_uri()}",
                     "--convert-to", convert_arg,
                     "--outdir", str(out_dir),
                     str(cand),
                 ]
-                proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
+                with _convert_lock:
+                    proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=timeout)
                 if proc.returncode == 0 and pdf_path.exists():
                     if tmp_dir:
                         shutil.rmtree(tmp_dir, ignore_errors=True)

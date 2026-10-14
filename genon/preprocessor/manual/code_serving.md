@@ -57,7 +57,7 @@ doc_parser 전처리기를 GenOS **코드 서빙** 플랫폼에 배포하면, �
 
 - **`/parser` 의 `file_path` 는 서빙 컨테이너 내부의 로컬 경로**입니다(MinIO 키 아님).
   게이트웨이로 파싱을 호출하려면 서버가 접근 가능한 경로를 넣어야 합니다.
-- docling 포맷 파일(pdf/html/htm/docx/hwp/hwpx)은 파싱 서빙의 `parser_processor_config.yaml` 이
+- docling 포맷 파일(pdf/html/htm/docx/hwp/hwpx)은 파싱 서빙의 `parse_config.yaml` 이
   **`output.format: "docling"`** 이어야 응답에 `data.document` 가 생성됩니다.
 - 그 외 비-docling 포맷(csv/xlsx/txt/md/ppt/pptx/doc/이미지/오디오)은 `output.format` 과 무관하게
   항상 parse-format(`data.elements`)으로 반환되며, chunker 가 이를 그대로 청킹합니다(별도 설정 불필요).
@@ -233,7 +233,7 @@ chunker 가 형태를 자동 판별). `IS_CHUNKER` 를 지원하는 전처리기
 | --- | --- | --- | --- |
 | `document` | `params` | (필수) | 파싱이 반환한 결과 JSON. docling(`{"document":...}`) 또는 parse-format(`{"elements":[...]}`) 모두 허용(자동 판별) |
 | `chunk_size` | `params` | `0` | 청크 최대 크기. `0` 이면 토큰/문자 기반 분할 안 함. 청킹 config 기본값을 덮어씀 |
-| `log_level` | `params` | config 값 | 런타임 로깅 레벨(5=DEBUG ~ 1=CRITICAL, 0=NOLOG) |
+| `log_level` | `params` | config 값 | ~~런타임 로깅 레벨~~ — parser·chunker 는 무시한다(로깅 레벨은 프로세스 기동 때 yaml `defaults.log_level` 로 한 번, #481). intelligent·convert 는 종전대로 요청 값 적용(5=DEBUG ~ 1=CRITICAL, 0=NOLOG) |
 
 > `file_path` 는 청킹 단계에서는 청크 메타데이터에 기록되는 경로 용도이며,
 > 실제 입력은 `params.document` 입니다.
@@ -502,10 +502,10 @@ python facade_test.py --kw llm_cache=1 --kw interim_root=<경로> \
 
 | 단계 | config 파일 | 핵심 항목 | 설명 |
 | --- | --- | --- | --- |
-| 파싱 | `parser_processor_config.yaml` | `output.format` | docling 포맷 파일은 `"docling"` 이어야 `data.document` 생성. 그 외 `json`/`html`/`markdown`. 비-docling 포맷은 항상 parse-format(`data.elements`) |
-| 청킹 | `chunking_processor_config.yaml` | `chunking.chunk_size` | docling 청킹(GenosSmartChunker) 최대 크기(0=분할 안 함). 호출 `chunk_size` 가 우선 |
-| 청킹 | `chunking_processor_config.yaml` | `chunking.tokenizer_type` | `"char"`(문자 수) 또는 `"huggingface"`(토크나이저 기준) |
-| 청킹 | `chunking_processor_config.yaml` | `chunking.generic.chunk_size` / `chunk_overlap` | 비-docling(parse-format) 일반 텍스트 splitter 기본값(문자 단위, 기본 1000/100). 호출 `chunk_size`/`chunk_overlap` 가 우선. audio/csv·xlsx 단일 벡터엔 미적용 |
+| 파싱 | `parse_config.yaml` | `output.format` | docling 포맷 파일은 `"docling"` 이어야 `data.document` 생성. 그 외 `json`/`html`/`markdown`. 비-docling 포맷은 항상 parse-format(`data.elements`) |
+| 청킹 | `chunk_config.yaml` | `chunking.chunk_size` | docling 청킹(GenosSmartChunker) 최대 크기(0=분할 안 함). 호출 `chunk_size` 가 우선 |
+| 청킹 | `chunk_config.yaml` | `chunking.tokenizer_type` | `"char"`(문자 수) 또는 `"huggingface"`(토크나이저 기준) |
+| 청킹 | `chunk_config.yaml` | `chunking.generic.chunk_size` / `chunk_overlap` | 비-docling(parse-format) 일반 텍스트 splitter 기본값(문자 단위, 기본 1000/100). 호출 `chunk_size`/`chunk_overlap` 가 우선. audio/csv·xlsx 단일 벡터엔 미적용 |
 
 > 파싱 옵션(OCR·레이아웃·enrichment 등)의 상세 설명은 [parser_processor.md](parser_processor.md) 를 참고하세요.
 

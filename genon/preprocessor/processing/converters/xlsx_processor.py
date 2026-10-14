@@ -45,7 +45,7 @@ _VALID_KEY_RE = re.compile(r"^[_A-Za-z][_0-9A-Za-z]*$")
 # 예약 필드(컬럼 헤더가 이 이름과 충돌하면 메타 키로 쓰지 않는다 → field_<hash> 로 회피).
 # 행 metadata 는 두 벡터 모델로 흘러가므로 둘의 선언 필드를 모두 덮어야 한다.
 #   - 직접처리: 아래 GenOSVectorMeta
-#   - parse→chunk 분리: facade/chunking_processor.py 의 GenOSVectorMeta (title/created_date/
+#   - parse→chunk 분리: activities/chunk.py 의 GenOSVectorMeta (title/created_date/
 #     appendix/file_path/guardrail_categories 를 더 가짐)
 # 후자는 import 하지 않으므로(converters → facade 단방향 금지) lockstep 으로 유지한다.
 # 드리프트는 tests/unit/test_xlsx_processor.py::test_reserved_fields_cover_chunker_vector_meta 가 잡는다.
@@ -132,27 +132,31 @@ def _stable_key(name: str) -> str:
 # ------------------------------------------------------------------ #
 # docling 모드                                                         #
 # ------------------------------------------------------------------ #
+import threading
+
+_converter_lock = threading.Lock()
 _docling_converter = None  # lazy singleton
 
 
 def _get_docling_converter():
     """xlsx/csv 전용 DocumentConverter 를 생성·캐시한다(PDF 컨버터와 분리)."""
     global _docling_converter
-    if _docling_converter is None:
-        from docling.datamodel.base_models import InputFormat
-        from docling.document_converter import (
-            CsvFormatOption,
-            DocumentConverter,
-            ExcelFormatOption,
-        )
+    with _converter_lock:   # 첫 호출 둘이 동시에 만들지 않게(#481 F-F)
+        if _docling_converter is None:
+            from docling.datamodel.base_models import InputFormat
+            from docling.document_converter import (
+                CsvFormatOption,
+                DocumentConverter,
+                ExcelFormatOption,
+            )
 
-        _docling_converter = DocumentConverter(
-            allowed_formats=[InputFormat.XLSX, InputFormat.CSV],
-            format_options={
-                InputFormat.XLSX: ExcelFormatOption(),
-                InputFormat.CSV: CsvFormatOption(),
-            },
-        )
+            _docling_converter = DocumentConverter(
+                allowed_formats=[InputFormat.XLSX, InputFormat.CSV],
+                format_options={
+                    InputFormat.XLSX: ExcelFormatOption(),
+                    InputFormat.CSV: CsvFormatOption(),
+                },
+            )
     return _docling_converter
 
 

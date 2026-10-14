@@ -42,7 +42,8 @@
 config를 업무 요구사항에 맞게 수정할 수 있습니다.
 
 > ⚠️ **이 공개 배포본의 파일은 릴리스마다 배포 스크립트가 다시 생성합니다.** 여기에서 직접 고친 내용은
-> 다음 릴리스에 덮어써집니다. **수정은 항상 gitea 복사본(배포처)에서** 하세요.
+> 다음 릴리스에 덮어써집니다. **수정은 항상 배포처에서** 하세요 — gitea 복사본, 또는 외부 Git 에 두고 쓰는
+> 경우 작업 브랜치(아래 「브랜치 역할과 새 버전 받기」)입니다.
 
 - **버전 소스**: 원본의 git 릴리스 태그(예: `2.2.5`)가 버전의 단일 진실 소스입니다.
   배포본 repo에도 **동일한 미러 태그**가 붙으므로, 배포본 태그 = 원본 릴리스 태그입니다.
@@ -51,6 +52,38 @@ config를 업무 요구사항에 맞게 수정할 수 있습니다.
   - `source_commit` / `source_commit_date` — 원본 커밋 SHA·날짜
   - `docling_wheel` — 동봉된 docling wheel 파일명(`packages/`)
 - 특정 배포 인스턴스가 어느 버전인지 확인하려면 배포본의 `VERSION` 또는 태그를 보면 됩니다.
+
+## 브랜치 역할과 새 버전 받기
+
+이 배포본을 외부 Git 저장소(GitHub·Bitbucket 등)에 그대로 두고 쓰는 경우의 규칙입니다. gitea 복사본에
+복사해 쓰는 경우는 아래 「배포」 3번을 따릅니다.
+
+| 브랜치 | 쓰는 쪽 | 내용 |
+| --- | --- | --- |
+| `main`(릴리스, 미러 태그) · 개발 빌드 브랜치(지금은 `studio/dev` — 임시) | 배포 스크립트만 | 원본에서 생성한 배포본. 커밋 메시지는 `sync from doc_parser <원본 커밋>` |
+| 작업 브랜치(예: `work/<이름>`) | 사람·전처리 Studio | 액티비티 추가, 설정 수정. 코드서빙 리비전은 이 브랜치를 가리킵니다 |
+
+- **배포 스크립트 브랜치에는 직접 커밋하지 않습니다.** 배포 스크립트는 파일을 통째로 다시 생성해 다음 커밋으로
+  올립니다. 그래서 그 브랜치에 사람이 올린 커밋이 있으면, 그 내용은 충돌 없이 지워지거나 원본 내용으로 바뀝니다.
+  merge 가 아니라서 IDE 에도 드러나지 않습니다. 이를 막으려고 배포 스크립트는 그런 커밋을 발견하면 멈춥니다.
+- **작업은 작업 브랜치에서 합니다.**
+  ```bash
+  git switch -c work/<이름> origin/main        # 개발 빌드를 쓰면 origin/studio/dev
+  ```
+  개발 빌드 브랜치가 없어지면(원본의 개발 내용이 릴리스로 합쳐지면) 그 위에서 만든 작업 브랜치는 그때부터
+  `origin/main` 을 merge 해 받습니다.
+- **새 버전·hotfix 는 작업 브랜치로 merge 해서 받습니다.**
+  ```bash
+  git fetch origin
+  git merge origin/main                         # 또는 git rebase origin/main
+  ```
+  - 작업 브랜치에서 **새로 만든 파일**(예: 새 액티비티)은 배포본이 건드리지 않으므로 그대로 남습니다.
+  - **양쪽이 함께 고친 파일**(배포본이 기본 액티비티나 설정을 바꿨는데 작업 브랜치도 같은 파일을 고친 경우)은,
+    같은 곳을 고쳤으면 충돌로 표시되고 IDE 에서 어느 쪽을 남길지 정합니다. 서로 다른 곳을 고쳤으면 git 이 자동으로
+    합치므로, merge 뒤 `git diff ORIG_HEAD` 로 바뀐 내용을 확인합니다.
+  - 배포본에 **같은 이름의 파일이 새로 생긴 경우**도 충돌로 표시됩니다.
+  - `packages/` 의 wheel, `requirements*.txt`, `VERSION`, `README.md` 처럼 배포 스크립트가 만드는 파일은
+    작업 브랜치에서 고치지 않습니다. 그래야 merge 할 때 충돌이 생기지 않습니다.
 
 ## 배포 / GenOS 코드서빙 등록
 
@@ -89,8 +122,8 @@ config를 업무 요구사항에 맞게 수정할 수 있습니다.
 
    # gitea repo에서 환경에 맞게 config yaml 수정 (특히 LLM 모델 주소) — 용도별 대상 파일:
    # genon/preprocessor/manual/ 의 매뉴얼 참고바람.
-   #   genon/preprocessor/resource/parser_processor_config.yaml
-   #   genon/preprocessor/resource/chunking_processor_config.yaml
+   #   genon/preprocessor/resource/parse_config.yaml
+   #   genon/preprocessor/resource/chunk_config.yaml
    #   genon/preprocessor/resource/intelligent_processor_config.yaml
    #   genon/preprocessor/resource/attachment_processor_config.yaml
    #   genon/preprocessor/resource/convert_processor_config.yaml
@@ -103,6 +136,16 @@ config를 업무 요구사항에 맞게 수정할 수 있습니다.
 4. **리비전 생성/배포** — 코드서빙 매뉴얼대로 리비전을 생성하면 gitea 소스(레포 URL/commit)가 런타임에 `/app/src/service`로 clone되고 `main.py`가 실행됩니다.
    - 이미지: `mnc/template-code-serving-doc-parser` 선택.
    - GPU 미할당, **medium(1 CPU Core, 16GB Memory)** 수준 인스턴스.
+   - **실행 모드**는 리비전 환경변수 `PREPROC_MODE` 로 고릅니다. 두 모드를 동시에 돌릴 필요는 없습니다.
+
+     | `PREPROC_MODE` | 띄우는 것 | 동시 처리 수 | 메모리 기준 |
+     |---|---|---|---|
+     | `http`(기본) | 루트 `main.py` REST API(`/parser`·`/chunker`·`/preprocess*`) | `WEB_CONCURRENCY`(기본 5) 프로세스 | 프로세스당 2~3 GB |
+     | `worker` | Temporal 워커 `python -m genon.preprocessor.worker` | `WORKER_PROCESSES` × `WORKER_THREADS`(기본 1×1) | 프로세스당 2~3 GB + 처리 중 문서 수만큼 |
+
+     - 두 모드 모두 `PORT`(8080)의 `/health` 에 매 요청 응답합니다(코드서빙 규약). 워커 모드의 필수 env(`TEMPORAL_HOST`·`WORKER_TASK_QUEUE`·`NFS_ROOT`·`ARTIFACT_ROOT`)는 `genon/preprocessor/worker/settings.py` 머리말을 봅니다.
+     - `START_COMMAND` 를 채우면 모드보다 그것이 우선합니다.
+     - **연산 스레드 `OMP_NUM_THREADS`**: 비워 두면 "파드 CPU 한도 ÷ 프로세스 수" 의 내림(최소 1)으로 자동 설정됩니다(1 코어·워커 5 → 1). 프로세스는 파드 한도가 아니라 노드 코어 수를 보고 스레드를 띄우므로, 이 값이 없으면 CPU 작업이 겹칠 때 수 배 느려집니다. 자동 설정은 이 기능이 들어간 베이스 이미지부터 동작하므로, 그 전 이미지에서는 리비전 env 에 직접 넣습니다.
 
 5. **호출/테스트** — 아래 [사용 예시](#사용-예시) 및 동봉된
    `genon/preprocessor/tools/code_serving/serving_gateway_test.py` 참고.
@@ -119,7 +162,7 @@ config를 업무 요구사항에 맞게 수정할 수 있습니다.
 | `auth_key` | 게이트웨이 인증 토큰(Bearer) | `<AUTH_KEY>` |
 
 - **`/parser`의 `file_path`는 서빙 컨테이너 내부의 로컬 경로**입니다(MinIO 키 아님). 서버가 접근 가능한 경로를 넣으세요.
-- docling 포맷은 파싱 서빙의 `parser_processor_config.yaml`이 `output.format: "docling"`이어야 응답에 `data.document`가 생성됩니다.
+- docling 포맷은 파싱 서빙의 `parse_config.yaml`이 `output.format: "docling"`이어야 응답에 `data.document`가 생성됩니다.
 - 그 외 포맷은 설정과 무관하게 parse-format(`data.elements`)으로 반환되며 chunker가 그대로 청킹합니다.
 
 ## 엔드포인트
