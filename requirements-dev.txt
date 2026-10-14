@@ -18,3 +18,6 @@ langchain-text-splitters
 markdown2
 pydub
 chardet
+
+# 워커 모드(PREPROC_MODE=worker)와 그 측정 도구(tools/code_serving/worker_concurrency_test.py)
+temporalio==1.34.0
