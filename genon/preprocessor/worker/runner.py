@@ -16,6 +16,8 @@ log = logging.getLogger("genon.worker")
 
 def child(index: int) -> None:
     logging.basicConfig(level=logging.INFO, format=f"%(asctime)s [worker-{index}] %(levelname)s %(message)s")
+    from genon.preprocessor.processing.common import profiling
+    profiling.install()          # GENOS_PROFILE=1 일 때만 — 단계·외부 호출 계측(#514)
     asyncio.run(_serve(settings.load()))
 
 
@@ -26,7 +28,7 @@ async def _serve(cfg: settings.Settings) -> None:
     runtime.configure(cfg)
     entries = registry.scan()
     if not entries:
-        raise RuntimeError(f"등록할 액티비티가 없습니다 — {settings.ACTIVITIES_DIR} 에 parse·chunk·parse_…·chunk_… 파일이 없다")
+        raise RuntimeError(f"등록할 액티비티가 없습니다 — {settings.ACTIVITIES_DIR} 에 parse·chunk·parse_…·chunk_… 폴더(processor.py)가 없다")
     log.info("Temporal 접속: address=%s namespace=%s task_queue=%s threads=%d",
              cfg.temporal_address, cfg.temporal_namespace, cfg.task_queue, cfg.threads)
     client = await Client.connect(cfg.temporal_address, namespace=cfg.temporal_namespace)
