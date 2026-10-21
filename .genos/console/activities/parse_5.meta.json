@@ -2,7 +2,7 @@
  "id": "parse_5",
  "stage": "parse",
  "title": "스모크 임시",
- "description": "console_smoke 자동 생성 — 바로 삭제",
+ "description": "스모크 설명 수정",
  "author": "관리자",
  "owner": "",
  "source_id": "parse",
