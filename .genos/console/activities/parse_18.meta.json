@@ -1,0 +1,12 @@
+{
+ "id": "parse_18",
+ "stage": "parse",
+ "title": "스모크 임시",
+ "description": "console_smoke 자동 생성 — 바로 삭제",
+ "author": "관리자",
+ "owner": "",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-10-28 12:35:38",
+ "updated_at": "2026-10-28 12:35:38"
+}
