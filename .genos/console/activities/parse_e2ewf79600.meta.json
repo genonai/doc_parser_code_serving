@@ -1,12 +1,12 @@
 {
  "id": "parse_e2ewf79600",
  "stage": "parse",
- "title": "파싱 복제",
+ "title": "E2E 교체 e2ewf79600",
  "description": "",
  "author": "관리자",
  "owner": "",
  "source_id": "parse",
  "params": {},
  "created_at": "2026-10-28 12:51:21",
- "updated_at": "2026-10-28 12:51:21"
+ "updated_at": "2026-10-28 12:51:23"
 }
