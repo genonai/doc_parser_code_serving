@@ -6,7 +6,9 @@
  "author": "관리자",
  "owner": "",
  "source_id": "parse",
- "params": {},
+ "params": {
+  "doc_type": "faq"
+ },
  "created_at": "2026-10-28 12:35:38",
- "updated_at": "2026-10-28 12:35:40"
+ "updated_at": "2026-10-28 12:35:42"
 }
