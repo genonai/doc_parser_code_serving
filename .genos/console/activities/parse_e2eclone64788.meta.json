@@ -1,12 +1,12 @@
 {
  "id": "parse_e2eclone64788",
  "stage": "parse",
- "title": "파싱 복제",
+ "title": "E2E 편집 e2eclone64788",
  "description": "",
  "author": "관리자",
  "owner": "",
  "source_id": "parse",
  "params": {},
  "created_at": "2026-10-29 17:49:36",
- "updated_at": "2026-10-29 17:49:36"
+ "updated_at": "2026-10-29 17:49:43"
 }
