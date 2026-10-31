@@ -212,11 +212,7 @@ class DocumentProcessor(ParserCore):
             if ext == ".xlsx" and doc_type == "branch_list":
                 return {name: rows[2:] for name, rows in data.items()}   # 상단 2행 제거
         """
-if ext == ".json" and doc_type == "monimo_event" and isinstance(data, dict):
-                for rec in data.get("eventList") or []:
-                                if rec.get("evtTodayMainCopy"):
-                                                    rec["evtTodayMainCopy"] = "[모니모 이벤트] " + rec["evtTodayMainCopy"]
-                                                            return data
+        return ({**data, "eventList": [({**r, "evtTodayMainCopy": "[모니모 이벤트] " + r["evtTodayMainCopy"]} if r.get("evtTodayMainCopy") else r) for r in (data.get("eventList") or [])]} if ext == ".json" and doc_type == "monimo_event" and isinstance(data, dict) else data)
 
     def edit_document(self, job, doc: "DoclingDocument"):
         """[훅 메소드 2] 파싱 후, LLM enrichment(표·이미지 설명, 문서 요약, custom_fields 추출) 전.
