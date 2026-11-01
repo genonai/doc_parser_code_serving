@@ -1,0 +1,12 @@
+{
+ "id": "parse_q11011649hook",
+ "stage": "parse",
+ "title": "파싱 복제",
+ "description": "",
+ "author": "백영상",
+ "owner": "",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-01 16:50:16",
+ "updated_at": "2026-11-01 16:50:16"
+}
