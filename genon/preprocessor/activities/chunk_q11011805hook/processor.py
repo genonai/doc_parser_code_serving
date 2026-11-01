@@ -215,7 +215,7 @@ class DocumentProcessor(ChunkerCore):
                 info["fields"]["RISK"] = "high"       # vector_meta 필드로 실린다
             return text.replace("[내부]", "")
         """
-        return None
+        return "이벤트 안내 · " + text
 
     def edit_output(self, vector_metas, **kwargs):
         """[훅 메소드 3] 응답 반환 직전. vector_metas 는 VECTOR_META 인스턴스 목록이다.
