@@ -1,0 +1,12 @@
+{
+ "id": "parse_qa1103hook",
+ "stage": "parse",
+ "title": "파싱테스트 복제",
+ "description": "123",
+ "author": "백영상",
+ "owner": "관리자",
+ "source_id": "parse_test1234",
+ "params": {},
+ "created_at": "2026-11-01 16:38:08",
+ "updated_at": "2026-11-01 16:38:08"
+}
