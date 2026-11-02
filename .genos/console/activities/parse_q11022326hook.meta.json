@@ -1,12 +1,12 @@
 {
  "id": "parse_q11022326hook",
  "stage": "parse",
- "title": "파싱 복제",
+ "title": "파싱 · 제목 훅 (q11022326)",
  "description": "",
  "author": "백영상",
  "owner": "",
  "source_id": "parse",
  "params": {},
  "created_at": "2026-11-02 23:29:34",
- "updated_at": "2026-11-02 23:29:34"
+ "updated_at": "2026-11-02 23:30:16"
 }
