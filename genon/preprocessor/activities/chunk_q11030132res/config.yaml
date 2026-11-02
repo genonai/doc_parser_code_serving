@@ -23,7 +23,7 @@ chunking:
   # 청킹 모드: split_only(기본) = 파서 섹션 단위(제N조 등) 그대로 유지 + chunk_size 초과 섹션만 분할
   #             (작은 섹션을 장 단위로 병합하지 않음) |
   #           resize_all = 모든 청크를 chunk_size 에 맞게 병합/분할. 우선순위: kwargs.chunk_mode > 아래.
-  chunk_mode: split_only
+  chunk_mode: resize_all
   # 짧은 청크 병합 기준(chunk_size 와 같은 단위, 기본 0=끔). 본문(HEADER 라인 제외)이 이보다
   # 짧은 청크를 병합하되 짧은 청크를 남기지 않는다 — 연달아 나오면 먼저 서로 묶어 기준을 넘으면
   # 독립 청크로 두고, 여전히 짧으면 chunk_size 안에서 다음(안 되면 앞) 청크에 붙이며, 둘 다 꽉 찼으면
