@@ -452,7 +452,7 @@ output:
 
   # 표를 글로 낼 때의 형식(문서유형 레코드의 표 등). html(미지정 시) | markdown |
   # auto(병합 셀·여러 줄 헤더가 있는 표는 html, 단순한 표는 markdown). 일반 문서의 docling 출력에는 영향 없음
-  table_format: "markdown"
+  table_format: html
   compact_tables: true # markdown 표의 칸 맞춤 공백을 없애 크기를 줄일지. true(미지정 시) | false. html 에는 영향 없음
   # 표 뒤 "컬럼=값 | 컬럼=값" 행 문장(table_row_serialization)은 청커 전용이라 여기에 없다 —
   # activities/chunk/config.yaml 의 output 에서 켠다.
