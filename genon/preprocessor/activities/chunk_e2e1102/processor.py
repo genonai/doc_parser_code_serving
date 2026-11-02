@@ -20,6 +20,7 @@ from genon.preprocessor.processing.core.chunker import ChunkerCore
 from genon.preprocessor.processing.core.errors import GenosServiceException  # noqa: F401
 
 
+import sys as _e2e_sys; print("[E2E1102] chunk_e2e1102 loaded", file=_e2e_sys.stderr)
 class GenOSVectorMeta(BaseModel):
     """청크 1건 = 적재 DB 1행. 선언에 없는 키도 그대로 실린다(extra=allow)."""
 
