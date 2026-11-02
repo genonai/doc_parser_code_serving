@@ -48,3 +48,37 @@ def test_executed_case_keeps_result(verifier, monkeypatch, tmp_path):
     monkeypatch.setattr(verifier, "llm_null_rate", lambda *a: "-")
     monkeypatch.setattr(sys, "argv", ["verify", "--out", str(tmp_path / "out")])
     assert verifier.main() == 0
+
+
+def test_table_text_formats_unescapes_html_entities(verifier):
+    """HTML 표기의 `&amp;` 를 내용 소실로 판정하지 않는다(#557).
+
+    셀 값은 sample_files/json/monimo_card_sample.json 의 카드 상세 링크다.
+    """
+    url = ("https://www.samsungcard.com/home/card/cardinfo/PGHPPCCCardCardinfoDetails001"
+           "?code=AAP1913&click=UHPPCO0101M0_card_PGHPPCCCardCardinfoDetails001_PRD_AAP1913")
+    md = f"| 링크 |\n| --- |\n| {url} |"
+    chunk = {
+        "text": md,
+        "text_table_md": md,
+        "text_table_html": f"<table><tr><th>링크</th></tr><tr><td>{url.replace('&', '&amp;')}</td></tr></table>",
+    }
+    assert verifier.check_table_text_formats([chunk]) == []
+
+
+def test_expected_fields_are_read_from_v2_config(verifier, monkeypatch, tmp_path):
+    """`schema: v2` 표기에서도 필수·상수 필드 기대값을 읽는다(#615).
+
+    원문 키(`require.fields`, `const`)를 내부 이름(`required`, `constants`)으로 찾으면
+    기대값이 비어 공통 단정이 동작하지 않는다.
+    """
+    (tmp_path / "custom_field_x.yaml").write_text(
+        "schema: v2\n"
+        "source:\n  kind: records\n  records_at: items\n"
+        "fields:\n  GROUP_C:\n    const: SLF\n  TITLE:\n    alias: [title]\n"
+        "require:\n  fields: [TITLE]\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verifier, "RESOURCE_DIR", tmp_path)
+    required, constants, _llm = verifier.expected_from_yaml({"config_file": "custom_field_x.yaml"})
+    assert (required, constants) == (["TITLE"], {"GROUP_C": "SLF"})
