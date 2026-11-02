@@ -105,6 +105,113 @@ def test_context_tokens_old_and_new_names_override_each_other(common_key, local_
 
 
 @pytest.mark.unit
+def test_skip_block_merges_per_key():
+    """문서유형이 skip 의 한 키만 바꿔도 공통 설정의 다른 키가 살아 있다."""
+    merged = merge_table_text_description(
+        {"skip": {"single_value_table": False}}, {"skip": {"self_describing_table": True}}
+    )
+    options = TableTextDescriptionOptions.from_config(merged)
+    assert (options.skip_single_value_table, options.skip_self_describing_table) == (False, True)
+
+
+def _skip_options(*layers):
+    """`skip` 블록 여러 계층(공통 → 문서유형)을 병합해 옵션으로 만든다. 값은 5종 순서의 튜플이다."""
+    merged = None
+    for layer in layers:
+        merged = merge_table_text_description(merged, {"skip": layer})
+    options = TableTextDescriptionOptions.from_config(merged)
+    return (
+        options.skip_single_value_table, options.skip_nested_table, options.skip_duplicate_table,
+        options.skip_self_describing_table, options.skip_long_text_table,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("common_rag,local_rag,expected", [
+    ({"search_terms": 0}, {"search_terms_limit": 3, "include_search_terms": True}, (3, True)),
+    ({"search_terms_limit": 0, "include_search_terms": False}, {"search_terms": 4}, (4, True)),
+    ({"search_terms": 3}, {"include_search_terms": False}, (3, False)),
+    ({}, {"search_terms": 2, "search_terms_limit": 9, "include_search_terms": False}, (2, True)),
+    ({}, {"search_terms": "3"}, (8, False)),
+])
+def test_search_terms_expands_per_layer_before_merge(common_rag, local_rag, expected):
+    """`rag.search_terms` 는 계층마다 옛 두 키로 펼친 뒤 병합한다(문서유형 우선 유지).
+
+    새 키가 옛 키를 이기는 것은 같은 계층에 함께 적은 경우뿐이다. 잘못된 값은 버리고 기본(8/false)으로 간다.
+    """
+    merged = merge_table_text_description({"rag": common_rag}, {"rag": local_rag})
+    options = TableTextDescriptionOptions.from_config(merged)
+    assert (options.search_terms_limit, options.include_search_terms) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("common,local,expected", [
+    (False, None, (False, False, False, False, 0)),
+    ({"duplicate_table": True}, False, (False, False, False, False, 0)),
+    ({"long_text_table": 100}, False, (False, False, False, False, 0)),
+    (False, {"duplicate_table": True}, (False, False, True, False, 0)),
+    (False, {"long_text_table": 100}, (False, False, False, False, 100)),
+    ("off", None, (True, True, False, False, 0)),
+])
+def test_skip_false_turns_off_every_condition_then_merges_per_key(common, local, expected):
+    """`skip: false` 는 모든 조건을 false 로 펼쳐 다른 계층의 skip 과 키 단위로 병합한다."""
+    layers = [common] if local is None else [common, local]
+    assert _skip_options(*layers) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("layers,expected", [
+    ([{"layout": False}], (False, False, False, False, 0)),                     # 두 새 키로 펼친다
+    ([{"layout": False, "nested_table": True}], (False, True, False, False, 0)),  # 같은 계층은 새 키가 우선
+    ([{"contained_duplicate": True}], (True, True, True, False, 0)),
+    ([{"self_describing": True}], (True, True, False, True, 0)),
+    ([{"long_cells": 100}], (True, True, False, False, 100)),
+    ([{"long_cells": False}], (True, True, False, False, 0)),
+    ([{"long_cells": True}], (True, True, False, False, 0)),                    # bool 은 받지 않는다
+    # 계층 병합 전에 펼치므로 문서유형의 옛 키가 공통의 새 키를 이긴다
+    ([{"long_text_table": 65}, {"long_cells": 100}], (True, True, False, False, 100)),
+    ([{"duplicate_table": True}, {"contained_duplicate": False}], (True, True, False, False, 0)),
+])
+def test_old_skip_keys_are_expanded_to_new_keys(layers, expected):
+    assert _skip_options(*layers) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("block,expected", [
+    ({"enable": True, "model_preset": "default", "rag": {"search_terms": 0}, "skip": False}, []),
+    ({"overflow_polcy": "batch"}, ["`overflow_polcy`", "overflow_policy"]),
+    ({"rag": {"search_term": 3}}, ["`rag.search_term`", "search_terms"]),
+    ({"skip": {"duplicate_tabel": True}}, ["`skip.duplicate_tabel`", "duplicate_table"]),
+    ({"rag": {"search_terms": -1}}, ["0 이상의 정수"]),
+    ({"rag": {"search_terms": 3, "include_search_terms": False}}, ["옛 키"]),
+    ({"skip": "off"}, ["`skip` 은 false"]),
+])
+def test_block_key_diagnosis(block, expected):
+    """오기입은 문장 하나로 보고된다(가까운 이름 제안 포함). 정상 블록은 빈 목록이다."""
+    problems = cs.diagnose_table_text_description(block)
+    if not expected:
+        assert problems == []
+    else:
+        assert len(problems) == 1 and all(token in problems[0] for token in expected)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("skip,count,tokens", [
+    ({"single_value_table": True, "long_text_table": 100}, 0, []),
+    ({"single_value_table": "yes"}, 1, ["`skip.single_value_table`", "true 또는 false"]),
+    ({"long_text_table": True}, 1, ["`skip.long_text_table`", "0 이상의 정수"]),
+    ({"long_text_table": {"min_avg_chars": 100}}, 1, ["`skip.long_text_table`", "0 이상의 정수"]),
+    ({"long_cells": 100}, 1, ["`skip.long_cells`", "옛 이름", "long_text_table"]),
+    ({"long_cells": True}, 2, ["옛 이름", "0 이상의 정수"]),
+    ({"layout": False, "nested_table": True}, 2, ["옛 이름", "함께 적었습니다", "새 키가 우선"]),
+])
+def test_skip_value_diagnosis(skip, count, tokens):
+    """값 형식 위반, 옛 키, 옛 키와 새 키의 동시 사용은 각각 문장으로 보고된다."""
+    problems = cs.diagnose_table_text_description({"skip": skip})
+    assert len(problems) == count and all(token in " ".join(problems) for token in tokens)
+
+
+@pytest.mark.unit
 def test_doc_type_yaml_switches_the_standalone_runner(configured):
     assert configured.wants(doc_type="prod") is False      # llm 문서유형이 껐다
     assert configured.wants(doc_type="cs_ssf") is False    # 레코드 문서유형이 껐다

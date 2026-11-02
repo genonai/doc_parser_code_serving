@@ -240,8 +240,8 @@ body:                         # 청크 본문(= 임베딩 입력)을 어떻게 �
 | `body.fields` | 본문을 구성할 필드와 순서 (개행 결합) | `rows` · `records`는 **본문의 전부** |
 | `body.labels` | `항목명: 값` 형태로 냅니다 | 사람이 검색어로 쓰는 자연스러운 항목명을 권장합니다 |
 | `body.split` | 본문이 `chunk_size`를 넘으면 여러 청크로 나눕니다 | 긴 상세 HTML을 가진 행·레코드 |
-| `body.repeat` | 나뉜 **모든** 조각 앞에 반복할 식별 필드 | `rows`·`records`는 `split: true`일 때. `document`·`html`은 모든 청크에 적용 |
-| `body.once` | **첫 청크에만 1회** 얹습니다 | 문서 단위 분류 (`sections` · `document` · `html`) |
+| `body.repeat` | 나뉜 **모든** 조각 앞에 반복할 식별 필드(문서형 청크는 `HEADER:` 줄 다음) | `rows`·`records`는 `split: true`일 때. `document`·`html`은 모든 청크에 적용하며 `body.labels` 로 항목명을 함께 지정 |
+| `body.once` | **첫 청크에만 1회** 얹습니다(문서형 청크는 `HEADER:` 줄 다음) | 문서 단위 분류 (`sections` · `document` · `html`) |
 | `body.mirror_to` | 본문과 글자 그대로 같은 값을 받을 메타 필드 | 적재 측의 본문 컬럼용. `document` · `html` 전용 |
 
 > 접두는 청크마다 쓸 수 있는 `chunk_size`를 그만큼 줄입니다(청커가 미리 그 몫을 떼어 둡니다).
@@ -474,7 +474,7 @@ PY
 | 증상 | 원인 |
 |---|---|
 | `doc_type`을 줬는데 아무 일도 안 일어남 | 등록이 `enable: false` 입니다. 비활성 등록도 등록으로 보므로 오류 없이 지나갑니다 |
-| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` | 등록 블록에 없는 `doc_type` 값(오타 포함)입니다. `defaults.unknown_doc_type: fail` 이라 파싱이 실패합니다 |
+| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` | 등록 블록에 없는 `doc_type` 값(오타 포함)입니다. `defaults.unknown_doc_type: fail` 이라 파싱이 실패하고 재시도하지 않습니다 |
 | `doc_type`을 안 줬는데 custom_fields가 동작함 | config yaml의 등록 블록에 `doc_type` 키가 없으면 **wildcard** 로 모든 요청에 매칭됩니다 |
 | 청크는 생성되지만 metadata가 비어 있음 | 일치하는 등록이 없어 일반 처리 경로로 처리되었거나 `alias`가 일치하지 않음 |
 | 특정 필드만 계속 `null` | `llm`의 `out` 이름과 프롬프트가 내놓는 JSON 키가 다릅니다. `kind: html` 이면 선택자가 안 걸린 것 |
@@ -1093,11 +1093,14 @@ python -m genon.preprocessor.activities run --activity chunk parsed.json --doc-t
             "data": {"count": 1, "summary": "파싱 0KB · 요소 1", "preview": "…", "output": "…/parsed.json", …}}
 
 @@RESULT@@ {"ok": false, "stage": "parse", "activity": "parse", "duration_ms": 9501,
-            "error": {"type": "…", "message": "…", "non_retryable": false}}
+            "error": {"type": "permanent", "message": "…", "non_retryable": true,
+                      "reason_code": "PARSE_D001", "error_category": "data", "error_kind": "permanent"}}
 ```
 
 `data`는 워커가 돌려주는 요약 dict([6.4](#64-액티비티-결과와-오류))에 결과 파일 경로 `output`을 더한 것입니다.
-`error`의 `type`·`non_retryable`은 배포된 워커에서 같은 오류가 났을 때의 재시도 판정과 같습니다.
+`error`의 `type`·`non_retryable`은 배포된 워커에서 같은 오류가 났을 때의 재시도 판정과 같고,
+`reason_code`·`error_category`·`error_kind`는 워커가 액티비티 오류의 `details[0]`에 싣는 사유 코드와 같습니다
+(처리 본체의 실패에만 있고, 인자 오류처럼 본체 밖의 실패에는 없습니다).
 
 결과 파일은 워커가 쓰는 것과 같은 모양입니다. parse는 요소형이면 `{elements: [...]}`를, 문서형이면
 Docling 문서 자체를 저장합니다. chunk는 청크 배열을 저장합니다.
@@ -1683,10 +1686,13 @@ element의 공통 키는 `{category, content, coordinates, id, page}`이며, 행
 | `count` | parse는 요소 수(문서형은 텍스트 항목 수), chunk는 청크 수 |
 | `summary` · `preview` | 한 줄 요약과 앞부분 미리보기(`PREVIEW_CHARS`자까지) |
 | `duration_ms` | 처리 시간 |
+| `chunk_validation` | chunk 단계에서 청크 검증에 걸린 것이 있을 때만. HTTP 성공 응답의 `chunk_validation`과 같은 모양 |
 
 실패는 Temporal 액티비티 오류로 호출한 쪽에 전달되며, `type`과 `non_retryable`이 붙습니다. 같은 입력이면
 늘 실패하는 오류는 재시도하지 않고, 일시 오류는 재시도합니다. 재시도 횟수와 간격은 호출한 쪽이 정합니다.
-판정은 예외와 그 원인(`raise … from`)을 따라가며 처음 걸리는 규칙으로 합니다.
+판정은 예외와 그 원인(`raise … from`)을 따라가며 처음 걸리는 규칙으로 합니다. 오류의 `details[0]`에는
+사유 코드 `reason_code`·`error_category`·`error_kind`(= `type`)가 실립니다(사유 코드가 없는 예외는 `null`,
+[custom_fields_exceptions.md](custom_fields_exceptions.md)의 "사유 코드" 절).
 
 | 예외 | `type` | `non_retryable` |
 |---|---|---|
@@ -1701,7 +1707,7 @@ element의 공통 키는 `{category, content, coordinates, id, page}`이며, 행
 
 보강 단계의 오류는 `error_policy`를 따릅니다. 기본 `lenient`에서는 경고만 남기고 그 단계를 건너뛰며,
 `strict`에서는 메시지 앞에 `[stage]`가 붙은 오류로 실패합니다. 이때 모델 서빙의 연결 오류와 HTTP 5xx는
-`transient`(재시도), 시간 초과는 `timeout`(재시도), HTTP 4xx는 `permanent`(재시도 안 함)로 분류됩니다. `request_deadline`을 넘기면 워커는 멈출 수 없는 처리를 남긴 그 워커 프로세스를,
+`transient`(재시도), HTTP 429도 `transient`(재시도), 시간 초과는 `timeout`(재시도), 그 밖의 HTTP 4xx는 `permanent`(재시도 안 함)로 분류됩니다. `request_deadline`을 넘기면 워커는 멈출 수 없는 처리를 남긴 그 워커 프로세스를,
 처리 중인 다른 작업이 끝난 뒤 다시 띄웁니다.
 
 **설정 파일을 찾지 못하면 항상 오류입니다.** 기본값으로 조용히 대신하지 않습니다.
@@ -1711,7 +1717,7 @@ element의 공통 키는 `{category, content, coordinates, id, page}`이며, 행
 | 액티비티 폴더에 `config.yaml`이 없음 | 등록 오류. 워커가 기동하지 않습니다 |
 | 설정에 적은 `custom_field_*.yaml`이 없음 | 오류(`custom_fields config 없음: …`). 재시도하지 않습니다 |
 | 설정에 적은 프롬프트 파일이 없거나 내용이 비어 있음 | 오류. 코드 내장 기본 프롬프트는 설정에 프롬프트를 적지 않았을 때만 씁니다 |
-| 요청 `doc_type`이 등록되어 있지 않음 | 파싱 실패(`doc_type=… 에 맞는 custom_fields 등록이 없습니다`, `defaults.unknown_doc_type: fail`) |
+| 요청 `doc_type`이 등록되어 있지 않음 | 파싱 실패(`doc_type=… 에 맞는 custom_fields 등록이 없습니다`, `defaults.unknown_doc_type: fail`). 재시도하지 않습니다 |
 
 **결과가 예상과 다른 경우**
 
@@ -1846,6 +1852,7 @@ rows·records의 `body.fields`·`body.repeat` 값이 JSON·HTML이면 본문에�
 | 레코드 배열 위치 | `source.records_at` (`records`) | ✗ | ✔ | ✗ | ✗ | ✗ |
 | 못 찾을 때 정책 | `source.on_missing` (`missing_policy`) | ✗ | ✔ | ✔ | ✗ | ✗ |
 | 여러 건 접기 | `source.merge_rows` (`row_merge`) | ✔ | ✔ | ✗ | ✗ | ✗ |
+| 처리 대상 시트 | `source.sheets` | ✔ | ✗ | ✗ | ✗ | ✗ |
 | 섹션 표시 이름 | `source.sections` | ✗ | ✗ | ✔ | ✗ | ✗ |
 | 서브트리 제외 | `source.ignore_keys` | ✗ | ✗ | ✔ | ✗ | ✗ |
 | 포맷 전처리 | `source.pre.markdown` / `.html` | ⚠ **무시** | ⚠ **무시** | ⚠ **무시** | ✔ | ⚠ `.html` 적용, `.markdown` 무시 |
