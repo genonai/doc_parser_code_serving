@@ -20,6 +20,7 @@ if TYPE_CHECKING:  # 타입 힌트 전용. 실행 시에는 docling 을 불러�
     from docling_core.types.doc.document import DoclingDocument
 
 
+import sys as _e2e_sys; print("[E2E1102B] parse_e2e1102b loaded", file=_e2e_sys.stderr)
 class DocumentProcessor(ParserCore):
     """파싱 전용 전처리기. main.py 가 /parser 요청을 이 클래스로 라우팅한다."""
 
