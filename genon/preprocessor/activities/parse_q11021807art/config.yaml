@@ -284,7 +284,7 @@ enrichment:
       enable: true
       doc_type: monimo_event
       config_file: custom_field_monimo_event.yaml
-  # 관심소식
+  - custom_fields: {enable: true, doc_type: deep_article, config_file: custom_field_deep_article.yaml}  # 딥서치 국내기사(SB-2) — 아래는 관심소식
   - custom_fields:
       enable: true
       doc_type: monimo_news

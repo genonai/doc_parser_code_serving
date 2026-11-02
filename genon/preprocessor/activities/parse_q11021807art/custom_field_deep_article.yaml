@@ -1,0 +1,55 @@
+# 딥서치 국내기사 JSON 레코드 (SB-2 — DB 만 정해진 새 지식유형 deep_article, 업무표 GADDSTBIFA002)
+#
+# 입력 예시:
+#   {"articles": [{"BIZ_ID": "A001", "TITLE": "…", "PUBLISHER": "…", "AUTHOR": "…",
+#                  "SUMMARY_TXT": "…", "HIGHLIGHT_TXT": "…", "CONTENT_URL": "https://…",
+#                  "PUBLISHED_AT": "2026-10-30T09:12:00+09:00",
+#                  "SECTIONS": [{"heading": "…", "text": "…"}]}]}
+
+schema: v2
+source:
+  kind: records
+  records_at: articles
+  on_missing: error
+fields:
+  BIZ_ID:
+    alias: [BIZ_ID, articleId, id]
+    default: null
+  GROUP_C:
+    default: IFP
+  CUSTOM_TITLE:
+    alias: [TITLE, title]
+    transform: to_text
+  PUBLISHER:
+    alias: [PUBLISHER, publisher]
+  AUTHOR:
+    alias: [AUTHOR, author]
+  SUMMARY_TXT:
+    alias: [SUMMARY_TXT, summary]
+    transform: to_text
+  HIGHLIGHT_TXT:
+    alias: [HIGHLIGHT_TXT, highlight]
+    transform: to_text
+  CONTENT_URL:
+    alias: [CONTENT_URL, url]
+  PUBLISHED_AT:
+    alias: [PUBLISHED_AT, publishedAt]
+  SECTIONS:
+    alias: [SECTIONS, sections]
+    raw: true
+    transform: to_json
+  SECTIONS_TEXT:
+    alias: [SECTIONS, sections]
+    raw: true
+    transform: to_text
+    meta: false
+require:
+  fields: [BIZ_ID, CUSTOM_TITLE]
+body:
+  fields: [CUSTOM_TITLE, SUMMARY_TXT, SECTIONS_TEXT]
+  labels:
+    CUSTOM_TITLE: 제목
+    SUMMARY_TXT: 요약
+    SECTIONS_TEXT: 본문
+  split: true
+  repeat: [CUSTOM_TITLE]
