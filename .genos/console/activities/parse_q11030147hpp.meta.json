@@ -1,12 +1,12 @@
 {
  "id": "parse_q11030147hpp",
  "stage": "parse",
- "title": "파싱 복제",
+ "title": "파싱 · 카드 상품 (q11030147)",
  "description": "",
  "author": "백영상",
  "owner": "",
  "source_id": "parse",
  "params": {},
  "created_at": "2026-11-03 01:50:37",
- "updated_at": "2026-11-03 01:50:37"
+ "updated_at": "2026-11-03 01:51:13"
 }
