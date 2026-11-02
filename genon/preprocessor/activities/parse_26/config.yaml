@@ -374,3 +374,5 @@ guardrail:
   # 분류해 sensitive_infos 를 파스 출력에 실어 chunking 으로 전달(청크 라벨·마스킹 적용은 chunking).
   model_preset: guardrail   # 접속 정보(url, workflow_id, api_key)는 model_presets.yaml
   timeout: 60             # 호출 타임아웃(초). 대용량 문서는 상향
+
+# e2e
