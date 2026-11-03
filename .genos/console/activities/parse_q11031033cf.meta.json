@@ -1,12 +1,12 @@
 {
  "id": "parse_q11031033cf",
  "stage": "parse",
- "title": "파싱 복제",
+ "title": "파싱 · custom 점검 (q11031033)",
  "description": "",
  "author": "백영상",
  "owner": "",
  "source_id": "parse",
  "params": {},
  "created_at": "2026-11-03 10:34:08",
- "updated_at": "2026-11-03 10:34:08"
+ "updated_at": "2026-11-03 10:34:45"
 }
