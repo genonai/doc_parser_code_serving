@@ -374,7 +374,7 @@ enrichment:
       config_file: custom_field_term.yaml   # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)
   # FAQ
   - custom_fields:
-      enable: true                       # 이 문서유형 설정을 쓸지. true(미지정 시) | false
+      enable: false  # 이 문서유형 설정을 쓸지. true(미지정 시) | false
       doc_type: faq                      # 요청의 doc_type 이 이 값과 같을 때 적용한다(대소문자 무시)
       config_file: custom_field_faq.yaml   # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)
   # 이벤트
