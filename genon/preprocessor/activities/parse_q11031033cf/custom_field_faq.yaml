@@ -36,6 +36,6 @@ body:
   fields: [QUESTION, ANSWER]
   split: true
   labels:
-    QUESTION: 질문
+    QUESTION: 자주 묻는 질문
     ANSWER: 답변
   repeat: [QUESTION]
