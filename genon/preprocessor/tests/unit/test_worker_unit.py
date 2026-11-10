@@ -3,11 +3,14 @@
 실제 액티비티 처리기 대신 가짜 프로세서를 쓴다. 워커가 지키는 계약(어디서 읽고 어디에 쓰는가,
 무엇을 프로세서에 넘기는가, 어떤 예외를 재시도하는가)만 본다.
 """
+import dataclasses
 import errno
 import json
+import logging
 from pathlib import Path
 
 import pytest
+import yaml
 from temporalio.testing import ActivityEnvironment
 
 from genon.preprocessor.processing.common.reason_codes import CodedValueError
@@ -76,7 +79,7 @@ def test_site_folder_overrides_activity_config(tmp_path, monkeypatch, caplog):
     assert info.value.non_retryable and "'chunk' 폴더가 없습니다" in str(info.value)
     lines = [r.getMessage() for r in caplog.records]
     assert any("액티비티 parse:" in ln and "사이트 완성본" in ln and "오류" not in ln for ln in lines)
-    assert any("액티비티 chunk:" in ln and "호출마다 오류" in ln for ln in lines)
+    assert any(ln.startswith("액티비티 chunk [호출마다 오류") for ln in lines)   # 결함 표시는 경로 앞(220자에서 잘리지 않게)
 
 
 @pytest.mark.parametrize("cpu_max, processes, node_cpus, expected", [
@@ -189,6 +192,65 @@ def test_chunk_result_carries_validation_summary_from_request_state(cfg):
     assert result["chunk_validation"] == summary
 
 
+class _Lines(logging.Handler):
+    """배치 워커와 같은 형식(`%(doc_tag)s%(message)s`)으로 찍힌 줄을 모은다."""
+
+    def __init__(self):
+        super().__init__(logging.INFO)
+        self.lines: list[str] = []
+        self.addFilter(runtime.DocTagFilter())
+        self.setFormatter(logging.Formatter("%(doc_tag)s%(message)s"))
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
+
+
+def _env(slug: str) -> ActivityEnvironment:
+    env = ActivityEnvironment()
+    env.info = dataclasses.replace(env.info, activity_type=slug)
+    return env
+
+
+def test_batch_log_lines_carry_document_tag(cfg):
+    """배치 워커 로그는 parse·chunk 의 여러 문서가 섞인다 — 처리 스레드에서 찍은 줄과 끝 줄에 `[액티비티 파일명]`
+    이 붙고, 문서 처리가 끝난 뒤의 줄에는 붙지 않는다."""
+    class _Logging(_FakeProcessor):
+        async def __call__(self, request, file_path, **kwargs):
+            logging.getLogger("genon.preprocessor.processing.core.parser").info("표 3개를 읽었습니다")
+            return self.result
+
+    lines, root = _Lines(), logging.getLogger()
+    root.addHandler(lines)
+    old_level = root.level
+    root.setLevel(logging.INFO)
+    try:
+        _env("parse_q1").run(runtime.execute, _Logging({"document": {"texts": []}}), "parse",
+                             {"read_ref": {"root": "nfs", "path": "raw/a.pdf"}, "output_ref": "k1/parse",
+                              "source_name": "/nfs/raw/a.pdf"})
+        logging.getLogger("genon.worker").info("다음 작업을 기다립니다")
+    finally:
+        root.removeHandler(lines)
+        root.setLevel(old_level)
+    assert "[parse_q1 a.pdf] 표 3개를 읽었습니다" in lines.lines             # 처리 스레드의 줄
+    assert any(ln.startswith("[parse_q1 a.pdf] 처리 완료: 파싱 ") for ln in lines.lines)
+    assert lines.lines[-1] == "다음 작업을 기다립니다"
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (GenosServiceException("1", "doc_type=x 에 맞는 등록이 없습니다.\n  설정을 고치세요.", error_type="permanent"),
+     "doc_type=x 에 맞는 등록이 없습니다. 설정을 고치세요. (액티비티 parse_q1 · 파일 a.pdf)"),
+    (KeyError("title"), "KeyError: 'title' (액티비티 parse_q1 · 파일 a.pdf)"),
+], ids=["처리기 예외 — 클래스 이름 없음·한 줄", "그 밖의 예외 — 이름이 뜻을 보탠다"])
+def test_failure_message_puts_reason_first(cfg, exc, expected):
+    """실패 메시지는 사유가 맨 앞이고 한 줄이다 — Studio 콘솔(220자)과 GenOS 적재 상태(error_message)가 앞부분만
+    보인다. 어디서(액티비티·파일 이름)는 뒤 괄호. 예전엔 `parse_q1 /nfs/raw/a.pdf: GenosServiceException: …` 이었다."""
+    with pytest.raises(Exception) as info:
+        _env("parse_q1").run(runtime.execute, _FakeProcessor(None, exc), "parse",
+                             {"read_ref": {"root": "nfs", "path": "raw/a.pdf"}, "output_ref": "k1/parse",
+                              "source_name": "/nfs/raw/a.pdf"})
+    assert info.value.message == expected
+
+
 def test_parse_reads_repaired_copy_from_artifact_root(cfg):
     parser = _FakeProcessor({"document": {"texts": []}})
     ActivityEnvironment().run(runtime.execute, parser, "parse",
@@ -227,6 +289,7 @@ def _os_error(code, cls=OSError):
     (RuntimeError("unknown"), False, "RuntimeError"),
     (_os_error(errno.ESTALE), False, "transient"),
     (_os_error(errno.EACCES, PermissionError), True, "permanent"),
+    (yaml.YAMLError("다른 로더가 감싸지 않고 올린 문법 오류"), True, "permanent"),
 ])
 def test_error_classification(exc, non_retryable, kind):
     err = errors.to_application_error(exc, "parse_x a.pdf")
@@ -359,7 +422,40 @@ def test_processor_setup_error_is_classified(monkeypatch):
     assert (info.value.type, info.value.non_retryable) == ("permanent", True)
 
 
-def test_single_run_cli_uses_worker_body_and_prints_result_last(tmp_path, monkeypatch, capsys):
+def test_config_yaml_syntax_error_is_permanent_one_line(tmp_path, monkeypatch):
+    """config.yaml 문법 오류는 같은 설정이면 늘 실패한다 — 재시도하지 않고, 파일·행·열과 조치를 한 줄로 앞에 적는다.
+    Studio 콘솔(줄당 220자)·GenOS error_message(약 500자)에서 잘려도 고칠 자리가 보여야 한다."""
+    import types
+
+    from genon.preprocessor.processing.common import config_parse
+    from genon.preprocessor.processing.core.parser import ParserCore
+
+    class _Reads(ParserCore):
+        def __init__(self, config_path=None):    # 실제 프로세서처럼 기동 때 설정을 읽는다
+            config_parse.load_config(config_path)
+
+    cfg = tmp_path / "activities" / "parse_t" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("defaults:\n  log_level: 4\n  doc_types: [card, memo\nchunk: {}\n", encoding="utf-8")
+    real = registry.importlib.import_module
+    monkeypatch.setattr(registry.importlib, "import_module",
+                        lambda name, *a: types.SimpleNamespace(DocumentProcessor=_Reads)
+                        if name.endswith(".parse_t.processor") else real(name, *a))
+    monkeypatch.setattr(registry, "_PROCESSORS", {})
+    monkeypatch.setattr(runtime, "_POISONED", False)
+    monkeypatch.setattr(config_parse, "_PREPROCESSOR_DIR", tmp_path.resolve())   # 저장소 배치처럼 경로를 줄인다
+
+    with pytest.raises(Exception) as info:
+        ActivityEnvironment().run(registry.build([registry.Entry("parse_t", "parse", str(cfg))])[0], {})
+    err, message = info.value, info.value.message
+    assert (err.type, err.non_retryable) == ("permanent", True)
+    assert "\n" not in message
+    head = message[:130]                                            # 핵심은 앞 130자 안(#632)
+    assert "activities/parse_t/config.yaml 4행 6열의 YAML 문법이 틀렸습니다" in head
+    assert "). 괄호·들여쓰기·따옴표를 고치세요." in message          # 접두·접미(액티비티·파일)는 to_application_error 몫
+
+
+def test_single_run_cli_uses_worker_body_and_prints_result_last(tmp_path, monkeypatch, capsys, caplog):
     """단건 CLI(activities/__main__.py) — 워커와 같은 래퍼로 돌고 stdout 마지막 줄이 @@RESULT@@ 다."""
     import importlib
 
@@ -394,7 +490,11 @@ def test_single_run_cli_uses_worker_body_and_prints_result_last(tmp_path, monkey
     fake.exc = GenosServiceException("1", "필수 열 부재", error_type="permanent", reason_code="PARSE_D001")
     code = cli.main(["run", "--activity", "parse", str(src)])                 # 본체 실패 — 워커와 같은 details
     coded = json.loads(capsys.readouterr().out.strip().splitlines()[-1].removeprefix("@@RESULT@@ "))
-    assert code == 1 and "필수 열 부재" in coded["error"].pop("message")
+    # message 에 type 접두("permanent: ")가 붙지 않는다 — type 은 따로 싣는다
+    assert code == 1 and coded["error"].pop("message") == "필수 열 부재 (액티비티 parse · 파일 a.md)"
+    # Studio 콘솔은 실패 때 stderr 꼬리 6줄만 보인다 — 사유가 stderr 마지막 줄에 있어야 한다
+    failed_lines = [r.getMessage() for r in caplog.records if r.name == "genon.activities" and r.levelname == "ERROR"]
+    assert failed_lines[-1] == "단건 실행 실패(PARSE_D001): 필수 열 부재 (액티비티 parse · 파일 a.md)"
     assert coded["error"] == {"type": "permanent", "non_retryable": True, "reason_code": "PARSE_D001",
                               "error_category": "data", "error_kind": "permanent"}
 
