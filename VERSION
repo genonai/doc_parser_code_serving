@@ -1,6 +1,6 @@
 {
-  "source_version": "2.2.5-241-g447218b4",
-  "source_commit": "447218b4c5d7165e968c55f50d681ab2b4fe363f",
-  "source_commit_date": "2026-11-16T11:27:29+09:00",
+  "source_version": "2.2.5-243-gebf5fe8f",
+  "source_commit": "ebf5fe8fb9f8ae6d86d694d423b638d11d861789",
+  "source_commit_date": "2026-11-17T06:21:34+09:00",
   "docling_wheel": "genon_docling-2.41.0+genon.0-py3-none-any.whl"
 }
