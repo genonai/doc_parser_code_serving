@@ -432,6 +432,14 @@ enrichment:
       enable: true                       # 이 문서유형 설정을 쓸지. true(기본) | false
       doc_type: stock_insight            # 요청의 doc_type 이 이 값과 같을 때 적용한다(대소문자 무시)
       config_file: custom_field_stock_insight.yaml   # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)
+  - custom_fields:
+      enable: true
+      doc_type: tour_blog
+      config_file: custom_field_tour_blog.yaml
+  - custom_fields:
+      enable: true
+      doc_type: tour_guide
+      config_file: custom_field_tour_guide.yaml
 
 output:
   # 파싱 결과 형식. json(기본)=요소 목록 | html·markdown=본문 문자열 하나

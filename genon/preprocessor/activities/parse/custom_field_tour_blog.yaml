@@ -1,0 +1,46 @@
+# 문서 유형 tour_blog(여행 블로그 글)의 custom_fields 설정 — Markdown 파일 하나를 글 한 건으로 읽는다.
+# 시험 전용 가상 유형이다. 적재 테이블은 GADTRTBIFA001(TR_IFP_tables.sql)이다.
+# fields 아래 키는 만들어 낼 필드 이름이고, alias 는 Markdown 맨 앞 front matter(`---` 로 감싼 YAML 머리말)의 key 다.
+# 필드 이름은 테이블 컬럼 이름과 같게 두되, 제목만 blog_title 로 둔다 — 컬럼 TITLE 로 옮기는 것은
+# 적재 쪽(pipeline)의 필드 이름 매핑(spec_tour_blog.json 의 aliases)이 한다.
+# LLM 을 쓰지 않는다. 모든 값이 front matter 에서 온다.
+
+schema: v2
+source:
+  kind: document
+  pre:
+    markdown:
+      front_matter:
+        # front matter 는 필드로만 쓰고 chunk 본문에는 싣지 않는다
+        exclude_text_fields: ['*']
+        on_missing: error
+fields:
+  BIZ_ID:
+    alias: [post_id]
+    default: null
+  GROUP_C:
+    const: IFP
+  blog_title:
+    alias: [blog_title]
+  REGION_NM:
+    alias: [region]
+    default: null
+  TRAVEL_DT:
+    # 2026-05-17 → 20260517
+    alias: [travel_date]
+    transform: date_int
+  THEME_NM:
+    alias: [theme]
+    default: null
+  SUMMARY_TXT:
+    alias: [summary]
+    default: null
+  CONTENT_URL:
+    alias: [url]
+    default: null
+# once 의 필드는 첫 chunk 에만 `라벨: 값` 줄로 붙인다
+body:
+  once: [REGION_NM, THEME_NM]
+  labels:
+    REGION_NM: 지역
+    THEME_NM: 주제
