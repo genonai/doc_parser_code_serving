@@ -725,6 +725,39 @@ def test_get_real_file_type(tmp_path, filename, content, expected):
     assert loader.get_real_file_type(str(f)) == expected
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("filename,content,expected", [
+    ("note.zip", b"PK\x03\x04" + bytes(60), "note.zip 처리 불가: 지원하지 않는 형식(.zip)"),
+    ("image.png", b"\x89PNG\r\n\x1a\n" + bytes(60), "image.png 처리 불가: 손상된 이미지 파일"),
+], ids=["zip", "broken-png"])
+def test_load_documents_unreadable_file_is_permanent(tmp_path, filename, content, expected):
+    """#729: 매직헤더만으로 사전 판정을 통과한 파일의 라이브러리 원문 예외를 재시도하지 않는 PARSE_D009 로 바꾼다."""
+    from PIL import UnidentifiedImageError
+    from unstructured.partition.common import UnsupportedFileFormatError
+
+    f = tmp_path / filename
+    f.write_bytes(content)
+    raised = UnsupportedFileFormatError("x") if filename.endswith(".zip") else UnidentifiedImageError("x")
+    loader = object.__new__(GenericDocumentLoader)
+    # 실제 unstructured 이미지 경로는 레이아웃 모델을 올려 느리다 — 로더가 내는 예외만 흉내 낸다.
+    loader.get_loader = lambda *a, **k: MagicMock(load=MagicMock(side_effect=raised))
+    with pytest.raises(GenosServiceException) as ei:
+        loader.load_documents(str(f))
+    assert ei.value.error_msg.splitlines()[0] == expected
+    assert (ei.value.error_type, ei.value.reason_code) == ("permanent", "PARSE_D009")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"], ids=["plain", "utf8-bom"])
+def test_detect_unsupported_file_nasca_drm(tmp_path, bom):
+    """#733: 평문 헤더 뒤가 텍스트로 보여도 NASCA DRM 파일은 암호화 파일로 판정한다."""
+    from genon.preprocessor.processing.common.file_probe import detect_unsupported_file
+
+    f = tmp_path / "doc.docx"
+    f.write_bytes(bom + b"<## NASCA DRM FILE - VER1.00 ##>\r\nplain looking tail")
+    assert detect_unsupported_file(str(f)) == "NASCA DRM 암호화 파일"
+
+
 # ─── IntelligentDocumentProcessor._build_ocr_options (yaml → ocr_options) ────
 
 @pytest.mark.unit
