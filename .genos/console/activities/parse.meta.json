@@ -1,0 +1,15 @@
+{
+ "id": "parse",
+ "stage": "parse",
+ "title": "파싱",
+ "description": "",
+ "author": "yspaik",
+ "owner": "",
+ "params": {},
+ "created_at": "2026-11-17 22:51:18",
+ "updated_at": "2026-11-23 01:40:42",
+ "added_doc_types": [
+  "music_ai",
+  "tour_blog"
+ ]
+}
