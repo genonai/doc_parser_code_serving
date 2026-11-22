@@ -308,6 +308,10 @@ chunking:
     broken_min_count: 3       # 손상 문자 최소 개수
     table_min_chars: false    # 표가 든 청크에도 길이 하한을 적용할지
     max_chars: 0              # 출력 청크 글자 수 상한. 0 이면 검사하지 않음. 넘어도 버리지 않고 보고만 함
+    stutter_min_run: 0        # char_stutter 의 글자당 반복 횟수. 0 이면 검사하지 않음. 권장 3(monimo 설정)
+    fail_reasons: []          # 이 사유가 나오면 action·fail_on_any 와 상관없이 문서를 실패 처리. 예: [char_stutter]
+    foreign_min_count: 0      # foreign_script 의 다른 문자체계 글자 수 하한. 0 이면 검사하지 않음. 권장 10(monimo 설정)
+    report_reasons: []        # 이 사유로만 걸린 청크는 빼거나 문서를 실패시키지 않고 기록만 함. 예: [foreign_script]
     by_doc_type:              # doc_type 별로 위 값을 덮어씁니다
       faq:  {min_chars: 0}
       menu: {min_chars: 0}
@@ -326,11 +330,13 @@ chunking:
 
 | 순서 | 사유 | 판정 | 근거 예 |
 |---|---|---|---|
+| 0 | `char_stutter` | 한글·한자에서 같은 글자가 `stutter_min_run` 회 이상 이어진 덩어리가 2개 이상 붙어 있음(`무무무무배배배배`). 제목(HEADER 줄)까지 포함해 보고 다른 사유보다 먼저 판정합니다(`foreign_script` 도 제목을 보지만 다른 사유 뒤에 판정합니다). `stutter_min_run: 0`(기본)이면 검사하지 않습니다 | 같은 글자 3회 이상 반복 2구간 연속 |
 | 1 | `blank` | 본문이 공백뿐 | 본문 없음 |
 | 2 | `no_content` | 내용 문자(글자·숫자, 언어 무관) 0자 | 내용 문자 0자 |
 | 3 | `broken_chars` | 깨진 문자(U+FFFD, 제어 문자, `GLYPH<…>`, 잘못된 인코딩으로 바뀐 한글 `占쏙옙`·`ë³´í—˜`) 개수 ≥ `broken_min_count` **그리고** 점유율 ≥ `broken_max_share` | 깨진 문자 100자 / 101자(99%) |
 | 4 | `repetition` | 동일 문자 연속·동일 줄·동일 문구 연속 중 하나가 `repeat_min_count` 이상 **그리고** 중복 점유율 ≥ `repeat_max_share` | 동일 문구 29회, 중복 93% |
 | 5 | `min_chars` | 내용 문자 수 < 하한 | 내용 문자 1자 < 하한 4자 |
+| 6 | `foreign_script` | 한 낱말 안에 한글과 다른 문자체계 글자가 함께 있음(`保険나이`), 또는 다른 문자체계 글자가 `foreign_min_count` 자 이상. 다른 문자체계는 한글·라틴·그리스 문자·KS X 1001 한자가 아닌 글자와 미할당 코드포인트이며, 숫자·구두점·기호·사용자 영역 문자는 세지 않습니다. 제목(HEADER 줄)도 포함해 봅니다. `foreign_min_count: 0`(기본)이면 검사하지 않습니다 | 한글과 다른 문자체계가 섞인 낱말 1개, 다른 문자체계 2자(하한 10자) |
 
 정상 청크를 빼지 않는 것이 우선이라, 아래는 판정에서 보호합니다.
 
@@ -434,6 +440,13 @@ chunking:
 | 전부 불량 | 전부 반환, 로그·응답 요약 기록 | 문서 실패 `CHUNK_ALL_REJECTED` | 문서 실패 `CHUNK_REJECTED` |
 | 판정기 오류 | 전부 반환, 오류 로그 기록 | 문서 실패 `CHUNK_VALIDATION_ERROR` | 같음 |
 
+위 표보다 사유 목록이 우선합니다.
+
+- `fail_reasons` 에 적은 사유가 나오면 `action`·`fail_on_any` 와 상관없이 문서 실패 `CHUNK_REJECTED` 입니다.
+  `report_reasons` 로 남긴 청크라도 훅이 바꾼 출력 본문에서 이 사유가 나오면 같습니다.
+- `report_reasons` 에 적은 사유로만 걸린 청크는 `drop`·`fail_on_any` 에서도 빼지 않고 로그와 응답 요약에만
+  기록합니다. 이때 응답 요약의 `action` 은 설정값(`drop`)이며 그 청크를 뺐다는 뜻이 아닙니다.
+
 세 경우 모두 실패 응답(`code: 1`, `stage: chunk_validation`, `error_kind: permanent`)이며 재시도로 해결되지
 않습니다. HTTP 상태는 200 이므로 응답 본문의 `code` 로 실패를 판단합니다. 오류 코드는 `error_msg` 에 실리지만
 배포 형태에 따라 앞부분이 다르므로, 시작 문자열이 아니라 포함 여부로 구분합니다.
@@ -446,7 +459,8 @@ chunking:
 - 검증 키는 **요청 파라미터로 바꿀 수 없습니다.** `text_cleanup=off` 요청에서도 검증은 그대로입니다.
   `CONFIG_BY_DOC_TYPE` 에 적어도 건너뜁니다 — doc_type 별 차등은 `by_doc_type` 으로 합니다.
 - 오기입(음수, 정수 자리의 true/false, 0~1 밖의 비율, 모르는 키, 모르는 `action`)은 **기동 시** 실패합니다.
-- 오디오(`[AUDIO]`)·legacy 표(`[DA]`) 단일 청크는 검증하지 않습니다.
+- 오디오(`[AUDIO]`)·legacy 표(`[DA]`) 단일 청크는 검증하지 않습니다. 단 `char_stutter`·`foreign_script` 는 문서 유형과
+  상관없이 적용하므로 이 청크도 판정합니다.
 
 ### 판정 기준의 근거
 

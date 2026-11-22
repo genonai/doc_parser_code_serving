@@ -201,12 +201,13 @@ chunk_request = {"file_path": original_path,
 |---|---|---|
 | menu, term | 엑셀 행 | `PARSE_D001` 필수 열 부재(시트를 지정하지 않아 모든 시트를 읽으므로 필수 열이 없는 시트가 하나라도 있으면 발생), `PARSE_D004` 열 이름 중복. 설정에 `source.sheets` 를 적으면 `PARSE_D013` 지정 시트 없음도 나옵니다 |
 | faq, cs_slf, monimo_event, music_ai | JSON 레코드(배열 위치 지정) | `PARSE_D010` JSON 문법 손상, `PARSE_D002` 지정한 레코드 배열 부재 |
+| shopping_card | 줄 단위 JSON 레코드(한 줄에 상품 하나) | `PARSE_D010` 비어 있지 않은 줄 중 하나라도 JSON 문법 손상 |
 | cs_hpp, cs_sss | JSON 레코드(배열 위치 자동 선택) | `PARSE_D010`, `PARSE_D002`, `PARSE_P005` 레코드 배열 후보를 구별할 수 없음 |
 | cs_ssf, stock_insight | 구분자로 나뉜 레코드 | `PARSE_D011` 비어 있지 않은 원천에서 지정 구분자로 레코드를 얻지 못함 |
 | product_hpp | 중첩 JSON 섹션 | `PARSE_D010`, `PARSE_D003` 필수 공통 필드 공백 |
 | product_slf, product_ssf | 마크다운 | `PARSE_D012` 섹션 지정 후 본문 없음 |
 | monimo_news | 본문 추출용 JSON | `PARSE_D010`. JSON 문법은 정상이고 지정한 본문 키만 없으면 경고 후 진행합니다 |
-| 모든 문서유형 | — | `PARSE_D009` 빈 파일·지원하지 않는 형식·손상·암호화 파일, `PARSE_P002` 등록되지 않은 doc_type |
+| 모든 문서유형 | — | `PARSE_D009` 빈 파일·지원하지 않는 형식·손상·암호화 파일, `PARSE_D014` 확장자와 실제 파일 형식 불일치, `PARSE_D015` 표 HTML 구조 손상, `PARSE_P002` 등록되지 않은 doc_type |
 
 - 등록되지 않은 `doc_type` 은 모니모 설정(`unknown_doc_type: fail`)에서 실패합니다. 오타를 먼저 확인합니다.
 - 목차·메타데이터 LLM 추출은 모니모 설정에서 꺼져 있지만, LLM 관련 사유 코드(`PARSE_P001`, `PARSE_S001`·`S101`·`S102`·`S201`)가

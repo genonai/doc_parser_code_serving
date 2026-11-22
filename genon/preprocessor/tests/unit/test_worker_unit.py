@@ -178,19 +178,26 @@ def test_parse_then_chunk_exchange_refs_on_artifact_root(cfg):
     assert chunked["summary"].startswith("chunk 1건") and "chunk_validation" not in chunked
 
 
-def test_chunk_result_carries_validation_summary_from_request_state(cfg):
-    """청커(ChunkerCore)가 요청 상태에 올린 청크 검증 요약을 HTTP 성공 봉투와 같은 키로 싣는다(#589).
+@pytest.mark.parametrize("key,stage,arg,output,summary", [
+    ("chunk_validation", "chunk", {"parsed_ref": "k1/fixed", "output_ref": "k1/chunk"}, [{"text": "a"}],
+     {"action": "report", "count": 1, "reasons": {"too_short": 1}, "items": []}),
+    # 파서가 올린 페이지 대조(#771). docling 형식은 document 만 저장하므로 usage 대신 결과에 싣는다.
+    ("page_check", "parse", {"read_ref": {"root": "nfs", "path": "raw/a.pdf"}, "output_ref": "k1/parse"},
+     {"document": {"texts": []}, "usage": {"pages": 1}},
+     {"unit": "page", "source": 2, "hidden": 0, "parsed": 1, "empty_count": 0, "empty_pages": [],
+      "image_only_pages": []}),
+])
+def test_result_carries_summary_from_request_state(cfg, key, stage, arg, output, summary):
+    """처리기가 요청 상태에 올린 요약을 HTTP 성공 봉투와 같은 키로 싣는다(#589).
     걸린 것이 없을 때 키가 붙지 않는 것은 위 교환 시험이 본다."""
-    summary = {"action": "report", "count": 1, "reasons": {"too_short": 1}, "items": []}
 
-    class _Chunker(_FakeProcessor):
+    class _Processor(_FakeProcessor):
         async def __call__(self, request, file_path, **kwargs):
-            request.state.chunk_validation = summary
+            setattr(request.state, key, summary)
             return self.result
 
-    result = ActivityEnvironment().run(runtime.execute, _Chunker([{"text": "a"}]), "chunk",
-                                       {"parsed_ref": "k1/fixed", "output_ref": "k1/chunk"})
-    assert result["chunk_validation"] == summary
+    result = ActivityEnvironment().run(runtime.execute, _Processor(output), stage, arg)
+    assert result[key] == summary
 
 
 class _Lines(logging.Handler):

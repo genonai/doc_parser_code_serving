@@ -1029,14 +1029,17 @@ async def test_validation_final_check_covers_hook_output(hook):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("values,code,reason_code", [
-    ({}, "CHUNK_ALL_REJECTED", "CHUNK_D002"),
-    ({"fail_on_any": True}, "CHUNK_REJECTED", "CHUNK_D003"),
+@pytest.mark.parametrize("values,bad,code,reason_code", [
+    ({}, _BAD, "CHUNK_ALL_REJECTED", "CHUNK_D002"),
+    ({"fail_on_any": True}, _BAD, "CHUNK_REJECTED", "CHUNK_D003"),
+    # fail_reasons 의 사유는 report 에서도 문서 실패다(#767).
+    ({"action": "report", "stutter_min_run": 3, "fail_reasons": ["char_stutter"]},
+     "무무무무배배배배 안내", "CHUNK_REJECTED", "CHUNK_D003"),
 ])
-async def test_validation_fails_document(values, code, reason_code):
-    """전부 제외되면 문서 실패, fail_on_any 면 불량 청크 하나로 문서 실패."""
+async def test_validation_fails_document(values, bad, code, reason_code):
+    """전부 제외되면 문서 실패, fail_on_any·fail_reasons 면 불량 청크 하나로 문서 실패."""
     cf = pytest.importorskip("facade.chunking_processor")
-    document = _quality_doc(_BAD, _BAD) if not values else _quality_doc(_GOOD, _BAD)
+    document = _quality_doc(bad, bad) if not values else _quality_doc(_GOOD, bad)
 
     with pytest.raises(cf.GenosServiceException) as exc:
         await _validating(cf.DocumentProcessor(), **values)(None, "", document=document)
@@ -1146,6 +1149,22 @@ async def test_validation_judge_error(monkeypatch, action):
             await proc(None, "", document=_quality_doc(_GOOD))
     else:
         assert len(await proc(None, "", document=_quality_doc(_GOOD))) == 1
+
+
+@pytest.mark.asyncio
+async def test_validation_report_reasons_keep_chunk_in_drop_mode():
+    """#775: report_reasons 로만 걸린 chunk 는 drop·fail_on_any 에서도 남기고 요약에만 기록한다."""
+    cf = pytest.importorskip("facade.chunking_processor")
+    tb = pytest.importorskip("processing.core.toolbox")
+    request = tb.mock_request()
+    proc = _validating(cf.DocumentProcessor(), fail_on_any=True, foreign_min_count=10,
+                       report_reasons=["foreign_script"])
+
+    vectors = await proc(request, "", document=_quality_doc(_GOOD, "보장성保问题是란 무엇인가"))
+
+    assert len(vectors) == 2
+    assert (request.state.chunk_validation["count"], request.state.chunk_validation["reasons"]) == (
+        1, {"foreign_script": 1})
 
 
 @pytest.mark.asyncio

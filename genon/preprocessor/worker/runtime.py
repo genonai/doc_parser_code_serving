@@ -334,6 +334,10 @@ def execute(proc, stage: str, arg: dict) -> dict:
     validation = getattr(request.state, "chunk_validation", None)
     if validation is not None:
         extra["chunk_validation"] = validation
+    # 원본 대비 페이지 수·미추출 페이지(#771). 파서가 대상 형식(pdf·pptx·xlsx)일 때만 올린다.
+    page_check = getattr(request.state, "page_check", None)
+    if page_check is not None:
+        extra["page_check"] = page_check
     return {**extra, "stage": stage, "activity": name, "ref": output_ref, "bytes": size, "count": count,
             "summary": summary, "preview": preview,
             "duration_ms": int(elapsed * 1000)}

@@ -80,6 +80,8 @@ Temporal 워커 경로에서는 같은 세 값이 액티비티 오류(`Applicati
 | `PARSE_D011` | permanent | 구분자로 나뉜 레코드가 없음 |
 | `PARSE_D012` | permanent | `markdown.sections` 적용 후 본문 없음 |
 | `PARSE_D013` | permanent | `source.sheets` 로 지정한 시트가 워크북에 없음 |
+| `PARSE_D014` | permanent | 확장자와 실제 파일 형식 불일치(`formats.verify_extension: true`). 원천 파일 확장자 수정 필요 |
+| `PARSE_D015` | permanent | 표 HTML 구조 손상: 셀·행 닫는 태그 누락, `<tr>` 밖의 셀, 닫히지 않은 `<table>`(`formats.verify_table_markup: true`). 원천 HTML 의 표 태그 수정 필요 |
 | `PARSE_P001` | permanent | LLM 입력 길이 사전 검사 초과(목차·메타데이터 추출의 `precheck`). 표 설명의 길이 초과(`overflow_policy: error`)는 경고 후 진행합니다 |
 | `PARSE_P002` | permanent | 등록되지 않은 doc_type(`defaults.unknown_doc_type: fail`) |
 | `PARSE_P003` | permanent | 같은 doc_type 에 설정이 여러 개 |
@@ -95,7 +97,7 @@ Temporal 워커 경로에서는 같은 세 값이 액티비티 오류(`Applicati
 | `PARSE_S201` | permanent | LLM 응답 형식 이상 |
 | `CHUNK_D001` | permanent | 청크로 만들 본문 없음(`chunk 0건: …`) |
 | `CHUNK_D002` | permanent | 전체 청크 불량(`CHUNK_ALL_REJECTED`) |
-| `CHUNK_D003` | permanent | 불량 청크 존재, `fail_on_any: true`(`CHUNK_REJECTED`) |
+| `CHUNK_D003` | permanent | 불량 청크 존재, `fail_on_any: true` 또는 `fail_reasons` 에 적은 사유(`CHUNK_REJECTED`) |
 | `CHUNK_P001` | permanent | 행 메타를 청크 속성으로 옮기지 못함 |
 | `CHUNK_P002` | permanent | 입력 누락 |
 | `CHUNK_P003` | permanent | 파서 결과가 아닌 입력 |

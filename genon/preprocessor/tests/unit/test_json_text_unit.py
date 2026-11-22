@@ -115,6 +115,25 @@ def test_build_merged_html_creates_section_per_item():
     assert "A" in out and "B" in out
 
 
+@pytest.mark.parametrize("value,fmt", [
+    ("<table><tr><td>연회비</td></tr><p>다음 문단</p>", "html"),
+    ('<iframe srcdoc="&lt;table&gt;&lt;tr&gt;&lt;td&gt;연회비&lt;td&gt;1만원&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;"></iframe>',
+     "html"),
+    ("연회비 안내 <table><tr><td>연회비<td>1만원</td></tr></table>", "markdown"),   # 문단 안 HTML
+], ids=["raw", "srcdoc", "markdown_inline"])
+def test_build_merged_html_checks_table_before_conversion(value, fmt):
+    """#777: 변환이 닫히지 않은 표를 닫아 버리므로 항목 원문과 펼칠 srcdoc 원문에서 표 구조 손상을 찾는다."""
+    from genon.preprocessor.processing.common import table_markup
+
+    token = table_markup.enable(True)
+    try:
+        with pytest.raises(ValueError) as exc:
+            build_merged_html([("본문", value)], "문서", fmt)
+    finally:
+        table_markup.reset(token)
+    assert exc.value.reason_code == "PARSE_D015"
+
+
 def test_build_merged_html_converts_markdown_tables():
     out = build_merged_html([("요약", "| a | b |\n|---|---|\n| 1 | 2 |")], "문서")
     assert "<table>" in out

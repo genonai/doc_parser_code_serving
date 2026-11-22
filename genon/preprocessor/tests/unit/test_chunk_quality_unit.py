@@ -5,6 +5,7 @@
 기준을 바꿀 때는 이 테스트가 아니라 yaml 을 고친다. 코어 연결은
 test_chunking_processor_unit.py 가 다룬다.
 """
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,7 +41,8 @@ def test_judge_matches_sample(case):
     prefix = case.get("prefix", "")
     verdict = cq.judge(
         prefix + build_text(case["text"]), kind=case.get("kind", "docling"),
-        code_like=case.get("code_like", False), prefix_len=len(prefix), cfg=cq.Config())
+        code_like=case.get("code_like", False), prefix_len=len(prefix),
+        cfg=cq.Config(**case.get("config", {})))
     assert (verdict.reason if verdict else "keep") == case["expect"]
 
 
@@ -119,3 +121,28 @@ _GOOD_STEP = (_chunk("결제일은 매월 14일이다."), "", "결제일은 매�
 def test_session_summary(action, steps, expected):
     """성공 응답에 싣는 요약. 걸린 청크가 없으면 None 이라 응답에 키가 붙지 않는다."""
     assert _summarize(action, steps) == expected
+
+
+_FAILING = cq.Config(action="drop", stutter_min_run=3, fail_reasons=("char_stutter",),
+                     foreign_min_count=10, report_reasons=("foreign_script",))
+
+
+@pytest.mark.parametrize("marker,output,cfg", [
+    (False, "무무무무배배배배당당당당 안내", _FAILING),
+    (True, "무무무무배배배배당당당당 안내", _FAILING),
+    # 훅이 바꾼 본문이 다른 사유(깨진 문자)여도 fail_on_any 문서 유형이면 멈춘다
+    (False, "\ufffd\ufffd\ufffd가", replace(_FAILING, fail_on_any=True)),
+], ids=["reported_chunk", "marker_chunk", "reported_chunk_fail_on_any"])
+def test_final_check_stops_on_fail_reason(marker, output, cfg):
+    """#777: 기록만 한 chunk 를 훅이 바꿨거나 음성 전사·시트 통째 chunk 여도 멈출 대상이면 멈춘다."""
+    broken = SimpleNamespace(text=output)
+    session = cq.Session(cfg, marker_vectors=[broken] if marker else ())
+    if not marker:
+        chunk = _chunk("보장성保问题是란 무엇인가")
+        assert session.check_chunk(chunk, 0) is False          # foreign_script 는 기록만
+        session.remember(broken, chunk, "", 0)                  # edit_output 이 본문을 바꿈
+
+    with pytest.raises(cq.ChunkValidationError) as exc:
+        session.finalize([broken])
+
+    assert exc.value.reason_code == "CHUNK_D003"

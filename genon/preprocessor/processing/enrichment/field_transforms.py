@@ -19,6 +19,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime
+from decimal import ROUND_FLOOR, Decimal
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
@@ -202,6 +203,30 @@ def transform_normalize(value: Any) -> Optional[str]:
 
 
 transform_text_norm = transform_normalize  # 옛 이름. toolbox 재수출과 기존 import 를 유지한다.
+
+
+_RATIO_RE = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*/\s*(-?\d+(?:\.\d+)?)\s*$")
+
+
+def transform_percent(value: Any) -> Any:
+    """percent 변환기: `"분자/분모"` 를 백분율 정수(내림)로 바꾼다. `"10600/25000"` → 42.
+
+    `template: "{{DISCOUNT_AMT}}/{{PRICE_AMT}}"` 로 결합한 값에 건다. 값 파이프라인은 결합 전의
+    원시 값에도 같은 변환을 걸므로 None·빈 문자열은 그대로 돌려준다. 형식이 맞지 않거나
+    (값 하나가 비어 `"10600/"` 이 된 경우 등) 분모가 0 이면 None 이다.
+
+    부동소수점으로 계산하면 `29/100*100` 이 28.999… 가 되어 내림 결과가 틀리므로 Decimal 로
+    계산한다. 음수도 수학적 내림(floor)이다.
+    """
+    if value in (None, ""):
+        return value
+    match = _RATIO_RE.match(str(value))
+    if not match:
+        return None
+    numerator, denominator = (Decimal(part) for part in match.groups())
+    if denominator == 0:
+        return None
+    return int((numerator * 100 / denominator).to_integral_value(rounding=ROUND_FLOOR))
 
 
 # ── 원천 값 → 사람이 읽는 평문 (`to_text` 변환기용) ──────────────
@@ -500,6 +525,7 @@ VALUE_TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "date_int_flex": transform_date_int,   # 옛 이름(별칭)
     "normalize": transform_normalize,
     "text_norm": transform_normalize,      # 옛 이름(별칭)
+    "percent": transform_percent,
 }
 
 

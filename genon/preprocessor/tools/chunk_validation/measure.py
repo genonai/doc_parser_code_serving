@@ -29,6 +29,7 @@ import json
 import random
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import yaml
@@ -121,7 +122,7 @@ def report(roots: list, sample_size: int = 50) -> str:
         prefix = case.get("prefix", "")
         verdict = cq.judge(prefix + build_text(case["text"]), kind=case.get("kind", "docling"),
                            code_like=case.get("code_like", False), prefix_len=len(prefix),
-                           cfg=cfg)
+                           cfg=replace(cfg, **case.get("config", {})))
         got = verdict.reason if verdict else "keep"
         if got != case["expect"]:
             mismatched.append(f"{case['id']}(기대 {case['expect']}, 실제 {got})")

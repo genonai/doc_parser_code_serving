@@ -758,6 +758,35 @@ def test_detect_unsupported_file_nasca_drm(tmp_path, bom):
     assert detect_unsupported_file(str(f)) == "NASCA DRM 암호화 파일"
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("ext,content,expected", [
+    (".pdf", b"<html><body>page</body></html>", "텍스트"),
+    (".docx", b"%PDF-1.4 body", "PDF"),
+    (".txt", b"%PDF-1.4 body", "PDF"),
+    (".png", b"%PDF-1.4 body", "PDF"),
+    (".html", "\ufeff [{\"title\": \"안내\"}]".encode(), "JSON"),
+    # 텍스트끼리·같은 계열 안의 혼동·검사 대상이 아닌 확장자는 통과한다
+    (".html", b"plain text without tags", None),
+    (".html", b"A|@|B|@|C", None),
+    (".html", b"{not json", None),
+    (".md", b"<table><tr><td>1</td></tr></table>", None),
+    (".hwp", b'<?xml version="1.0"?><HWPML Version="2.1"><HEAD/></HWPML>', None),
+    (".hwp", b'<?xml version="1.0"?>' + b" " * 600 + b'<HWPML Version="2.1"><HEAD/></HWPML>', None),  # #777
+    (".hwp", b" " * 600 + b'<HWPML Version="2.1"><HEAD/></HWPML>', None),
+    (".hwp", b'<?xml version="1.0"?><?xml-stylesheet href="a.css"?><HWPML><HEAD/></HWPML>', None),
+    (".html", b"<html><body><p>a</p>" + b" " * 600 + b"<!-- <HWPML> --></body></html>", None),
+    (".jpg", b"\x89PNG\r\n\x1a\n" + bytes(20), None),
+    (".mp3", b"plain text", None),
+])
+def test_detect_extension_mismatch(tmp_path, ext, content, expected):
+    """#769: 확장자 계열과 실제 내용 계열이 다르거나 .html 이 JSON 이면 실제 형식 이름을 돌려준다."""
+    from genon.preprocessor.processing.common.file_probe import detect_extension_mismatch
+
+    f = tmp_path / f"doc{ext}"
+    f.write_bytes(content)
+    assert detect_extension_mismatch(str(f), ext) == expected
+
+
 # ─── IntelligentDocumentProcessor._build_ocr_options (yaml → ocr_options) ────
 
 @pytest.mark.unit

@@ -95,6 +95,8 @@ CASES = [
     ("monimo_news",   MONIMO / "TD00008415_d_5199.html.json",          "실 파일명 → BIZ_ID"),
     # 캡처를 옮겨 만든 샘플이다(BOM 포함).
     ("music_ai",      MONIMO / "monimo_music_ai_sample.json",          "playList 항목별 청크"),
+    # 캡처를 옮겨 만든 줄 단위 JSON(JSONL) 샘플이다. 확장자는 원본처럼 .json 이다.
+    ("shopping_card", MONIMO / "monimo_shopping_card_sample.json",     "JSONL 레코드별 청크·할인율 계산"),
     ("cs_slf",        MONIMO / "monimo_cs_slf_sample.json",            "json_mapping"),
     # 마지막 레코드는 제목에 영문 대문자·<BR>·엔티티가 든 생성 레코드다(#414).
     ("cs_ssf",        MONIMO / "monimo_cs_ssf_sample.dtms",            "|@| 구분 레코드"),
@@ -829,6 +831,30 @@ def check_term_duplicate_rows(chunks: list) -> list[str]:
     return [] if found == expected else [f"(BIZ_ID, 최종수정일) {expected} 기대, 실제 {found}"]
 
 
+def check_shopping_card(chunks: list) -> list[str]:
+    """레코드 12건이 청크 12건이 되고, 할인율은 할인금액 × 100 / 정가의 내림이다."""
+    problems = []
+    if len(chunks) != 12:
+        problems.append(f"청크 12건 기대, 실제 {len(chunks)}건")
+    rates = [c.get("DISCOUNT_RATE") for c in chunks]
+    expected = [42, 5, 85, 28, 64, 47, 70, 37, 65, 26, 31, 41]
+    if rates != expected:
+        problems.append(f"DISCOUNT_RATE {expected} 기대, 실제 {rates}")
+    soldout = {c.get("SOLDOUT_YN") for c in chunks}
+    if not soldout <= {"Y", "N"}:
+        problems.append(f"SOLDOUT_YN 은 Y/N 이어야 함: {sorted(map(str, soldout))}")
+    for key in ("KEYWORDS", "SHOP_IDS", "CATEGORIES"):
+        for c in chunks:
+            try:
+                ok = isinstance(json.loads(c.get(key)), list)
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                problems.append(f"{key} 가 JSON 배열 문자열이 아님: BIZ_ID={c.get('BIZ_ID')}")
+                break
+    return problems
+
+
 def _letters(text: str) -> str:
     """글자와 숫자만 남긴다. 렌더가 <br>·엔티티·공백·따옴표를 바꿔도 같은 원문인지 비교할 수 있다."""
     import html
@@ -935,6 +961,7 @@ EXTRA_CHECKS = {
     ("monimo_event", "monimo_event_title_sample.json"): check_title_kept(
         "KB국민카드 & monimo Pay 첫 결제 최대 5만원 캐시백"),
     ("cs_ssf", "monimo_cs_ssf_layout_table_sample.dtms"): check_cs_ssf_layout_table,
+    ("shopping_card", "monimo_shopping_card_sample.json"): check_shopping_card,
     ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_last_mod_dt(0),
     ("cs_sss", "monimo_cs_sss_sample.json"): check_last_mod_dt(0),
     ("cs_hpp", "monimo_cs_hpp_chunksize_sample.json"): check_last_mod_dt(20260825),

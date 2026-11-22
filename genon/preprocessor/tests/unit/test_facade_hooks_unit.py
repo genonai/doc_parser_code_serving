@@ -101,10 +101,27 @@ async def test_broken_json_reaches_the_hook_as_raw_text(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_broken_json_without_hook_still_fails(tmp_path: Path):
-    """훅이 손대지 않으면 종전대로 입력 오류다(하위호환)."""
+async def test_jsonl_without_hook_is_read_as_list(tmp_path: Path):
+    """훅이 처리하지 않은 줄 단위 JSON 은 줄마다 읽어 list 로 돌려준다(빈 줄은 건너뛴다).
+
+    입력은 실물 sample_files/monimo/monimo_shopping_card_sample.json(카드쇼핑 12건, 확장자 .json)
+    에 빈 줄을 하나 끼운 것이다.
+    """
+    sample = Path(__file__).resolve().parents[2] / "sample_files/monimo/monimo_shopping_card_sample.json"
+    lines = sample.read_text(encoding="utf-8").splitlines()
     src = tmp_path / "a.json"
-    src.write_text("{not json", encoding="utf-8")
+    src.write_text("\n".join(lines[:1] + [""] + lines[1:]) + "\n", encoding="utf-8")
+    out = await _bare(parser_facade.DocumentProcessor)._load_json_payload(str(src), "any")
+    assert [r["pid"] for r in out] == [json.loads(line)["pid"] for line in lines]
+    assert len(out) == 12
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["{not json", "  \n\n", '{"v":1}\n{bad\n'])
+async def test_broken_json_without_hook_still_fails(tmp_path: Path, text):
+    """훅이 손대지 않으면 종전대로 입력 오류다(하위호환). 공백뿐이거나 한 줄이라도 깨진 JSONL 도 같다."""
+    src = tmp_path / "a.json"
+    src.write_text(text, encoding="utf-8")
     with pytest.raises(core_parser.GenosServiceException) as exc:
         await _bare(parser_facade.DocumentProcessor)._load_json_payload(str(src), "any")
     # 재시도해도 같은 원천 오류다(#528)

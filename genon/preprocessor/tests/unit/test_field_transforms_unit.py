@@ -17,6 +17,7 @@ from processing.enrichment.field_transforms import (
     parse_created_date,
     serialize_metadata_value_for_output,
     store_metadata_in_document,
+    transform_percent,
     transform_regex_extract,
     transform_to_int,
 )
@@ -77,6 +78,20 @@ def test_regex_extract_on_error_when_nothing_extracted():
     assert transform_regex_extract(
         "monimo_product_slf_sample.md", pattern=r"^(.+?_\d{8})(?!\d)", on_error="없음"
     ) == "없음"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [
+    ("10600/25000", 42),
+    ("1800/31900", 5),      # 5.64 -> 내림
+    ("29/100", 29),         # 부동소수점이면 28.999... 로 28 이 된다
+    ("0/25000", 0),
+    ("100/0", None),        # 분모 0
+    ("10600/", None),       # 결합 값 하나가 비어 형식이 맞지 않음
+    (None, None),
+])
+def test_percent_floors_ratio(value, expected):
+    assert transform_percent(value) == expected
 
 
 # ── apply_field_transforms ───────────────────────────────────────────────────

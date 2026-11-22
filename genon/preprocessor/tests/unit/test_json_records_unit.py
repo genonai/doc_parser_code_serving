@@ -223,6 +223,21 @@ def test_html_to_text_handles_empty_input():
     assert html_to_text("   ") == ""
 
 
+def test_html_to_text_stops_on_broken_table_when_enabled():
+    """#773: 표 구조 손상은 평문 추출로 넘어가지 않고 PARSE_D015 로 멈춘다(설정이 켜졌을 때만)."""
+    from genon.preprocessor.processing.common import table_markup
+
+    broken = "<table><tr><td>연회비<td>1만원</td></tr></table>"
+    assert "연회비" in html_to_text(broken)
+    token = table_markup.enable(True)
+    try:
+        with pytest.raises(ValueError) as exc:
+            html_to_text(broken)
+    finally:
+        table_markup.reset(token)
+    assert exc.value.reason_code == "PARSE_D015"
+
+
 def _pipe_rows(text: str) -> list[str]:
     return [line for line in text.splitlines() if line.startswith("|")]
 

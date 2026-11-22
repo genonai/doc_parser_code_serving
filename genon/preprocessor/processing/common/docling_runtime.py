@@ -395,6 +395,12 @@ class DoclingRuntimeBase:
         self._ext_aliases = fa.parse_extension_aliases(formats_cfg)
         if self._ext_aliases:
             _log.info(f"확장자 별칭: {self._ext_aliases}")
+        # 확장자와 실제 내용 형식이 다르면 처리 중단(PARSE_D014). 별칭이 적용된 파일은 보지 않는다.
+        self._verify_extension = bool(_parse_optional_bool(
+            formats_cfg.get("verify_extension"), "formats.verify_extension"))
+        # 표 HTML 의 닫는 태그·<tr> 누락이면 처리 중단(PARSE_D015).
+        self._verify_table_markup = bool(_parse_optional_bool(
+            formats_cfg.get("verify_table_markup"), "formats.verify_table_markup"))
 
     # ------------------------------------------------------------------
     # docling 배관

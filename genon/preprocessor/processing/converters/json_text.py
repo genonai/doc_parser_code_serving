@@ -28,6 +28,7 @@ import re
 from typing import Any
 
 from bs4 import BeautifulSoup
+from genon.preprocessor.processing.common import table_markup
 from genon.preprocessor.processing.common.reason_codes import CodedValueError
 
 from .html_flatten import (
@@ -35,6 +36,7 @@ from .html_flatten import (
     extract_content,
     flatten_html,
     precheck_html,
+    unfolded_sources,
 )
 
 _log = logging.getLogger(__name__)
@@ -190,6 +192,18 @@ def build_merged_html(
     sections = []
     for label, value in items:
         fmt = forced_format if forced_format in ("html", "markdown") else detect_format(value)
+        # 아래 변환이 HTML 파서로 다시 쓰며 닫히지 않은 표를 닫아 버리므로 항목 원문을 검사한다(#777).
+        where = f"{title} {label}".strip()
+        if fmt == "markdown":
+            # 마크다운 항목은 python-markdown 이 HTML 을 고치지 않고 넘기므로 그 결과를 본다. docling 이
+            # 받는 HTML 과 같아 코드 블록·인라인 HTML 판정이 어긋나지 않는다.
+            if table_markup.is_enabled():
+                table_markup.check(_markdown_to_html(value), where)
+        else:
+            table_markup.check(value, where)
+            if table_markup.is_enabled():
+                for source in unfolded_sources(value):
+                    table_markup.check(source, where)
         _log.debug(f"[json_text] section '{label}' format={fmt} len={len(value):,}")
         sections.append((label, _section_node(value, fmt, label)))
     return build_docling_document(title, sections)

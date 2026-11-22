@@ -38,6 +38,7 @@ import json
 import logging
 import os
 import re
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -51,7 +52,10 @@ _log = logging.getLogger(__name__)
 
 ATTR = "_chunk_validation"
 ACTIONS = ("report", "drop")
-REASONS = ("blank", "no_content", "broken_chars", "repetition", "min_chars")
+REASONS = ("blank", "no_content", "broken_chars", "repetition", "min_chars", "char_stutter",
+           "foreign_script")
+# char_stutter: 같은 글자 반복 덩어리가 이만큼 이상 붙어 있으면 깨짐으로 본다(무무무무배배배배).
+STUTTER_MIN_RUNS = 2
 
 # 오류 메시지 앞머리. 호출자가 메시지로 원인을 구분한다.
 CHUNK_ALL_REJECTED = "CHUNK_ALL_REJECTED"
@@ -78,6 +82,10 @@ class Config:
     broken_min_count: int = 3
     table_min_chars: bool = False   # 표가 든 청크에도 길이 하한을 적용할지
     max_chars: int = 0              # 출력 청크 글자 수 상한(0 = 검사 안 함). 넘으면 보고만 한다(#528)
+    stutter_min_run: int = 0        # char_stutter 의 글자당 반복 횟수(0 = 검사 안 함)
+    fail_reasons: tuple = ()        # 이 사유가 나오면 action·fail_on_any 와 상관없이 문서 실패
+    foreign_min_count: int = 0      # foreign_script 의 외래 문자 수 하한(0 = 검사 안 함)
+    report_reasons: tuple = ()      # 이 사유로만 걸린 chunk 는 빼거나 문서를 실패시키지 않고 기록만 한다
     by_doc_type: dict = field(default_factory=dict, compare=False, hash=False)
 
     @property
@@ -86,9 +94,10 @@ class Config:
 
 
 _BOOL_KEYS = ("fail_on_any", "table_min_chars")
-_COUNT_KEYS = ("min_chars", "row_min_chars", "repeat_min_count", "broken_min_count", "max_chars")
+_COUNT_KEYS = ("min_chars", "row_min_chars", "repeat_min_count", "broken_min_count", "max_chars",
+               "stutter_min_run", "foreign_min_count")
 _SHARE_KEYS = ("repeat_max_share", "broken_max_share")
-_VALUE_KEYS = ("action",) + _BOOL_KEYS + _COUNT_KEYS + _SHARE_KEYS
+_VALUE_KEYS = ("action", "fail_reasons", "report_reasons") + _BOOL_KEYS + _COUNT_KEYS + _SHARE_KEYS
 
 
 def _parse_value(key: str, value: Any, where: str) -> Any:
@@ -97,12 +106,19 @@ def _parse_value(key: str, value: Any, where: str) -> Any:
         if value not in ACTIONS:
             raise ValueError(f"{path}: {list(ACTIONS)} 중 하나 지정 필요 (받은 값={value!r})")
         return value
+    if key in ("fail_reasons", "report_reasons"):
+        if not isinstance(value, list) or any(v not in REASONS for v in value):
+            raise ValueError(f"{path}: {list(REASONS)} 중 값의 목록 지정 필요 (받은 값={value!r})")
+        return tuple(value)
     if key in _BOOL_KEYS:
         if not isinstance(value, bool):
             raise ValueError(f"{path}: true/false 지정 필요 (받은 값={value!r})")
         return value
     if key in _COUNT_KEYS:
         minimum = 2 if key == "repeat_min_count" else 0
+        if key == "stutter_min_run" and value == 1:
+            # 1 이면 모든 한글 두 글자가 걸린다.
+            raise ValueError(f"{path}: 0(검사 안 함) 또는 2 이상의 정수 지정 필요 (받은 값=1)")
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{path}: {minimum} 이상의 정수 지정 필요 (받은 값={value!r})")
         return value
@@ -225,6 +241,11 @@ class Verdict:
             if m["phrase"]:
                 parts.append(f"동일 문구 {m['phrase']}회")
             return ", ".join(parts) + f", 중복 {m['dup_share']:.0%}"
+        if self.reason == "char_stutter":
+            return f"같은 글자 {lim['stutter_min_run']}회 이상 반복 {m['stutter']}구간 연속"
+        if self.reason == "foreign_script":
+            return (f"한글과 다른 문자체계가 섞인 낱말 {m['mixed']}개, "
+                    f"다른 문자체계 {m['foreign']}자(하한 {lim['foreign_min_count']}자)")
         return f"내용 문자 {m['content']}자 < 하한 {lim['min_chars']}자"
 
     def message(self) -> str:
@@ -250,6 +271,11 @@ class Verdict:
             if m["phrase"]:
                 parts.append(f"같은 문구 {m['phrase']}회")
             return f"같은 내용이 반복됨({', '.join(parts)})"
+        if self.reason == "foreign_script":
+            return (f"한국어·영어가 아닌 문자가 섞임(섞인 낱말 {m['mixed']}개, "
+                    f"다른 문자 {m['foreign']}자)")
+        if self.reason == "char_stutter":
+            return f"같은 글자가 겹쳐 반복됨(같은 글자 {lim['stutter_min_run']}회 이상 반복 {m['stutter']}구간 연속)"
         return f"본문이 지나치게 짧음(글자·숫자 {m['content']}자, 최소 {lim['min_chars']}자)"
 
 
@@ -354,6 +380,74 @@ def _repetition(judged: str, min_count: int) -> tuple:
     return best_run, best_line, best_phrase, sum(1 for i in dup if not judged[i].isspace())
 
 
+_STUTTER_CHAR_RE = re.compile("[\uac00-\ud7a3\u4e00-\u9fff]")
+
+
+def _stutter(text: str, min_run: int) -> int:
+    """같은 글자가 min_run 회 이상 이어진 덩어리가 연달아 붙은 최대 개수.
+
+    한글 음절과 CJK 한자만 센다. 덩어리는 같은 글자의 최대 연속이라 이웃 덩어리는 서로 다른
+    글자다 — `一一一一一一` 은 덩어리 하나로 센다. 공백·태그·다른 문자가 끼면 이어지지 않는다.
+    """
+    best = chain = i = 0
+    while i < len(text):
+        j = i + 1
+        while j < len(text) and text[j] == text[i]:
+            j += 1
+        if j - i >= min_run and _STUTTER_CHAR_RE.match(text[i]):
+            chain += 1
+            best = max(best, chain)
+        else:
+            chain = 0
+        i = j
+    return best
+
+
+# foreign_script 에서 낱말은 글자·숫자가 이어진 덩어리다.
+_WORD_RE = re.compile(r"[^\W_]+")
+
+
+@lru_cache(maxsize=4096)
+def _is_foreign(c: str) -> bool:
+    """한국어 문서에 정상으로 나오지 않는 글자인지. 미할당 코드포인트도 포함한다.
+
+    한글·라틴·그리스(수식 기호)·KS X 1001 에 있는 한자는 정상으로 본다. 숫자·구두점·기호와
+    사용자 영역 문자(약관 PDF 의 ①·글머리표가 들어온다)는 글자가 아니므로 세지 않는다.
+    """
+    category = unicodedata.category(c)
+    if category == "Cn":
+        return True
+    if not category.startswith("L") or c == "ー":
+        return False
+    o = ord(c)
+    if (0xAC00 <= o <= 0xD7A3 or 0x1100 <= o <= 0x11FF or 0x3130 <= o <= 0x318F
+            or 0xA960 <= o <= 0xA97F or 0xD7B0 <= o <= 0xD7FF):
+        return False                                    # 한글
+    if (o < 0x250 or 0x1E00 <= o <= 0x1EFF or 0xFF21 <= o <= 0xFF5A
+            or 0x2C60 <= o <= 0x2C7F or 0xA720 <= o <= 0xA7FF):
+        return False                                    # 라틴
+    if 0x370 <= o <= 0x3FF or 0x1F00 <= o <= 0x1FFF:
+        return False                                    # 그리스
+    if 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF or o >= 0x20000:
+        try:
+            c.encode("euc-kr")                          # KS X 1001 한자
+            return False
+        except UnicodeEncodeError:
+            return True
+    return True
+
+
+def _foreign(text: str) -> tuple:
+    """(한글과 외래 문자가 함께 든 낱말 수, 외래 문자 수)."""
+    foreign = sum(1 for c in text if ord(c) >= 0x250 and _is_foreign(c))
+    if not foreign:
+        return 0, 0
+    mixed = sum(1 for m in _WORD_RE.finditer(text)
+                if any(_is_foreign(c) for c in m.group(0))
+                and any(0xAC00 <= ord(c) <= 0xD7A3 for c in m.group(0)))
+    return mixed, foreign
+
+
 def measure(text: Optional[str], *, prefix_len: int = 0, repeat_min_count: int = 10) -> dict:
     """판정에 쓰는 측정값. 실측 스크립트가 통과 청크의 분포를 잴 때도 쓴다.
 
@@ -385,8 +479,28 @@ def measure(text: Optional[str], *, prefix_len: int = 0, repeat_min_count: int =
 
 
 def judge(text: Optional[str], *, kind: str = "docling", code_like: bool = False,
-          prefix_len: int = 0, cfg: Config) -> Optional[Verdict]:
-    """청크 본문 1건을 판정한다. 통과면 None. 출력 본문은 바꾸지 않는다."""
+          prefix_len: int = 0, cfg: Config, headings=(), text_only: bool = False) -> Optional[Verdict]:
+    """청크 본문 1건을 판정한다. 통과면 None. 출력 본문은 바꾸지 않는다.
+
+    char_stutter 만 접두(HEADER 줄)와 headings 까지 포함해 보고, 다른 사유보다 먼저 판정한다.
+    제목에만 깨짐이 있는 청크나 본문이 빈 청크도 놓치지 않기 위해서다. foreign_script 도 접두와
+    headings 를 포함해 보지만 다른 사유 뒤에 둔다.
+
+    text_only 면 char_stutter·foreign_script 만 본다. 음성 전사·시트 통째 적재처럼 다른 판정에서
+    빠지는 chunk 에 쓴다.
+    """
+    if cfg.stutter_min_run:
+        stutter = _stutter("\n".join([*(headings or ()), text or ""]), cfg.stutter_min_run)
+        if stutter >= STUTTER_MIN_RUNS:
+            return Verdict("char_stutter", (), {"stutter": stutter},
+                           {"stutter_min_run": cfg.stutter_min_run})
+    if text_only:
+        if cfg.foreign_min_count:
+            mixed, foreign = _foreign("\n".join([*(headings or ()), text or ""]))
+            if mixed or foreign >= cfg.foreign_min_count:
+                return Verdict("foreign_script", (), {"mixed": mixed, "foreign": foreign},
+                               {"foreign_min_count": cfg.foreign_min_count})
+        return None
     m = measure(text, prefix_len=prefix_len, repeat_min_count=cfg.repeat_min_count)
     if m["blank"]:
         return Verdict("blank", (), {"chars": 0}, {})
@@ -407,6 +521,11 @@ def judge(text: Optional[str], *, kind: str = "docling", code_like: bool = False
          and m["dup_share"] >= cfg.repeat_max_share),
         ("min_chars", m["content"] < min_chars),
     ) if hit]
+    if cfg.foreign_min_count:
+        # 다른 사유보다 뒤에 둔다 — 함께 걸리면 다른 사유가 대표 사유라 기록만 하는 설정에 묶이지 않는다.
+        m["mixed"], m["foreign"] = _foreign("\n".join([*(headings or ()), text or ""]))
+        if m["mixed"] or m["foreign"] >= cfg.foreign_min_count:
+            hits.append("foreign_script")
     if not hits:
         return None
     measures = {k: (round(v, 3) if isinstance(v, float) else v)
@@ -414,9 +533,15 @@ def judge(text: Optional[str], *, kind: str = "docling", code_like: bool = False
     limits = {
         "min_chars": min_chars, "repeat_min_count": cfg.repeat_min_count,
         "repeat_max_share": cfg.repeat_max_share, "broken_min_count": cfg.broken_min_count,
-        "broken_max_share": cfg.broken_max_share,
+        "broken_max_share": cfg.broken_max_share, "foreign_min_count": cfg.foreign_min_count,
     }
     return Verdict(hits[0], tuple(hits[1:]), measures, limits)
+
+
+def drops_chunk(cfg: Config, verdict: Optional[Verdict]) -> bool:
+    """drop 모드에서 이 판정으로 chunk 를 빼는지. report_reasons 로만 걸렸으면 빼지 않는다."""
+    return (verdict is not None and cfg.drops
+            and not {verdict.reason, *verdict.extra} <= set(cfg.report_reasons))
 
 
 def rejects_doc_chunk(cfg: Config):
@@ -426,8 +551,8 @@ def rejects_doc_chunk(cfg: Config):
     쓴다. 초기 검사와 같은 입력(청크 본문, 코드·수식 라벨)으로 판정해야 결과가 어긋나지 않는다.
     """
     def _rejects(doc_chunk) -> bool:
-        return judge(doc_chunk.text, code_like=code_like(SimpleNamespace(source=doc_chunk)),
-                     cfg=cfg) is not None
+        return drops_chunk(cfg, judge(doc_chunk.text, code_like=code_like(SimpleNamespace(source=doc_chunk)),
+                                      cfg=cfg))
     return _rejects
 
 
@@ -552,7 +677,7 @@ class Session:
 
     # --- 판정 1건 ---
     def _check(self, text, *, kind, code_like, prefix_len, stage, index, page,
-               headings=()) -> Optional[Verdict]:
+               headings=(), text_only: bool = False) -> Optional[Verdict]:
         """판정 1건.
 
         초기 검사의 본문은 훅·마스킹을 거치기 전이라 그대로 내보내지 않는다. drop 으로 빠지는
@@ -562,7 +687,7 @@ class Session:
         """
         try:
             verdict = judge(text, kind=kind, code_like=code_like, prefix_len=prefix_len,
-                            cfg=self.cfg)
+                            cfg=self.cfg, headings=headings, text_only=text_only)
         except Exception as exc:
             if not self.cfg.drops:
                 # report 모드는 청크를 빼지 않으므로 판정 실패가 적재 결과를 바꾸지 않는다.
@@ -592,13 +717,31 @@ class Session:
             "근거=%s measures=%s limits=%s",
             self.cfg.action, self.file_name, index, page, stage, verdict.reason,
             ",".join(verdict.extra) or "-", verdict.describe(), verdict.measures, verdict.limits)
-        if self.cfg.drops:
-            if self.cfg.fail_on_any:
-                raise _error(CHUNK_REJECTED,
-                             f"불량 chunk 있어 문서 실패 처리: {self.file_name} "
-                             f"#{index} ({verdict.reason}: {verdict.describe()})")
+        drops = drops_chunk(self.cfg, verdict)
+        if ((drops and self.cfg.fail_on_any)
+                or {verdict.reason, *verdict.extra} & set(self.cfg.fail_reasons)):
+            raise _error(CHUNK_REJECTED,
+                         f"불량 chunk 있어 문서 실패 처리: {self.file_name} "
+                         f"#{index} ({verdict.reason}: {verdict.describe()})")
+        if drops:
             self.rejected += 1
         return verdict
+
+    def _recheck_reported(self, text: str, origin) -> bool:
+        """초기 검사에서 기록만 한 chunk 의 출력 본문을 다시 판정한다. 빼야 하면 True."""
+        if not self.cfg.fail_reasons and not self.cfg.drops:
+            return False
+        verdict = judge(text, kind=origin.kind, code_like=origin.code_like,
+                        prefix_len=_prefix_len(origin, text), cfg=self.cfg, headings=origin.headings)
+        drops = drops_chunk(self.cfg, verdict)
+        if verdict is not None and ((drops and self.cfg.fail_on_any)
+                                    or {verdict.reason, *verdict.extra} & set(self.cfg.fail_reasons)):
+            raise _error(CHUNK_REJECTED,
+                         f"불량 chunk 있어 문서 실패 처리: {self.file_name} "
+                         f"#{origin.index} ({verdict.reason}: {verdict.describe()})")
+        if drops:
+            self.rejected += 1
+        return drops
 
     def check_chunk(self, chunk, index: int) -> bool:
         """초기 검사. 청크를 빼야 하면 True(report 모드는 항상 False)."""
@@ -610,7 +753,7 @@ class Session:
                               prefix_len=0, stage="initial", index=index, page=chunk.page,
                               headings=chunk.headings)
         self._flagged_initial = verdict is not None
-        return verdict is not None and self.cfg.drops
+        return drops_chunk(self.cfg, verdict)
 
     def remember(self, vector_meta, chunk, prefix: str, index: int,
                  expected: Optional[dict] = None) -> None:
@@ -636,6 +779,16 @@ class Session:
         kept: list = []
         for position, item in enumerate(items):
             if self._markers.get(id(item)) is item:
+                # 음성 전사·시트 통째 적재 chunk 는 다른 판정에서 빠지지만, 문서 유형과 상관없이 적용하기로
+                # 한 글자 깨짐 판정(char_stutter·foreign_script)은 받는다(#777).
+                if self.cfg.stutter_min_run or self.cfg.foreign_min_count:
+                    text = getattr(item, "text", None)
+                    verdict = self._check(
+                        text if isinstance(text, str) else "", kind="marker", code_like=False,
+                        prefix_len=0, stage="final", index=getattr(item, "i_chunk_on_doc", position),
+                        page=getattr(item, "i_page", None), text_only=True)
+                    if drops_chunk(self.cfg, verdict):
+                        continue
                 kept.append(item)
                 continue
             origin = self._origins.get(id(item))
@@ -644,10 +797,14 @@ class Session:
             if origin is not None and origin.flagged:
                 # report 모드에서 초기 검사가 이미 기록한 청크다. 두 번 세지 않고, 요약 항목은
                 # 출력 본문으로 채운다. 훅이 버리거나 edit_output 이 뺀 청크는 빈 채로 남는다.
+                text = getattr(item, "text", None)
+                text = text if isinstance(text, str) else ""
                 if origin.item is not None:
-                    text = getattr(item, "text", None)
-                    text = text if isinstance(text, str) else ""
                     _fill_from_output(origin.item, text, _prefix_len(origin, text), origin.headings)
+                # 기록만 한 chunk 라도 훅이 바꾼 출력 본문이 빼거나 멈출 대상이면 일반 chunk 와 같게
+                # 처리한다(#777). 기록은 초기 검사의 것 하나만 남긴다.
+                if self._recheck_reported(text, origin):
+                    continue
                 kept.append(item)
                 continue
             text = getattr(item, "text", None)
@@ -663,7 +820,7 @@ class Session:
                 page=origin.page if origin else getattr(item, "i_page", None),
                 # 훅이 새로 만든 청크는 섹션을 알 수 없다.
                 headings=origin.headings if origin else ())
-            if verdict is not None and self.cfg.drops:
+            if drops_chunk(self.cfg, verdict):
                 if position == 0 and origin is not None and origin.prefix:
                     _log.warning(
                         "[chunk_validation] file=%s 최종 검사에서 첫 chunk 제외: "

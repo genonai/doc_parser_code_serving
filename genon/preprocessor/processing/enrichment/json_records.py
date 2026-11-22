@@ -39,6 +39,7 @@ from genon.preprocessor.processing.chunking.table_html import (
     drop_blank_markdown_rows, render_degenerate, render_table,
 )
 from genon.preprocessor.processing.common import config_parse as cp
+from genon.preprocessor.processing.common import table_markup
 from genon.preprocessor.processing.common.reason_codes import CodedValueError
 from genon.preprocessor.processing.common.markdown_export import (
     MD_PLAIN_TEXT_OPTS as _MD_EXPORT_OPTS,
@@ -544,6 +545,8 @@ def html_to_text(
         extract_content,
     )
 
+    # 아래 except 가 평문 추출로 넘기므로 표 구조 검사는 그 앞에서 한다(#773).
+    table_markup.check(value, "레코드 HTML 필드")
     node = extract_content(value)
     try:
         from docling.datamodel.base_models import DocumentStream

@@ -675,6 +675,20 @@ def iter_srcdoc_sections(raw: str) -> list[tuple[str, str]]:
     return out
 
 
+def unfolded_sources(raw: str) -> list[str]:
+    """flatten 이 펼쳐 읽을 HTML 원문 조각(srcdoc 페이지 또는 escape 를 푼 본문). 없으면 빈 목록.
+
+    flatten 은 조각을 HTML 파서로 다시 쓰며 닫히지 않은 표를 닫아 버리므로, 표 구조 검사는
+    그 전의 조각을 본다(#777).
+    """
+    pages = iter_srcdoc_sections(raw)
+    if pages:
+        return [page for _label, page in pages]
+    if "escaped_html" in precheck_html(raw):
+        return [_fully_unescape(raw)]
+    return []
+
+
 def document_title(raw: str, fallback: str = "") -> str:
     """<title> 텍스트(없으면 fallback)를 돌려준다."""
     soup = BeautifulSoup(raw, "html.parser")

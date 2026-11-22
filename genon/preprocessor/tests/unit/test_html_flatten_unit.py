@@ -23,6 +23,7 @@ from genon.preprocessor.processing.converters.html_flatten import (
     looks_thin,
     precheck_html,
     promote_marker_headings,
+    unfolded_sources,
 )
 
 pytestmark = pytest.mark.unit
@@ -279,6 +280,13 @@ def test_iter_srcdoc_sections_bare_iframes():
     sections = iter_srcdoc_sections(raw)
     assert len(sections) == 1
     assert sections[0][0] == "섹션 1"
+
+
+def test_unfolded_sources_keeps_srcdoc_before_repair():
+    """#777: flatten 이 닫아 버리기 전의 srcdoc 원문을 돌려준다(표 구조 검사용). srcdoc 이 없으면 빈 목록."""
+    raw = '<iframe srcdoc="&lt;table&gt;&lt;tr&gt;&lt;td&gt;셀&lt;/td&gt;&lt;/tr&gt;&lt;p&gt;다음"></iframe>'
+    assert unfolded_sources(raw) == ["<table><tr><td>셀</td></tr><p>다음"]
+    assert unfolded_sources("<table><tr><td>셀</td></tr></table>") == []
 
 
 def test_flatten_html_recovers_srcdoc_content():

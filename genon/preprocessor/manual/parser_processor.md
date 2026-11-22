@@ -1210,7 +1210,30 @@ source:
 | `elements` | `array` | O | `[]` | 파싱된 element 목록. 문서 순서대로 정렬됨 |
 | `usage` | `object` | O | `{"pages": 0}` | 문서 사용량 정보 |
 | `usage.pages` | `int` | O | `0` | 문서 전체 페이지(또는 시트) 수 |
+| `usage.page_check` | `object` | X | 키 없음 | 원본 대비 페이지 대조(pdf·pptx·xlsx·xlsm 만). 아래 참고 |
 | `content` | `str` | O | `""` | `output.format`이 `html` 또는 `markdown`일 때 전체 문서 문자열. `json` 포맷이거나 Docling 외 경로에서는 `""` |
+
+#### `usage.page_check` — 원본 대비 페이지 대조
+
+pdf(페이지)·pptx(슬라이드)·xlsx·xlsm(시트)일 때만 붙습니다. 처리를 막지 않는 보고 항목입니다.
+
+```json
+"page_check": {"unit": "slide", "source": 12, "hidden": 2, "parsed": 10,
+               "empty_count": 1, "empty_pages": [5], "image_only_pages": [1]}
+```
+
+| 필드 | 설명 |
+|------|------|
+| `unit` | `page` · `slide` · `sheet` |
+| `source` | 원본 파일의 페이지·슬라이드·시트 수 |
+| `hidden` | 그중 숨김 슬라이드·시트 수. 숨김 슬라이드는 PDF 로 바꿀 때 빠지므로 pdf·pptx 는 `source - hidden == parsed` 이면 정상입니다 |
+| `parsed` | 파싱 결과의 페이지 수. 시트는 데이터 행이 있는 시트 수 |
+| `empty_count` | `empty_pages` 의 수 |
+| `empty_pages` | 내용 미추출 페이지 번호(시트는 이름). 본문 글자·표가 하나도 없는 페이지이며, 머리말·꼬리말만 있는 페이지와 이미지 설명 같은 보강 결과만 있는 페이지도 포함합니다. 시트는 데이터 행이 없는 시트입니다 |
+| `image_only_pages` | 글자·표 없이 그림만 있는 페이지. 미추출에는 넣지 않고 따로 셉니다 |
+
+미추출 페이지가 있으면, 그리고 pdf·pptx 의 수가 맞지 않으면 각각 warning 로그를 한 줄씩 남깁니다. Temporal activity 결과에도
+같은 값을 `page_check` 키로 싣습니다(docling 형식 결과는 `document` 만 저장되어 `usage` 가 남지 않기 때문입니다).
 
 ---
 
@@ -1467,7 +1490,7 @@ fields:
 | 상수 | `const` (`constants`) | ✔ | ✔ | ✔ | ✔ |
 | 기본값(빈 값만) | `default` (`defaults`) | ✔ | ✔ | ✔ | ✔ |
 | 값 접기 | `values` (`value_map`) | ✔ | ✔ | ✔ | ✔ |
-| 변환(9종 체이닝) | `transform` (`transforms`) | ✔ | ✔ | ⚠ 표 뭉갬 | ⚠ 표 뭉갬 |
+| 변환(10종 체이닝) | `transform` (`transforms`) | ✔ | ✔ | ⚠ 표 뭉갬 | ⚠ 표 뭉갬 |
 | 필드 결합 | `template` (**`derive`**) | ✔ | ✔ | ✔ | ✔ |
 | JSON 한 칸에 묶기 | `pack` | ✔ | ✔ | ✔ | ✔ |
 | 청크 메타에서 빼기 | `meta: false` (`meta_include`) | ✔ | ✔ | ✔ | ✔ |
@@ -1600,12 +1623,13 @@ rows·records 의 `body.fields`·`body.repeat` 값이 JSON·HTML 이면 본문�
 > **청크 텍스트 정제(`chunking.text_cleanup`)는 doc_type 별 설정이 아니라 프로세서 config** 입니다.
 > 파싱 설정(`activities/parse/config.yaml`)에는 없습니다 — 파서와 청커를 나눠 배포했다면 **청커 쪽 yaml** 에 적습니다.
 
-### `transform` 9종 — 체이닝됩니다
+### `transform` 10종 — 체이닝됩니다
 
 | 이름 | 인자 | 하는 일 |
 |---|---|---|
 | `date_int` (옛 이름 `date_int_flex`) | `on_error` | 날짜 텍스트 → `YYYYMMDD` 정수. 2자리 연도(`26.07.01`)·구분자 없는 `20260713`·`260701` 도 받는다. 날짜로 읽지 못하면 `on_error`(기본 `0`), 빈 값은 항상 `0` |
 | `normalize` (옛 이름 `text_norm`) | — | NFKC + 양끝 공백 제거 + 연속 공백 축약 + casefold (중복 판정용). 영문은 소문자로 바뀌고, 단어 사이 공백은 한 칸으로 줄일 뿐 없애지 않는다 |
+| `percent` | — | `"분자/분모"` → 백분율 정수(내림). `template: "{{DISCOUNT_AMT}}/{{PRICE_AMT}}"` 로 결합한 값에 건다(`"10600/25000"` → `42`). 형식이 맞지 않거나 분모가 0 이면 `null`, 빈 값은 그대로 |
 | `regex_sub` | `pattern`, `repl` | 정규식 치환 (`"18,000원"` → `"18000"`) |
 | `regex_extract` | `pattern`, `group`, `on_error` | 정규식 오려내기. 미매칭 시 `on_error`(기본 `None`), 빈 값은 그대로. `group` 이 패턴에 없으면 기동 실패 |
 | `hash` | `length`, `prefix` | SHA-1 16진 코드화(기본 16자리). 같은 값이면 같은 코드 |
@@ -1770,8 +1794,9 @@ fields:
 | 3 | `DocumentProcessor._load_json_payload` | `.json` 원천의 **구조**가 설정으로 안 풀릴 때 |
 
 **`_load_json_payload` 가 JSON 정규화 훅입니다.** `.json` 두 경로(레코드 모드·문서 모드)가
-모두 이 한 곳으로 들어옵니다. 위 경계 ①②③ 과 JSONL·BOM·이스케이프된 중첩 JSON 같은 것이
-여기서 10~15줄로 풀립니다.
+모두 이 한 곳으로 들어옵니다. 위 경계 ①②③ 과 BOM·이스케이프된 중첩 JSON 같은 것이
+여기서 10~15줄로 풀립니다. 줄 단위 JSON(JSONL)은 훅이 처리하지 않으면 이 함수가 줄마다 읽어
+배열로 돌려주므로 따로 풀 필요가 없습니다.
 
 ```python
     def _load_json_payload(self, file_path, doc_type=None):
@@ -1783,6 +1808,7 @@ fields:
 ```
 
 > **doc_type 게이팅을 반드시 넣으세요.** 없으면 **모든** JSON doc_type 의 산출이 바뀝니다.
+> 읽히지 않던 입력만 살리는 폴백(위 JSONL)은 예외입니다.
 
 ### 파서 → 청커 element 계약
 

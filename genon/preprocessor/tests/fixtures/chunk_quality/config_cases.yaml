@@ -38,3 +38,5 @@ cases:
   - {id: C12, name: doc_type 안의 잘못된 값, chunking: {validation: {enable: true, by_doc_type: {faq: {min_chars: -2}}}}, expect: error, error: chunking.validation.by_doc_type.faq.min_chars}
   - {id: C13, name: enable 이 bool 이 아님, chunking: {validation: {enable: "yes"}}, expect: error, error: chunking.validation.enable}
   - {id: C14, name: 블록이 object 가 아님, chunking: {validation: true}, expect: error, error: chunking.validation}
+  - {id: C15, name: 모르는 실패 사유, chunking: {validation: {enable: true, fail_reasons: [stutter]}}, expect: error, error: chunking.validation.fail_reasons}
+  - {id: C16, name: 반복 횟수 1, chunking: {validation: {enable: true, stutter_min_run: 1}}, expect: error, error: chunking.validation.stutter_min_run}

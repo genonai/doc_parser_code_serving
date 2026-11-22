@@ -92,6 +92,8 @@ except ImportError:
     upload_files = None
 
 _log = logging.getLogger(__name__)
+# PPT 페이지 설명 TextItem 의 첫 줄. 원문에서 뽑은 내용이 아니므로 페이지 대조에서 뺀다.
+_PAGE_DESC_LABEL = "[페이지 이미지 설명]"
 
 
 def _handle_stage_error(exc: Exception, stage: str) -> None:
@@ -138,10 +140,12 @@ from genon.preprocessor.processing.common import loaders as ld
 from genon.preprocessor.processing.common import docling_ops as dops
 from genon.preprocessor.processing.common import parser_config as pcfg
 from genon.preprocessor.processing.common import pdf_artifact as pa
-from genon.preprocessor.processing.common.reason_codes import os_error_reason, reason_of
+from genon.preprocessor.processing.common.reason_codes import CodedValueError, os_error_reason, reason_of
 from genon.preprocessor.processing.serialize import parse_format as pf
 from genon.preprocessor.processing.common import runtime as rt
 from genon.preprocessor.processing.common import file_probe as fp
+from genon.preprocessor.processing.common import page_check
+from genon.preprocessor.processing.common import table_markup
 from genon.preprocessor.processing.common import pdf_convert as pc
 from genon.preprocessor.processing.common import profiling as prof
 from genon.preprocessor.processing.common import format_alias as fa
@@ -601,7 +605,13 @@ class ParserCore:
         return type(self).edit_document is not ParserCore.edit_document
 
     async def _call_edit_document(self, job, doc):
-        """edit_document 를 부른다. 덮어쓰지 않았으면 부르지 않는다."""
+        """edit_document 를 부른다. 덮어쓰지 않았으면 부르지 않는다.
+
+        처리기의 document_to_response 가 훅·enrichment 보다 먼저 부르는 자리라, 원본 대비 페이지
+        수와 미추출 페이지(#771)도 여기서 센다. 응답에는 build_response 가 싣는다.
+        """
+        job.ctx["page_check"] = page_check.check_document(
+            job.source, job.ext, doc, ignore_prefixes=(_PAGE_DESC_LABEL,))
         if not self._edit_document_active():
             return doc
         out = await hk.call_hook(self.edit_document, job, doc, request_kwargs=job.params)
@@ -657,6 +667,8 @@ class ParserCore:
         self._xlsx_cfg = self._intel._xlsx_cfg
         self._md_cfg = self._intel._md_cfg
         self._ext_aliases = self._intel._ext_aliases
+        self._verify_extension = getattr(self._intel, "_verify_extension", False)
+        self._verify_table_markup = getattr(self._intel, "_verify_table_markup", False)
         self._config_dir = self._intel._config_dir
         # extractor=tabular_mapping = xlsx 행별 매핑. 파싱 조기 분기(_parse_tabular_records)가 쓴다.
         self._tabular_custom_fields_mappers = _guard(
@@ -1244,11 +1256,12 @@ class ParserCore:
 
         **여기가 JSON 정규화 훅이다.** `.json` 두 경로(레코드 모드 `_parse_json_records`,
         문서 모드 `_parse_json`)가 모두 이 한 곳으로 들어온다. 설정으로 안 되는 원천
-        구조(동명 키 충돌·동적 키·조건부 선택·JSONL 등)는 공용 모듈이 아니라 여기서
-        payload 모양을 바꿔 푼다.
+        구조(동명 키 충돌·동적 키·조건부 선택 등)는 공용 모듈이 아니라 여기서
+        payload 모양을 바꿔 푼다. 줄 단위 JSON(JSONL)은 훅이 처리하지 않으면 줄마다 읽어
+        list 로 돌려준다.
 
         **반드시 doc_type 으로 게이팅한다.** 게이팅 없이 정규화를 넣으면 모든 JSON
-        doc_type 의 산출이 바뀐다. 예:
+        doc_type 의 산출이 바뀐다. 읽히지 않던 입력만 살리는 폴백(위 JSONL)은 예외다. 예:
 
             if normalize_doc_type(doc_type) == "my_new_type":
                 payload = _reshape(payload)
@@ -1273,6 +1286,14 @@ class ParserCore:
             payload, changed = await self._hook_edit_input(
                 ".json", {**kwargs, "doc_type": doc_type}, text)
             if not changed:
+                # 훅이 처리하지 않은 줄 단위 JSON(JSONL)은 한 줄에 값 하나로 읽어 list 로 돌려준다.
+                # 비어 있지 않은 줄이 모두 JSON 으로 읽혀야 하고, 아니면 종전대로 입력 오류다.
+                lines = [line for line in text.splitlines() if line.strip()]
+                if lines:
+                    try:
+                        return [json.JSONDecoder(strict=False).decode(line) for line in lines]
+                    except ValueError:
+                        pass
                 raise GenosServiceException(
                     "1", f"JSON 파일 읽기 실패: {os.path.basename(file_path)} ({exc})",
                     error_type="permanent", reason_code="PARSE_D010",
@@ -1501,7 +1522,7 @@ class ParserCore:
 
     async def _parse_tabular_records(
         self, file_path: str, mappers: list, runtime_doc_type: Any,
-        sheets_with_merges: dict | None = None,
+        sheets_with_merges: dict | None = None, request: Any = None,
     ) -> dict:
         """엑셀/CSV 를 매퍼 목록으로 매핑해 합친다(매퍼가 하나면 종전과 동일).
 
@@ -1567,7 +1588,11 @@ class ParserCore:
                     "이 시트도 처리하려면 해당 custom_fields 설정의 require.fields·alias 가 "
                     "시트 머리글(컬럼 이름)과 맞는지 확인 필요"
                 )
-        return merge_parse_formats(results)
+        return page_check.attach(
+            merge_parse_formats(results),
+            page_check.check_sheets(file_path, os.path.splitext(file_path)[1].lower(), data_dict,
+                                    only_sheets),
+            os.path.basename(file_path), request)
 
     async def _parse_json(self, file_path: str, spec, work_dir: str, **kwargs) -> DoclingDocument:
         """JSON 의 지정 key 에서 본문 텍스트(markdown/html)를 꺼내 docling 으로 파싱한다.
@@ -1649,7 +1674,7 @@ class ParserCore:
             if not desc:
                 continue
             described += 1
-            text = f"[페이지 이미지 설명]\n{desc}"
+            text = f"{_PAGE_DESC_LABEL}\n{desc}"
             prov = ProvenanceItem(
                 page_no=page_no,
                 bbox=BoundingBox(l=0, t=0, r=1, b=1),
@@ -1877,7 +1902,8 @@ class ParserCore:
         enrichment_context = job.ctx["enrichment_context"]
         if enrichment_context.get("metadata"):
             result["metadata"] = enrichment_context["metadata"]
-        return result
+        return page_check.attach(result, job.ctx.get("page_check"), os.path.basename(job.file_path),
+                                 job.request)
 
     async def route_audio(self, job) -> dict:
         file_path, kwargs = job.source, job.params
@@ -1933,7 +1959,7 @@ class ParserCore:
         """시트 행을 설정의 목표필드로 매핑한 요소형 산출을 만든다."""
         return await self._parse_tabular_records(
             job.source, self._tabular_mappers(job),
-            normalize_doc_type(job.params.get("doc_type")), sheets,
+            normalize_doc_type(job.params.get("doc_type")), sheets, request=job.request,
         )
 
     def uses_sheet_as_document(self, job) -> bool:
@@ -1947,7 +1973,10 @@ class ParserCore:
 
     def sheets_to_records(self, job, sheets) -> dict:
         """openpyxl 병합셀 처리 → 데이터 행마다 element 하나인 요소형 산출."""
-        return self._tabular_to_parse_format(self._parse_tabular(job.source, sheets))
+        data = self._parse_tabular(job.source, sheets)
+        return page_check.attach(self._tabular_to_parse_format(data),
+                                 page_check.check_sheets(job.source, job.ext, data),
+                                 os.path.basename(job.file_path), job.request)
 
     async def _hook_tabular_sheets(self, file_path: str, work_dir: str, **kwargs):
         """edit_input(.xlsx) 를 격자로 부른다. (격자, 바뀌었는지) 를 돌려준다.
@@ -2055,6 +2084,23 @@ class ParserCore:
                 job.params = {**job.params, "_markdown_front_matter": front_matter_context}
         else:
             parse_path, artifacts_from = path, artifacts_source
+        if table_markup.is_enabled() and ext in (".html", ".htm", ".md"):
+            # html 은 flatten 이 HTML 파서로 다시 쓰며 닫히지 않은 표를 닫아 버리므로 그 전 원문을 본다.
+            # md 는 전처리가 HTML 을 고치지 않으므로 docling 에 넘길 파일을 보되 코드 블록은 뺀다.
+            # srcdoc 속성·escape 된 본문 안의 표는 원문에서 태그로 보이지 않으므로 펼친 조각도 본다.
+            name = os.path.basename(job.file_path)
+            try:
+                if ext == ".md":
+                    table_markup.check(read_text_with_fallback(parse_path), name, markdown=True)
+                else:
+                    from genon.preprocessor.processing.converters import html_flatten
+
+                    raw = read_text_with_fallback(path)
+                    for source in (raw, *html_flatten.unfolded_sources(raw)):
+                        table_markup.check(source, name)
+            except CodedValueError as exc:
+                raise GenosServiceException("1", str(exc), error_type="permanent",
+                                            reason_code=exc.reason_code) from exc
         return {"path": parse_path, "artifacts_from": artifacts_from, "origin": path}
 
     def parse_document(self, job, prepared: dict) -> DoclingDocument:
@@ -2309,6 +2355,8 @@ class ParserCore:
             job.params, file_path)
         job.notes["cache_token"] = cache_token
         job.notes["pdf_policy"] = pdf_policy
+        # 표 HTML 구조 검사(#773)는 레코드 필드 변환까지 걸치므로 요청 범위로 켠다.
+        job.notes["table_markup_token"] = table_markup.enable(getattr(self, "_verify_table_markup", False))
         try:
             # 비정상/암호화 파일 사전 감지(이슈 #278/#307): 지원 포맷 매직헤더에 하나도 안 맞고
             # 텍스트도 아니면(=DRM 암호화/손상 바이너리) 파싱/변환 단계의 garbage 처리를 유발하므로
@@ -2320,6 +2368,17 @@ class ParserCore:
                     "1", f"{os.path.basename(file_path)} 처리 불가: {bad_reason}\n정상 문서로 다시 업로드 필요",
                     error_type="permanent", reason_code="PARSE_D009",
                 )
+            # 확장자 별칭은 운영자가 그 확장자의 실제 형식을 지정한 것이므로 검사하지 않는다.
+            if ext == raw_ext and getattr(self, "_verify_extension", False):
+                actual = fp.detect_extension_mismatch(file_path, raw_ext)
+                if actual:
+                    name = os.path.basename(file_path)
+                    _log.warning(f"{name} 처리 중단: 확장자({raw_ext})와 실제 형식({actual}) 불일치")
+                    raise GenosServiceException(
+                        "1", f"{name} 처리 불가: 확장자({raw_ext})와 실제 형식({actual}) 불일치\n"
+                             f"원천 파일 확장자를 실제 형식에 맞게 수정 필요",
+                        error_type="permanent", reason_code="PARSE_D014",
+                    )
 
             if ext != raw_ext:
                 # docling 은 파일명 확장자로 포맷을 판정하므로 이름을 바꾼 사본을 넘긴다.
@@ -2384,6 +2443,9 @@ class ParserCore:
         cache_token = job.notes.get("cache_token")
         if cache_token is not None:
             _reset_cache_context(cache_token)
+        table_markup_token = job.notes.get("table_markup_token")
+        if table_markup_token is not None:
+            table_markup.reset(table_markup_token)
 
     async def _call_route(self, job) -> dict:
         """ROUTES 에서 라우트를 골라 실행하고 응답을 정규화한다.

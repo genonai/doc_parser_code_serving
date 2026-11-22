@@ -11,6 +11,7 @@ facade 마다 구현이 갈리는 PDF 변환 계열(`convert_to_pdf`, `_has_any_
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Sequence
 
@@ -193,6 +194,111 @@ def detect_unsupported_file(file_path: str) -> str | None:
         return "암호화된 Office 문서"
     if is_ole2 and is_protected_hwp(file_path):
         return "암호화/배포용(DRM) HWP 문서"
+    return None
+
+
+# 확장자 계열. 같은 계열 안의 혼동(doc↔docx, hwp↔hwpx, jpg↔png)은 각 처리기가 내용으로
+# 읽으므로 불일치로 보지 않는다. 여기 없는 확장자(음성·영상·압축 등)는 검사하지 않는다.
+_EXT_FAMILY = {
+    ".pdf": "pdf",
+    **dict.fromkeys((".doc", ".docx", ".xls", ".xlsx", ".xlsm", ".ppt", ".pptx"), "office"),
+    **dict.fromkeys((".hwp", ".hwpx", ".hml"), "hwp"),
+    **dict.fromkeys((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"), "image"),
+    **dict.fromkeys((".html", ".htm", ".xml", ".json", ".md", ".txt", ".csv"), "text"),
+}
+_FAMILY_NAME = {"pdf": "PDF", "office": "오피스 문서", "hwp": "한글 문서", "image": "이미지",
+                "text": "텍스트"}
+_HWPML_SCAN_BYTES = 64 * 1024
+# XML 선언·처리 명령·DOCTYPE(내부 subset 포함)·주석 뒤 첫 요소가 HWPML 인지.
+_HWPML_ROOT_RE = re.compile(
+    rb"\A(?:\xef\xbb\xbf)?\s*(?:(?:<\?.*?\?>|<!--.*?-->)\s*)*"
+    rb"(?:<!DOCTYPE[^\[>]*(?:\[.*?\])?\s*>\s*)?(?:(?:<\?.*?\?>|<!--.*?-->)\s*)*<HWPML\b", re.S)
+_IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM",
+                b"II*\x00", b"MM\x00*")
+
+
+def _content_family(file_path: str, head: bytes) -> str | None:
+    """앞부분 바이트로 본 내용 계열. 판정할 수 없으면 None(검사하지 않음)."""
+    if head.startswith(b"%PDF-"):
+        return "pdf"
+    if head.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        # OLE2 는 구형 오피스와 HWP 5.0 이 함께 쓰는 컨테이너다.
+        return "hwp" if _is_ole_hwp(file_path) else "office"
+    if head.startswith(b"PK\x03\x04"):
+        try:
+            import zipfile
+
+            with zipfile.ZipFile(file_path) as zf:
+                names = zf.namelist()
+        except Exception:
+            return None  # 손상 zip 은 로더 단계의 PARSE_D009 가 맡는다
+        if "[Content_Types].xml" in names:
+            return "office"
+        if any(n.startswith("Contents/") for n in names):
+            return "hwp"
+        return None
+    if any(head.startswith(sig) for sig in _IMAGE_MAGIC):
+        return "image"
+    if looks_like_text(head):
+        # 한글 XML(HWPML)은 .hwp 로 저장된 원천이 실제로 있다. XML 선언·DOCTYPE·앞 공백이 길면 루트
+        # 태그가 앞 512바이트 밖에 있으므로 더 읽어 본다. 루트가 HWPML 일 때만 한글로 본다 — 본문이나
+        # 주석에 나오는 문자열은 근거가 아니다.
+        stripped = head.lstrip(b"\xef\xbb\xbf \t\r\n")
+        if not stripped or stripped.startswith(b"<"):
+            try:
+                with open(file_path, "rb") as f:
+                    head = f.read(_HWPML_SCAN_BYTES)
+            except OSError:
+                pass
+        return "hwp" if _HWPML_ROOT_RE.match(head) else "text"
+    return None
+
+
+def _is_ole_hwp(file_path: str) -> bool:
+    try:
+        import olefile
+
+        ole = olefile.OleFileIO(file_path)
+        try:
+            return ole.exists("FileHeader") and ole.openstream("FileHeader").read(17) == b"HWP Document File"
+        finally:
+            ole.close()
+    except Exception:
+        return False
+
+
+def _whole_json(file_path: str) -> bool:
+    try:
+        import json
+
+        json.loads(read_text_with_fallback(file_path))
+        return True
+    except Exception:
+        return False
+
+
+def detect_extension_mismatch(file_path: str, ext: str) -> str | None:
+    """확장자와 실제 내용의 형식이 다르면 실제 형식 이름을, 맞거나 판정할 수 없으면 None.
+
+    계열(PDF·오피스·한글·이미지·텍스트)이 다를 때만 불일치로 본다. 텍스트끼리는 정상 원천과
+    구분할 근거가 없어 보지 않되, .html·.htm·.xml 인데 파일 전체가 JSON 인 경우만 불일치로 본다.
+    """
+    family = _EXT_FAMILY.get(ext.lower())
+    if family is None:
+        return None
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(512)
+    except Exception:
+        return None
+    actual = _content_family(file_path, head)
+    if actual is None:
+        return None
+    if actual != family:
+        return _FAMILY_NAME[actual]
+    if ext.lower() in (".html", ".htm", ".xml") \
+            and head.lstrip(b"\xef\xbb\xbf \t\r\n")[:1] in (b"{", b"[") and _whole_json(file_path):
+        return "JSON"
     return None
 
 
