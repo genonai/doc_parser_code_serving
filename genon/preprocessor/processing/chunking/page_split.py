@@ -23,7 +23,7 @@ def split_documents_by_page(processor, documents, chunker_cls, *,
                             min_chunk_size: Optional[int] = None, **kwargs) -> List[DocChunk]:
     """기본 1 page = 1 chunk.
 
-    chunk_size(kwargs > yaml) 가 주어지고 chunk_mode 가 resize_all 이면 연속 페이지를
+    chunk_size(kwargs > yaml) 가 주어지고 chunk_mode 가 section_merge 이면 연속 페이지를
     토큰 기준 chunk_size 이하가 되도록 greedy 병합한다. 같은 페이지의 native text 와
     주입된 page description TextItem 은 prov.page_no 로 동일 페이지 청크에 자연히 묶인다.
     """
@@ -32,8 +32,8 @@ def split_documents_by_page(processor, documents, chunker_cls, *,
         chunk_size = getattr(processor, "_chunk_size", None)
     if min_chunk_size:
         chunk_size = cp.clamp_chunk_size(chunk_size, min_chunk_size)
-    # chunk_mode(0/1 또는 'split_only'/'resize_all') > yaml > "split_only"
-    chunk_mode = cp.resolve_chunk_mode(kwargs, getattr(processor, "_chunk_mode", "split_only"))
+    # chunk_mode(0/1 또는 'section'/'section_merge') > yaml > "section"
+    chunk_mode = cp.resolve_chunk_mode(kwargs, getattr(processor, "_chunk_mode", "section"))
     chunker = chunker_cls(
         max_tokens=chunk_size if chunk_size is not None else 0,
         merge_peers=True,
@@ -84,8 +84,8 @@ def split_documents_by_page(processor, documents, chunker_cls, *,
                              captions=None, origin=documents.origin),
             ))
 
-    # chunk_size>0 이면 연속 페이지 greedy 병합 (split_only 는 1 page = 1 chunk 유지)
-    if chunk_mode == "resize_all" and chunk_size and chunk_size > 0 and page_chunks:
+    # chunk_size>0 이면 연속 페이지 greedy 병합 (section 은 1 page = 1 chunk 유지)
+    if chunk_mode == "section_merge" and chunk_size and chunk_size > 0 and page_chunks:
         merged: List[DocChunk] = [page_chunks[0]]
         for ch in page_chunks[1:]:
             cand_text = merged[-1].text + "\n" + ch.text

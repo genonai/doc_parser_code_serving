@@ -21,7 +21,7 @@ PREPROCESSOR_DIR = Path(__file__).resolve().parents[2]
 SITE_MONIMO = "../sites/monimo/activities/parse"
 
 # 전수 검사가 도는 출고 설정 폴더.
-STANDARD_PARSE = "activities/parse"           # 표준 파서 액티비티 폴더(config.yaml + card)
+STANDARD_PARSE = "activities/parse"           # 표준 파서 액티비티 폴더(config.yaml, 등록된 문서유형 없음)
 SITE_MONIMO_RESOURCE = "../sites/monimo/resource"   # 모니모 설정 폴더(HTTP facade 설정·간이 파서 설정 + 문서유형 사본)
 SHIPPED_ROOTS = ("resource", STANDARD_PARSE, SITE_MONIMO_RESOURCE, SITE_MONIMO)
 

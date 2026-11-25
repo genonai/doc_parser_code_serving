@@ -117,6 +117,22 @@ async def test_jsonl_without_hook_is_read_as_list(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("suffix, wrap", [(".jsonl", True), (".json", False)])
+async def test_single_line_jsonl_is_read_as_list(tmp_path: Path, suffix, wrap):
+    """확장자가 .jsonl 이면 한 줄짜리도 1건짜리 list 다. 같은 내용의 .json 은 객체 그대로다.
+
+    입력은 실물 sample_files/monimo/monimo_shopping_card_sample.json 의 첫 줄(상품 1건)이다.
+    """
+    sample = Path(__file__).resolve().parents[2] / "sample_files/monimo/monimo_shopping_card_sample.json"
+    line = sample.read_text(encoding="utf-8").splitlines()[0]
+    src = tmp_path / f"a{suffix}"
+    src.write_text(line + "\n", encoding="utf-8")
+    record = json.loads(line)
+    out = await _bare(parser_facade.DocumentProcessor)._load_json_payload(str(src), "any")
+    assert out == ([record] if wrap else record)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("text", ["{not json", "  \n\n", '{"v":1}\n{bad\n'])
 async def test_broken_json_without_hook_still_fails(tmp_path: Path, text):
     """훅이 손대지 않으면 종전대로 입력 오류다(하위호환). 공백뿐이거나 한 줄이라도 깨진 JSONL 도 같다."""
@@ -727,15 +743,15 @@ async def test_config_overlay_fills_only_what_the_request_did_not_send(tmp_path:
     src.write_text("a\n", encoding="utf-8")
     cls = _overlay_processor(
         {"notice": {"chunk_size": 500, "ocr_mode": "force"}},
-        condition=lambda job: {"chunk_mode": "split_only"} if job.params.get("dept") == "IR" else {},
+        condition=lambda job: {"chunk_mode": "section"} if job.params.get("dept") == "IR" else {},
     )
 
     await _routable(cls)(None, str(src), doc_type="notice", dept="IR", ocr_mode="off")
     assert cls.seen["chunk_size"] == 500            # 표가 채운다
-    assert cls.seen["chunk_mode"] == "split_only"   # 조건부 설정이 채운다
+    assert cls.seen["chunk_mode"] == "section"   # 조건부 설정이 채운다
     assert cls.seen["ocr_mode"] == "off"            # 요청이 보낸 값이 이긴다
     # 적용된 값만 job.config 에 남는다 — 결과에서 되짚을 수 있어야 한다.
-    assert cls.seen["_config"] == {"chunk_size": 500, "chunk_mode": "split_only"}
+    assert cls.seen["_config"] == {"chunk_size": 500, "chunk_mode": "section"}
 
 
 @pytest.mark.asyncio
@@ -808,13 +824,13 @@ def test_ocr_mode_request_parameter_beats_yaml():
 
 def test_chunker_config_overlay_lands_on_job_params():
     class _P(chunker_facade.DocumentProcessor):
-        CONFIG_BY_DOC_TYPE = {"faq": {"chunk_size": 500, "chunk_mode": "resize_all"}}
+        CONFIG_BY_DOC_TYPE = {"faq": {"chunk_size": 500, "chunk_mode": "section_merge"}}
 
     src = core_chunker.ChunkInput("parse", [], {})
     job = _bare(_P)._start_chunk_job(
-        None, "", src, {"doc_type": "faq", "chunk_mode": "split_only"})
+        None, "", src, {"doc_type": "faq", "chunk_mode": "section"})
     assert job.params["chunk_size"] == 500
-    assert job.params["chunk_mode"] == "split_only"   # 요청이 이긴다
+    assert job.params["chunk_mode"] == "section"   # 요청이 이긴다
     assert job.config == {"chunk_size": 500}
 
 

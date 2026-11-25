@@ -52,7 +52,7 @@ def _product_html(tmp_path: Path, key: str) -> Path:
 def _chunk_texts(module_name: str, path: Path, table_format: str) -> list[str]:
     module = pytest.importorskip(module_name, exc_type=ImportError)
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char"
     )
     doc = _convert(path)
     return [chunk.text for chunk in chunker.chunk(dl_doc=doc, table_format=table_format)]

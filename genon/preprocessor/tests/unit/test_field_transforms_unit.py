@@ -20,6 +20,7 @@ from processing.enrichment.field_transforms import (
     transform_percent,
     transform_regex_extract,
     transform_to_int,
+    transform_unique,
 )
 
 
@@ -92,6 +93,21 @@ def test_regex_extract_on_error_when_nothing_extracted():
 ])
 def test_percent_floors_ratio(value, expected):
     assert transform_percent(value) == expected
+
+
+@pytest.mark.unit
+# 첫 두 건은 실물 발췌다(sample_files/monimo/monimo_shopping_card_sample_keep.json, pid=S230300858907).
+# dict 원소는 실물 keywords 에 없지만 해시할 수 없는 원소를 받는 분기라 합성으로 둔다.
+@pytest.mark.parametrize("value,expected", [
+    (["스푼&포크", "타이니트윌쿨", "타이니트윌쿨",
+      "타이니트윌쿨 실리콘 아기/유아 수저포크세트 블루", "타이니트윌쿨 실리콘 아기/유아 수저포크세트 블루"],
+     ["스푼&포크", "타이니트윌쿨", "타이니트윌쿨 실리콘 아기/유아 수저포크세트 블루"]),
+    ("타이니트윌쿨", "타이니트윌쿨"),                               # 목록이 아니면 그대로
+    ([{"name": "x"}, {"name": "x"}], [{"name": "x"}]),
+    (None, None),
+])
+def test_unique_drops_repeated_items(value, expected):
+    assert transform_unique(value) == expected
 
 
 # ── apply_field_transforms ───────────────────────────────────────────────────

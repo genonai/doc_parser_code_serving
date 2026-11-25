@@ -271,6 +271,16 @@ def _classify_payload(obj) -> Tuple[str, Any]:
     )
 
 
+def _records_filtered_out(obj) -> int:
+    """parse 결과 metadata 의 `jb.RECORDS_FILTERED_OUT_KEY` 값(없으면 0). envelope(data) 안도 본다."""
+    nodes = [obj, obj.get("data")] if isinstance(obj, dict) else []
+    for node in nodes:
+        meta = node.get("metadata") if isinstance(node, dict) else None
+        if isinstance(meta, dict) and meta.get(jb.RECORDS_FILTERED_OUT_KEY):
+            return int(meta[jb.RECORDS_FILTERED_OUT_KEY])
+    return 0
+
+
 # 청크 결과(vector_meta)에만 있는 필드. 청크 결과를 다시 청커에 넣은 경우를 알아보는 데 쓴다.
 _CHUNK_RESULT_KEYS = frozenset({"i_chunk_on_doc", "n_chunk_of_doc"})
 _INPUT_HINT = "parse activity 결과 JSON(document 또는 elements 키가 있는 객체) 지정 필요"
@@ -334,6 +344,7 @@ class ChunkInput:
     kind: str            # "docling" | "parse"
     data: object         # DoclingDocument(또는 dict) | list[dict]
     guardrail: dict      # #315 민감정보 컨텍스트. core 가 그대로 넘긴다
+    filtered_out: int = 0  # parse 단계에서 filter·keep 조건으로 모두 제외된 레코드 수(jb.RECORDS_FILTERED_OUT_KEY)
 
 
 @dataclass
@@ -414,13 +425,15 @@ class ChunkerCore:
         _min_size = _parse_optional_int(chunking_cfg.get("min_chunk_size"), "chunking.min_chunk_size")
         self._min_chunk_size = _MIN_CHUNK_SIZE if _min_size is None else max(_min_size, 0)
 
-        # 청킹 모드: "split_only"(기본, chunk_size 초과 청크만 분할) | "resize_all"(모든 청크를 chunk_size 에 맞게 병합/분할)
-        self._chunk_mode = str(chunking_cfg.get("chunk_mode", "split_only")).strip().lower()
-        if self._chunk_mode not in {"split_only", "resize_all"}:
-            _log.warning(
-                f"chunking.chunk_mode={self._chunk_mode!r} 미지원: split_only 로 처리함 "
-                f"(허용 값: split_only, resize_all)")
-            self._chunk_mode = "split_only"
+        # 청킹 방식: "section"(기본, chunk_size 초과 섹션만 분할) | "section_merge"(섹션을 chunk_size 까지
+        # 병합/분할) | "character"(섹션을 무시하고 글자 수로 분할). 옛 이름·0/1 도 받는다.
+        self._chunk_mode = cp.resolve_chunk_mode(
+            {}, chunking_cfg.get("chunk_mode", "section"), allow_character=True)
+        # character 의 이웃 chunk 겹침 글자 수(chunking.character.chunk_overlap, 기본 0).
+        # short_chunk_size 와 같이 오기입(bool·실수·음수)은 기동 시 실패한다.
+        self._character_overlap = cp.parse_short_chunk_size(
+            _as_dict(chunking_cfg.get("character")).get("chunk_overlap"),
+            "chunking.character.chunk_overlap") or 0
 
         # 본문이 이보다 짧은 청크를 다음 청크로 병합(chunking.short_chunk_size, 기본 0=끔).
         # 문서유형별 값(custom_fields 의 body.merge_short)과 kwargs 가 우선한다.
@@ -512,29 +525,32 @@ class ChunkerCore:
         # __init__ 을 우회해 만든 인스턴스(단위 테스트)도 견디도록 getattr 로 읽는다.
         chunk_size = _clamp_chunk_size(
             chunk_size, getattr(self, "_min_chunk_size", _MIN_CHUNK_SIZE))
-        # chunk_mode 우선순위: kwargs > yaml(chunking.chunk_mode) > "split_only"
-        chunk_mode = str(kwargs.get('chunk_mode') or self._chunk_mode).strip().lower()
-        if chunk_mode not in {"split_only", "resize_all"}:
-            _log.warning(
-                f"chunk_mode={kwargs.get('chunk_mode')!r} 미지원, split_only 로 처리함 "
-                f"(허용 값: split_only·resize_all, 값 출처: 요청 파라미터 또는 processor.py 의 doc_type 별 설정)")
-            chunk_mode = "split_only"
+        # chunk_mode 우선순위: kwargs > yaml(chunking.chunk_mode) > "section"
+        chunk_mode = cp.resolve_chunk_mode(kwargs, self._chunk_mode, allow_character=True)
         doc_metadata = dpx.merge_context_metadata(extract_metadata_from_document(documents), kwargs)
         short_chunk_size = cp.resolve_short_chunk_size(
             kwargs, doc_metadata, getattr(self, "_short_chunk_size", 0))
-        # 이상 청크 검증(drop)이 버릴 청크는 짧은 청크 병합에서 뺀다. 붙이면 정상 본문까지 함께 버려진다.
+        # 이상 청크 검증(drop·fail)이 걸러낼 청크는 짧은 청크 병합에서 뺀다. 붙이면 정상 본문까지 함께 버려진다.
         validation = cq.config_for(self, kwargs.get("doc_type"))
         merge_guard = None
-        if short_chunk_size > 0 and validation is not None and validation.drops:
+        if short_chunk_size > 0 and validation is not None and validation.rejects:
             merge_guard = cq.rejects_doc_chunk(validation)
         include_header = _resolve_include_chunk_header(kwargs, self._include_chunk_header)
         table_as_chunk = cp.resolve_table_as_chunk(kwargs, self._table_as_chunk)
+        chunk_overlap = 0
+        if chunk_mode == "character":
+            # 글자 수 청킹은 HEADER 줄을 붙이지 않고 표 단독 chunk·짧은 chunk 병합도 쓰지 않는다.
+            include_header = table_as_chunk = False
+            short_chunk_size = 0
+            chunk_overlap = cp.resolve_character_overlap(
+                kwargs, getattr(self, "_character_overlap", 0), chunk_size)
         chunker = self.CHUNKER(
             max_tokens = chunk_size if chunk_size is not None else 0,
             merge_peers = True,
             tokenizer = self._tokenizer,
             tokenizer_type = self._tokenizer_type,
             chunk_mode = chunk_mode,
+            chunk_overlap = chunk_overlap,
             short_chunk_size = short_chunk_size,
             merge_guard = merge_guard,
             # 크기 산정(_size)이 compose_vectors 의 실제 부착 여부와 같은 값을 보게 한다.
@@ -551,7 +567,8 @@ class ChunkerCore:
         _cleanup = tn.prepare_document(documents, kwargs, self)
         _log.info(
             f"chunk 설정: {_size_setting(chunk_size, self)} · chunk_mode={chunk_mode} · "
-            f"include_chunk_header={_flag(include_header)} · table_as_chunk={_flag(table_as_chunk)} · "
+            + (f"character_chunk_overlap={chunk_overlap} · " if chunk_mode == "character" else "")
+            + f"include_chunk_header={_flag(include_header)} · table_as_chunk={_flag(table_as_chunk)} · "
             f"short_chunk_size={short_chunk_size} · text_cleanup={'safe' if _cleanup else 'off'}")
         chunks: List[DocChunk] = list(chunker.chunk(dl_doc=documents, **kwargs))
         cleaned_away = 0
@@ -657,6 +674,8 @@ class ChunkerCore:
         rejected = validation.rejected if validation is not None else 0
         if not vector_metas and rejected:
             raise cq.all_rejected_error(validation)
+        if not vector_metas and not notes["dropped"] and notes.get(jb.RECORDS_FILTERED_OUT_KEY):
+            return vector_metas   # split_records 가 이미 빈 결과로 알렸다
         if not vector_metas and not notes["dropped"]:
             raise GenosServiceException(
                 1, "chunk 0건: 분할 결과 없음\n"
@@ -1338,7 +1357,7 @@ class ChunkerCore:
         return ChunkInput(kind, data, dict(
             _sensitive_infos=_extract_sensitive_infos(raw_payload),
             _guardrail_masking=self._gr_cfg.masking_enabled,
-        ))
+        ), _records_filtered_out(raw_payload) if kind == "parse" else 0)
 
     def edit_input(self, kind, data, **kwargs):
         """[전처리] 분할 직전. 받은 형 그대로 돌려준다.
@@ -1573,6 +1592,8 @@ class ChunkerCore:
             guardrail=src.guardrail, doc_type=params.get("doc_type"),
             params={**params, **src.guardrail},
         )
+        if getattr(src, "filtered_out", 0):
+            job.notes[jb.RECORDS_FILTERED_OUT_KEY] = src.filtered_out
         self._apply_config_overlay(job)
         return job
 
@@ -1653,6 +1674,11 @@ class ChunkerCore:
                 1, f"chunk 0건: processor.py 의 edit_input 이 elements {emptied}개를 모두 걸러 빈 목록 반환\n"
                    "의도가 아니면 edit_input 반환값 확인 필요",
                 error_type="permanent", reason_code="CHUNK_D001")
+        filtered_out = job.notes.get(jb.RECORDS_FILTERED_OUT_KEY)
+        if filtered_out and not elements:
+            # 대상 레코드가 없는 파일은 정상 운영에서도 온다 — 실패가 아니라 빈 결과다.
+            _log.warning(f"chunk 0건으로 처리: parse 단계에서 레코드 {filtered_out}건이 모두 filter·keep 조건에서 제외됨")
+            return []
 
         # 파서와 청커가 별개 요청이라 표 출력 설정은 프로세서 속성에만 있다. docling 경로
         # (split_documents)와 마찬가지로 kwargs 로 옮겨, 이 아래 경로들도 같은 설정을 본다.

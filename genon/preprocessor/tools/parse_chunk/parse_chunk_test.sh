@@ -52,7 +52,7 @@ cd "${SCRIPT_DIR}"
 #   json_semantic   (json) : product_hpp                                 → 섹션 1개 = 청크 1개
 #                            (성격별로 나뉜 섹션마다 SECTION_NM/SOURCE_JSON_PATH + 공통 정보)
 #   html 추출 (json 안의 html) : monimo_news                             → 문서 1개, 필드는 select 로 뽑는다
-#   llm (문서 단위)        : product_slf product_ssf card
+#   llm (문서 단위)        : product_slf product_ssf
 #                            → metadata 가 모든 청크에 동일하게 붙는다
 MONIMO="../../sample_files/monimo"
 OUT="result_parse_chunk"
@@ -170,18 +170,7 @@ MONIMO_CASES=(
 # print(f'stock_insight OK: 종목 {len(stocks)}건 → {len(d)}청크, 길이 {[len(c[\"text\"]) for c in d]}')
 # "
 
-# 기존 카드 데모(회귀 확인용)
-# front matter 타입 보존은 front matter 키에만 적용된다 — card 의 annual_fee_amount 는
-# 예전대로 문자열 '18000' 이어야 한다(이미 적재된 컬렉션의 property 타입 호환).
-# "${PYTHON}" parse_chunk_test.py --doc_type card "/Users/shkim/_shkim/01.source/doc_parser/shkim_labs/20260803_monimo/01_card/card01.flat.html" "${OUT}/"
-# "${PYTHON}" -c "
-# import json
-# d = json.load(open('${OUT}/card01.flat.chunks.json'))
-# assert d[0]['annual_fee_amount'] == '18000', d[0]['annual_fee_amount']
-# "
-
 # "${PYTHON}" parse_chunk_test.py --site monimo --doc_type faq "/Users/shkim/_shkim/01.source/doc_parser/shkim_labs/20260803_monimo/02_faq/증권FAQ_260712.csv" "${OUT}/"
-# "${PYTHON}" parse_chunk_test.py --doc_type card "../../../../shkim_labs/20260806_hwp/hwp_sample_table.hwp" "${OUT}/"
 # "${PYTHON}" parse_chunk_test.py --site monimo --doc_type monimo_event "${MONIMO}/monimo_event_table_sample.json" "${OUT}/"
 # "${PYTHON}" parse_chunk_test.py --site monimo --doc_type product_hpp "${MONIMO}/monimo_product_hpp_wcms_sample.json" "${OUT}/"
 
@@ -225,15 +214,6 @@ RUN="run-1"
 # "${PYTHON}" parse_chunk_test.py --llm_cache --interim_root "${INTERIM}" --workflow_id "${WF}" --run_id "${RUN}" "${FILE}" "${OUT}/"
 # 2) 2회차(HIT=캐시 재사용): 로그에서 페이지별 "HIT" 및 요약 "[llm_cache] hit=.. miss=.." 확인
 # "${PYTHON}" parse_chunk_test.py --llm_cache --interim_root "${INTERIM}" --workflow_id "${WF}" --run_id "${RUN}" "${FILE}" "${OUT}/"
-
-# ── monimo 카드 HTML → (flatten) → 파싱(custom_fields enrichment) → 청킹 ──────────
-# custom_fields(카드 12필드)는 resource/custom_field_card.yaml 로 설정된다.
-# 결과는 파일로 저장되지 않고 파서 응답의 metadata 로 콘솔에 출력되며, 청킹 후에는
-# <name>.chunks.json 의 각 청크 top-level 키로 실린다(GenOSVectorMeta extra=allow).
-# MONIMO_SRC="../../../../shkim_labs/20260803_monimo/01_card/card02.docling.html"
-# "${PYTHON}" parse_chunk_test.py --doc_type card "${MONIMO_SRC}" "${OUT}/"
-# 결과 확인: "${PYTHON}" -c "import json;d=json.load(open('${OUT}/card02.docling.chunks.json'));print(d[0])"
-# --doc_type card: 모든 청크에 doc_type="card" 스탬프(기존 12필드 유지).
 
 # ── monimo FAQ 엑셀 → parser(tabular 행별) → chunker (행마다 1청크) ───────────────────────────
 # processing_mode=tabular 이면 doc_type 없이도 "행=청크" 로 처리한다.

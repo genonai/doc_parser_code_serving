@@ -72,7 +72,7 @@ TOP_LEVEL_KEYS = frozenset({
 # 필드 스펙 안에 쓸 수 있는 키. 값은 **항상 dict** 다 — 리스트/스칼라 단축형을 받지 않는다.
 # `TARGET_A:` 처럼 값을 빠뜨린 오타가 null 로 파싱돼 조용히 통과하는 것을 막기 위해서다.
 FIELD_SPEC_KEYS = frozenset({
-    "alias", "const", "default", "values", "transform", "collect", "template", "seq",
+    "alias", "const", "default", "values", "keep", "transform", "collect", "template", "seq",
     "pack", "raw", "meta",
     # kind: html 전용. `alias`(원천 key 이름)와 같은 역할의 같은 자리다 — 이 필드가
     # 원천의 어디서 오는가. `attr` 은 그 요소의 속성값을 쓸 때만 곁들인다.
@@ -133,6 +133,8 @@ _SPEC_TO_BLOCK = {
     "const": "constants",
     "default": "defaults",
     "values": "value_map",
+    # 목록 값에서 적은 값만 남긴다. 남은 값이 없으면 그 레코드를 적재하지 않는다(rows/records 전용).
+    "keep": "keep",
     "transform": "transforms",
     "template": "derive",
     "seq": "sequence",
@@ -407,9 +409,22 @@ def _normalize_fields(fields: Any, kind: str, out: dict, label: str) -> None:
             out.setdefault("collect_key_map", {})[target] = _require_list(
                 spec["collect"], where, "collect"
             )
+        if "keep" in spec:
+            if kind not in ("rows", "records"):
+                raise ConfigV2Error(f"{where}: keep 은 kind: rows/records 전용임")
+            keep = spec["keep"]
+            # 비어 있으면(`keep:`·`keep: []`) 줄이지 않는다 — 필터 없이 전부 적재한다.
+            if keep is not None and (not isinstance(keep, list) or not all(
+                isinstance(item, (str, int, float)) and str(item).strip() for item in keep
+            )):
+                raise ConfigV2Error(
+                    f"{where}: keep 은 남길 값의 목록이어야 함 (예: `keep: [A01, B02]`)"
+                )
+            if keep:
+                out.setdefault("keep", {})[target] = keep
         for spec_key, block in _SPEC_TO_BLOCK.items():
-            if spec_key in ("collect",) or spec_key not in spec:
-                continue  # collect 는 kind 제약이 있어 위에서 따로 다룬다
+            if spec_key in ("collect", "keep") or spec_key not in spec:
+                continue  # collect·keep 은 kind 제약이 있어 위에서 따로 다룬다
             value = spec[spec_key]
             if spec_key == "values":
                 value = _require_dict(value, where, "values")

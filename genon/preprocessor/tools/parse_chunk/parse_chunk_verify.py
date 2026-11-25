@@ -19,6 +19,8 @@ doc_type 마다 샘플을 파싱·청킹한 뒤, 그 doc_type 의 custom_field y
     설정에 `chunking.validation: {enable: true, action: drop}` 을 얹어(기준값은 기본값) 불량
     섹션·레코드가 빠지고 대조군이 남는지, 전부 불량인 문서가 CHUNK_ALL_REJECTED 로 실패하는지
     단정한다. custom_fields 경로(faq 행 청크, product_ssf 문서형 청크) 샘플도 함께 돈다.
+  - 글자 수 청킹(FORCED_SPLIT_CASES 의 product_ssf 항목, FORCED_SPLIT_MODES 로 chunk_mode=character 지정):
+    HEADER 줄이 없고 모든 chunk 가 chunk_size 이하인지 단정한다.
 
 doc_type → extractor/config 매핑은 모니모 사이트 완성본(genon/sites/monimo/activities/parse/)의
 config.yaml 에서 직접 읽는다. genon/sites 가 없는 배포본에서는 표준 자리(genon/preprocessor/activities/parse/ —
@@ -96,12 +98,18 @@ CASES = [
     # 캡처를 옮겨 만든 샘플이다(BOM 포함).
     ("music_ai",      MONIMO / "monimo_music_ai_sample.json",          "playList 항목별 청크"),
     # 캡처를 옮겨 만든 줄 단위 JSON(JSONL) 샘플이다. 확장자는 원본처럼 .json 이다.
-    ("shopping_card", MONIMO / "monimo_shopping_card_sample.json",     "JSONL 레코드별 청크·할인율 계산"),
+    # 12건 모두 SHOP_IDS.keep 의 코드가 없어 빈 결과가 정상이다(EMPTY_RESULT_CASES).
+    ("shopping_card", MONIMO / "monimo_shopping_card_sample.json",     "keep 전부 제외 → 빈 결과"),
+    # 위 샘플의 사본에서 shop_ids 4건만 바꿨다. 0·2번은 목록 안에 keep 코드가 있고, 1번은 keep 코드
+    # 단일 값, 3번은 keep 에 없는 단일 값이다. 나머지 8건은 원본 그대로라 제외된다.
+    ("shopping_card", MONIMO / "monimo_shopping_card_sample_keep.json", "keep 일부 유지·할인율 계산"),
     ("cs_slf",        MONIMO / "monimo_cs_slf_sample.json",            "json_mapping"),
     # 마지막 레코드는 제목에 영문 대문자·<BR>·엔티티가 든 생성 레코드다(#414).
     ("cs_ssf",        MONIMO / "monimo_cs_ssf_sample.dtms",            "|@| 구분 레코드"),
     # 본문이 셀 하나짜리 레이아웃 표인 레코드(#396). 실물 형식을 따라 만든 생성 샘플이다.
     ("cs_ssf",        MONIMO / "monimo_cs_ssf_layout_table_sample.dtms", "1셀 레이아웃 표 레코드"),
+    # 본문 안 따옴표를 "" 로 적지 않은 원천(#782). 1건째는 운영 원천 캡처를 옮긴 것이다.
+    ("cs_ssf",        MONIMO / "monimo_cs_ssf_raw_quote_sample.dtms",  "본문 따옴표 미이스케이프 레코드"),
     ("cs_sss",        MONIMO / "monimo_cs_sss_sample.json",            "json_mapping"),
     # cs_hpp 설정은 JSON 레코드를 받는다. 아래 html·.parsed 원천은 레코드 매핑 없이 docling HTML·md
     # 경로로만 처리되므로(cs_hpp 메타는 비어 있다) HTML 파싱·포맷 판정 회귀를 확인하는 케이스다.
@@ -665,6 +673,17 @@ def check_cs_ssf_layout_table(chunks: list) -> list[str]:
     return problems
 
 
+def check_cs_ssf_raw_quote(chunks: list) -> list[str]:
+    """본문 안 따옴표를 "" 로 적지 않은 원천의 레코드가 끝까지 붙어 오는가(#782).
+
+    1건째 본문은 128줄의 인용부호에서 끊기면 뒤쪽 표(초기배당·사고접수 행)가 사라진다.
+    """
+    body = "\n".join(chunk.get("text") or "" for chunk in chunks)
+    return [f"인용부호 뒤의 본문이 유실됐습니다: {phrase!r}"
+            for phrase in ("확인하셔야 합니다", "배정된 담당자 쪽지전송", "배당사유 추정수리비 선택 후 사고접수")
+            if phrase not in body]
+
+
 def check_cs_ssf_delimited(chunks: list) -> list[str]:
     """|@| 구분 원천의 분류 필드와 표가 청크까지 살아 오는가.
 
@@ -832,14 +851,16 @@ def check_term_duplicate_rows(chunks: list) -> list[str]:
 
 
 def check_shopping_card(chunks: list) -> list[str]:
-    """레코드 12건이 청크 12건이 되고, 할인율은 할인금액 × 100 / 정가의 내림이다."""
+    """keep 코드가 있는 3건만 남고 SHOP_IDS 는 keep 코드만 원천 순서대로 담는다. 할인율은 할인금액 × 100 / 정가의 내림이다. KEYWORDS 메타와 본문 키워드 줄에 같은 값이 두 번 나오지 않는다."""
     problems = []
-    if len(chunks) != 12:
-        problems.append(f"청크 12건 기대, 실제 {len(chunks)}건")
-    rates = [c.get("DISCOUNT_RATE") for c in chunks]
-    expected = [42, 5, 85, 28, 64, 47, 70, 37, 65, 26, 31, 41]
-    if rates != expected:
-        problems.append(f"DISCOUNT_RATE {expected} 기대, 실제 {rates}")
+    found = [(c.get("BIZ_ID"), c.get("BRAND_C"), c.get("SHOP_IDS"), c.get("DISCOUNT_RATE")) for c in chunks]
+    expected = [
+        ("S230300858907", "22756", '["S000000293"]', 42),
+        ("SD230501620308", "21715", '["S000000389"]', 5),
+        ("SD240101848224", "5016", '["S000025345", "S000000293"]', 85),
+    ]
+    if found != expected:
+        problems.append(f"(BIZ_ID, BRAND_C, SHOP_IDS, DISCOUNT_RATE) {expected} 기대, 실제 {found}")
     soldout = {c.get("SOLDOUT_YN") for c in chunks}
     if not soldout <= {"Y", "N"}:
         problems.append(f"SOLDOUT_YN 은 Y/N 이어야 함: {sorted(map(str, soldout))}")
@@ -852,6 +873,16 @@ def check_shopping_card(chunks: list) -> list[str]:
             if not ok:
                 problems.append(f"{key} 가 JSON 배열 문자열이 아님: BIZ_ID={c.get('BIZ_ID')}")
                 break
+    # 원천 keywords 에 반복된 값(브랜드명 등)이 unique 로 메타와 본문 양쪽에서 지워졌는지 본다.
+    for c in chunks:
+        try:
+            keywords = json.loads(c.get("KEYWORDS"))
+        except (TypeError, ValueError):
+            continue
+        line = next((l for l in (c.get("text") or "").splitlines() if l.startswith("키워드:")), "")
+        body = [w.strip() for w in line.removeprefix("키워드:").split(",") if w.strip()]
+        if len(keywords) != len(set(keywords)) or len(body) != len(set(body)):
+            problems.append(f"키워드 중복 남음: BIZ_ID={c.get('BIZ_ID')}")
     return problems
 
 
@@ -922,6 +953,9 @@ def check_table_edge(*, long_cells: bool = False, oversized_page: int | None = N
     return _check
 
 
+# 레코드가 모두 filter·keep 에서 빠져 빈 결과가 정상인 케이스. 경고 로그는 OUTPUT_CHECKS 가 본다.
+EMPTY_RESULT_CASES = {("shopping_card", "monimo_shopping_card_sample.json")}
+
 # 설정의 원천 형식과 다른 입력이라 custom_fields 매핑이 걸리지 않는 케이스. yaml 의 필수·상수
 # 필드 단정을 건너뛰고 전용 단정(EXTRA_CHECKS)과 공통 본문 단정만 적용한다. cs_hpp 설정은
 # JSON 레코드를 받으므로 아래 html·.parsed 원천은 HTML 파싱·포맷 판정 회귀 확인용이다.
@@ -961,7 +995,8 @@ EXTRA_CHECKS = {
     ("monimo_event", "monimo_event_title_sample.json"): check_title_kept(
         "KB국민카드 & monimo Pay 첫 결제 최대 5만원 캐시백"),
     ("cs_ssf", "monimo_cs_ssf_layout_table_sample.dtms"): check_cs_ssf_layout_table,
-    ("shopping_card", "monimo_shopping_card_sample.json"): check_shopping_card,
+    ("cs_ssf", "monimo_cs_ssf_raw_quote_sample.dtms"): check_cs_ssf_raw_quote,
+    ("shopping_card", "monimo_shopping_card_sample_keep.json"): check_shopping_card,
     ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_last_mod_dt(0),
     ("cs_sss", "monimo_cs_sss_sample.json"): check_last_mod_dt(0),
     ("cs_hpp", "monimo_cs_hpp_chunksize_sample.json"): check_last_mod_dt(20260825),
@@ -1005,14 +1040,37 @@ def check_span_table_contained_duplicate(output: str) -> list[str]:
     return [] if want in output else [f"중복 표 생략 로그가 없습니다(기대: {want})"]
 
 
+def check_all_filtered_warning(output: str) -> list[str]:
+    """레코드가 모두 filter·keep 에서 빠진 파일을 parse·chunk 가 실패 없이 빈 결과로 알리는가."""
+    wants = ("빈 결과로 처리: shopping_card 레코드 12/12건이 filter·keep 조건에서 제외됨",
+             "chunk 0건으로 처리: parse 단계에서 레코드 12건이 모두 filter·keep 조건에서 제외됨")
+    return [f"경고 로그 없음: {want}" for want in wants if want not in output]
+
+
 # 실행 로그(stdout+stderr)에 대한 단정. 변환기 경고처럼 청크에 남지 않는 신호를 본다.
 OUTPUT_CHECKS = {
+    ("shopping_card", "monimo_shopping_card_sample.json"): check_all_filtered_warning,
     ("product_slf", "monimo_product_slf_table_edge_sample.md"): check_table_edge_warning,
     ("product_slf", "monimo_product_slf_span_table_sample.md"): check_span_table_contained_duplicate,
     ("cs_ssf", "monimo_cs_ssf_sample.dtms"): check_no_json_parse_warning,
     ("cs_ssf", "monimo_cs_ssf_layout_table_sample.dtms"): check_no_json_parse_warning,
     ("stock_insight", "monimo_stock_insight_split_sample.txt"): check_row_merge_warning_kept,
 }
+
+CHARACTER_CASE_SIZE = 1024  # docling 입력의 chunk_size 하한(min_chunk_size 기본값)
+
+
+def check_character_chunks(chunks: list) -> list[str]:
+    """character 모드는 둘 이상으로 나뉘고, HEADER 줄이 없고, 모든 chunk 가 chunk_size 이하다."""
+    problems = [] if len(chunks) >= 2 else [f"분할 기대, 실제 {len(chunks)}건"]
+    for i, chunk in enumerate(chunks):
+        text = chunk.get("text") or ""
+        if text.startswith("HEADER:") or "\nHEADER:" in text:
+            problems.append(f"chunk {i} 에 HEADER 줄이 있습니다")
+        if len(text) > CHARACTER_CASE_SIZE:
+            problems.append(f"chunk {i} 길이 {len(text)} > chunk_size {CHARACTER_CASE_SIZE}")
+    return problems
+
 
 # 기본 chunk_size 에서는 나뉘지 않는 샘플을 작은 chunk_size 로 한 번 더 실행한다(#419).
 # CASES 와 같은 샘플이므로 EXTRA_CHECKS 단정을 그대로 받고, 마지막 항목의 단정을 덧붙인다.
@@ -1021,7 +1079,11 @@ OUTPUT_CHECKS = {
 FORCED_SPLIT_CASES = [
     ("stock_insight", MONIMO / "monimo_stock_insight_split_sample.txt", 200,
      check_stock_insight_split_per_record, "떨어진 행 병합 후 분할"),
+    ("product_ssf", MONIMO / "monimo_product_ssf_html_table_sample.md", CHARACTER_CASE_SIZE,
+     check_character_chunks, "chunk_mode=character"),
 ]
+# 분할 강제 케이스 중 chunk_mode 를 바꿔 돌리는 것. 없으면 기본(section)이다.
+FORCED_SPLIT_MODES = {("product_ssf", "monimo_product_ssf_html_table_sample.md"): "character"}
 
 # 이상 청크 검증(chunking.validation) 케이스. 샘플 생성 스크립트는
 # tools/parse_chunk/make_chunk_quality_sample.py 다. custom_fields 블록이 없는 원천이라
@@ -1172,16 +1234,18 @@ def chunker_config_path() -> Path:
 
 
 def load_custom_field_blocks() -> list[dict]:
-    """파서 설정(activities/parse/config.yaml)의 enable 된 custom_fields 블록 목록."""
-    cfg = yaml.safe_load(parser_config_path().read_text(encoding="utf-8"))
+    """파서 설정 폴더(activities/parse/)의 규칙 파일 등록 `{doc_type, config_file}` 목록(doc_type 하나에 한 항목).
+
+    등록은 규칙 파일 최상위의 `doc_type:` 한 가지다(#798). 워커와 같은 함수(`config_v2.rule_file_registrations`)로 찾는다.
+    """
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from genon.preprocessor.processing.enrichment import config_v2
+
     out = []
-    for item in cfg.get("enrichment") or []:
-        if not isinstance(item, dict):
-            continue
-        block = item.get("custom_fields")
-        for b in (block if isinstance(block, list) else [block] if block else []):
-            if isinstance(b, dict) and b.get("enable") and b.get("doc_type"):
-                out.append(b)
+    for entry in config_v2.rule_file_registrations(parser_config_path().parent):
+        names = entry["doc_type"] if isinstance(entry["doc_type"], list) else [entry["doc_type"]]
+        out.extend({**entry, "doc_type": name} for name in names)
     return out
 
 
@@ -1291,6 +1355,8 @@ def verify(doc_type: str, src: Path, out_dir: Path, block: dict) -> list[str]:
     if not chunks_path.exists():
         return [f"산출물 없음: {chunks_path.name}"]
     chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
+    if (doc_type, src.name) in EMPTY_RESULT_CASES:
+        return [] if not chunks else [f"청크 0건 기대, 실제 {len(chunks)}건"]
     if not chunks:
         return ["청크 0건"]
 
@@ -1367,7 +1433,9 @@ def main() -> int:
              for doc_type, src, size, check, note in FORCED_SPLIT_CASES
              if not args.only or doc_type in args.only]
     for doc_type, src, note, chunk_size, split_check in runs:
-        label = f"{doc_type}:{src.name}" + (f"@chunk_size={chunk_size}" if chunk_size else "")
+        forced_mode = FORCED_SPLIT_MODES.get((doc_type, src.name)) if chunk_size else None
+        label = (f"{doc_type}:{src.name}" + (f"@chunk_size={chunk_size}" if chunk_size else "")
+                 + (f",{forced_mode}" if forced_mode else ""))
         if not src.exists():
             rows.append((label, "SKIP", "샘플 없음", "-", "-")); skipped += 1; continue
         block = pick_block(blocks, doc_type, src.suffix)
@@ -1376,13 +1444,19 @@ def main() -> int:
 
         # 같은 샘플을 chunk_size 만 바꿔 다시 돌리므로 산출물이 덮이지 않게 폴더를 가른다.
         out_dir = out_root / (doc_type if chunk_size is None else f"{doc_type}_chunk{chunk_size}")
+        if forced_mode:
+            out_dir = out_root / f"{doc_type}_{forced_mode}{chunk_size}"
         out_dir.mkdir(parents=True, exist_ok=True)
         extra_args = ["--chunk-size", str(chunk_size)] if chunk_size else None
+        if forced_mode:
+            extra_args += ["--chunk-mode", forced_mode]
         ok, err, output = run_case(args.python, doc_type, src, out_dir, extra_args)
         if not ok:
             rows.append((label, "FAIL", err, "-", "-")); failed += 1; continue
 
-        problems = verify(doc_type, src, out_dir, block)
+        # character 모드는 chunk 가 표·제목 경계와 무관하게 잘리므로 표 표기·HEADER 제목 같은 공통 단정을
+        # 적용하지 않고 전용 단정(check_character_chunks)만 본다.
+        problems = [] if forced_mode else verify(doc_type, src, out_dir, block)
         # 같은 샘플을 chunk_size 만 바꿔 다시 돌리는 분할 강제 실행에는 다시 걸지 않는다.
         output_check = OUTPUT_CHECKS.get((doc_type, src.name)) if chunk_size is None else None
         if output_check is not None:

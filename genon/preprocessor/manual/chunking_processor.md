@@ -16,7 +16,7 @@
 - [API](#api)
 - [입력 — 두 가지 형태](#입력--두-가지-형태)
 - [activities/chunk/config.yaml 설정](#activitieschunkconfigyaml-설정)
-- [청킹 동작 — split_only 와 resize_all](#청킹-동작--split_only-와-resize_all)
+- [청킹 동작 — chunk_mode](#청킹-동작--chunk_mode)
 - [표 처리](#표-처리)
 - [청크 텍스트 정제](#청크-텍스트-정제)
 - [이상 청크 검증](#이상-청크-검증)
@@ -67,7 +67,8 @@
 | `file_path` | body | 파서 결과 JSON 파일 경로. `document` 를 인라인으로 주면 생략 가능 |
 | `params.document` | body | 파서 응답의 `data` 를 그대로. **인라인이 우선** |
 | `params.chunk_size` | body | 청크 상한. yaml 보다 우선 |
-| `params.chunk_mode` | body | `split_only` / `resize_all` |
+| `params.chunk_mode` | body | `section` / `section_merge` / `character` |
+| `params.character_chunk_overlap` | body | `character` 모드의 이웃 청크 겹침 글자 수. yaml 보다 우선. 기존 `chunk_overlap` 은 parse-format 경로 전용이라 `character` 모드에는 적용되지 않음 |
 | `params.short_chunk_size` | body | 짧은 청크 병합 기준. yaml 보다 우선 |
 | `params.include_chunk_header` | body | `HEADER:` 라인 on/off (0/1 또는 on/off) |
 | `params.table_as_chunk` | body | 표를 독자 청크로 |
@@ -96,7 +97,7 @@
 |---|---|---|
 | 청커 | `GenosSmartChunker` (섹션·표 구조 인식) | 문자 기반 splitter |
 | 크기 단위 | `char` / `huggingface` 선택 | **항상 문자 수** |
-| overlap | 없음 | `chunking.recursive.chunk_overlap` (기본 100) |
+| overlap | `character` 일 때만 `chunking.character.chunk_overlap` (기본 0) | `chunking.recursive.chunk_overlap` (기본 100) |
 | 좌표·미디어 | 실제 값 | `"."` 고정값 |
 | 문서 metadata | 부착됨 | 없음 (행 단위 element 는 예외 — 아래 계약 참조) |
 
@@ -116,10 +117,11 @@
 | 키 | 기본 | 의미 |
 |---|---|---|
 | `chunk_size` | `1500` | 청크 상한. **0 = 분할 안 함.** docling 경로는 0 초과 시 **최소 1024 로 보정**됩니다 |
-| `chunk_mode` | `split_only` | 아래 절 참조 |
-| `short_chunk_size` | `0`(끔) | 본문이 이보다 짧은 청크를 다음 청크에 병합. [짧은 청크 병합](#짧은-청크-병합) 참조 |
-| `table_as_chunk` | `true` | 표를 본문과 섞지 않고 독자 청크로 |
-| `include_chunk_header` | `true` | 청크 선두 `HEADER: <섹션 경로>` 라인 |
+| `chunk_mode` | `section` | `section` / `section_merge` / `character`. 아래 절 참조 |
+| `short_chunk_size` | `0`(끔) | 본문이 이보다 짧은 청크를 다음 청크에 병합. [짧은 청크 병합](#짧은-청크-병합) 참조. `character` 에서는 쓰지 않음 |
+| `table_as_chunk` | `true` | 표를 본문과 섞지 않고 독자 청크로. `character` 에서는 쓰지 않음 |
+| `include_chunk_header` | `true` | 청크 선두 `HEADER: <섹션 경로>` 라인. `character` 에서는 붙지 않음 |
+| `character.chunk_overlap` | `0` | `character` 모드 전용 overlap. 음수이면 기동 실패, `chunk_size` 이상이면 0 |
 | `text_cleanup` | `off` | `safe` 로 켜면 문자 노이즈 제거 + 사이트 규칙 |
 | `validation` | 블록이 없으면 꺼짐. 표준·monimo 설정은 켜짐(`action: drop`) | 이상 청크 검증. [이상 청크 검증](#이상-청크-검증) 참조 |
 | `tokenizer_type` | `char` | `char`=문자 수 / `huggingface`=토큰 수 |
@@ -155,7 +157,9 @@
 
 ---
 
-## 청킹 동작 — split_only 와 resize_all
+## 청킹 동작 — chunk_mode
+
+아래 단계는 `section`·`section_merge` 의 흐름입니다. `character` 는 이 단계를 거치지 않습니다([`character`](#character) 참조).
 
 ```
 표 단위 조기 반환   ← table_as_chunk 또는 xlsx 유래 문서
@@ -164,28 +168,42 @@
       ▼
 1단계    섹션 헤더 기준 분할
 2단계    각 섹션 텍스트에 heading 붙이기
-2.5단계  긴 섹션 균등 분할              ← resize_all 전용
+2.5단계  긴 섹션 균등 분할              ← section_merge 전용
 3단계    단독 타이틀을 다음 섹션에 병합
-4단계    섹션들을 그룹으로 묶기          ← split_only 는 여기서 아무 병합도 하지 않는다
-5단계    인접 그룹 greedy 병합           ← resize_all 전용
-5.5단계  chunk_size 초과 그룹만 분할     ← split_only 전용
+4단계    섹션들을 그룹으로 묶기          ← section 은 여기서 아무 병합도 하지 않는다
+5단계    인접 그룹 greedy 병합           ← section_merge 전용
+5.5단계  chunk_size 초과 그룹만 분할     ← section 전용
 6단계    최종 청크 객체 생성
 ```
 
-| | `split_only` (기본) | `resize_all` |
-|---|---|---|
-| 하는 일 | 파서가 인식한 섹션 경계(조항 등)를 그대로 유지하고 **큰 섹션만** 쪼갬 | 전부 `chunk_size` 에 맞춰 재조립 |
-| 결과 | 작은 청크가 많이 나옴. 섹션 = 검색 단위 | 균일한 크기 |
-| 언제 | 조문·약관처럼 경계가 의미를 갖는 문서 | 길이가 들쭉날쭉한 일반 문서 |
+| | `section` (기본) | `section_merge` | `character` |
+|---|---|---|---|
+| 하는 일 | 파서가 인식한 섹션 경계(조항 등)를 그대로 유지하고 **큰 섹션만** 쪼갬 | 전부 `chunk_size` 에 맞춰 재조립 | 섹션을 무시하고 본문을 순서대로 `chunk_size` 까지 채워 자름 |
+| 결과 | 작은 청크가 많이 나옴. 섹션 = 검색 단위 | 균일한 크기 | 균일한 크기. 한 청크에 여러 섹션이 섞이고 `HEADER:` 줄이 없음 |
+| 언제 | 조문·약관처럼 경계가 의미를 갖는 문서 | 길이가 들쭉날쭉한 일반 문서 | 섹션 구조를 쓰지 않고 길이로만 나누려는 경우 |
 
 > `merge_peers` 는 **읽지 않는 잔재 필드**입니다. 병합 동작은 `chunk_mode` 로 조절하세요.
 
 **섹션 인식은 정규식이 아닙니다.** docling 이 붙인 라벨(`SECTION_HEADER`/`TITLE`)로 판정합니다.
 "제N조" 같은 텍스트 패턴으로 자르고 싶다면 코드 수정이 필요합니다(아래 "코드에서 고칠 자리").
 
+### `character`
+
+섹션 경계를 보지 않고 본문을 읽기 순서대로 이어 `chunk_size` 글자까지 채워 자릅니다.
+자르는 위치는 끝 근처의 줄바꿈이나 공백으로 조금 당겨, 단어 중간에서 잘리는 일을 줄입니다.
+
+- `HEADER:` 줄을 붙이지 않습니다. `include_chunk_header: true` 여도 같습니다.
+- `table_as_chunk`·`short_chunk_size` 는 쓰지 않습니다. 표도 본문처럼 이어 붙여 자릅니다.
+- 문서유형 yaml 의 반복·1회 접두(`body.repeat`·`body.once`)는 그대로 붙습니다.
+- 이웃 청크를 겹치게 하려면 `chunking.character.chunk_overlap` 을 지정합니다(기본 0). 요청 파라미터
+  `character_chunk_overlap` 이 yaml 보다 우선합니다. yaml 값이 음수이면 기동하지 않고, 요청 값이 음수이거나
+  적용할 값이 `chunk_size` 이상이면 0 으로 처리합니다.
+  요청 파라미터 `chunk_overlap` 은 parse-format 경로의 값이라 이 모드에는 적용되지 않습니다.
+- 모드를 바꾸면 청크 경계가 달라지므로 이미 적재한 문서를 다시 적재합니다.
+
 ### 짧은 청크 병합
 
-`split_only` 는 섹션 하나가 청크 하나이므로, 섹션 제목만 있거나 본문이 1~2줄인 섹션은 짧은 청크가
+`section` 은 섹션 하나가 청크 하나이므로, 섹션 제목만 있거나 본문이 1~2줄인 섹션은 짧은 청크가
 됩니다. 이런 청크는 `HEADER:` 경로가 내용의 대부분이라 제목 검색어로 상위에 오르지만 답변 근거는
 주지 못합니다.
 
@@ -241,7 +259,7 @@ custom_fields `body.merge_short` → 청커 설정 `chunking.short_chunk_size` �
 - **섹션 경로는 이 줄에만 붙고 본문에서 반복되지 않습니다.** 섹션 제목 원문 한 줄은 대개 그 섹션의 첫 청크 본문에 남습니다(제목만 있는 청크나 짧은 청크를 다음 청크에 합치면서 한도를 지키려고, 이 줄에 이미 나오는 제목 줄을 본문에서 빼는 경우는 제외). 이 줄을 끄거나 리프 상한에 걸려도 제목이 본문에 남게 하기 위한 것입니다.
 - 문서 접두가 있으면 이 줄 다음에 `body.repeat` 값, 첫 청크에는 이어서 `body.once` 값이 붙습니다. 문서형에서 `body.repeat` 를 쓸 때는 `body.labels` 로 항목명을 함께 지정합니다. 항목명이 없으면 값만 있는 줄이 본문 소제목처럼 보입니다. 이 줄의 첫 요소가 이미 문서 제목이므로, 문서 제목과 같은 값(상품명 등)은 `body.repeat` 로 다시 싣지 말고 분류·종목명처럼 제목에 없는 식별 값을 고릅니다.
 - `include_chunk_header: false` 로 끄면 순수 본문만 나옵니다(검색 시 섹션 문맥 소실).
-  parse-format 경로는 애초에 헤더가 없어 no-op 입니다.
+  parse-format 경로와 `chunk_mode: character` 는 이 값과 관계없이 헤더를 붙이지 않습니다.
 
 ---
 
@@ -298,45 +316,54 @@ chunking:
 chunking:
   validation:
     enable: true
-    action: drop              # report(기록만) | drop(제외). 표준·monimo 설정은 drop 입니다
-    fail_on_any: false        # drop 모드에서 불량 청크가 하나라도 있으면 문서를 실패 처리
-    min_chars: 4              # 문서·평문 청크의 내용 문자 하한
-    row_min_chars: 0          # 행 청크 하한. FAQ·메뉴 보호를 위해 기본은 끔
-    repeat_min_count: 10      # 반복 횟수 하한
-    repeat_max_share: 0.5     # 중복 점유율 하한
-    broken_max_share: 0.3     # 손상 점유율 하한
-    broken_min_count: 3       # 손상 문자 최소 개수
-    table_min_chars: false    # 표가 든 청크에도 길이 하한을 적용할지
-    max_chars: 0              # 출력 청크 글자 수 상한. 0 이면 검사하지 않음. 넘어도 버리지 않고 보고만 함
-    stutter_min_run: 0        # char_stutter 의 글자당 반복 횟수. 0 이면 검사하지 않음. 권장 3(monimo 설정)
-    fail_reasons: []          # 이 사유가 나오면 action·fail_on_any 와 상관없이 문서를 실패 처리. 예: [char_stutter]
-    foreign_min_count: 0      # foreign_script 의 다른 문자체계 글자 수 하한. 0 이면 검사하지 않음. 권장 10(monimo 설정)
-    report_reasons: []        # 이 사유로만 걸린 청크는 빼거나 문서를 실패시키지 않고 기록만 함. 예: [foreign_script]
-    by_doc_type:              # doc_type 별로 위 값을 덮어씁니다
-      faq:  {min_chars: 0}
-      menu: {min_chars: 0}
+    action: drop                # 기본 검사에 걸린 chunk 의 처리. report(기본) | drop | fail
+    checks:                     # 검사별 처리. 적은 검사는 action 대신 이 값을 씀
+      char_stutter: fail        # disabled | report | drop | fail
+      foreign_script: report
+    by_doc_type:                # doc_type 별로 위 값을 덮어씀
+      product_slf: {action: fail}
+      faq: {checks: {min_chars: disabled}}
+    max_chars: 7000             # 출력 청크 글자 수 상한. 적지 않으면 검사하지 않음. 넘어도 버리지 않고 보고만 함
 ```
 
-위 수치가 기본값이며, 근거는 아래 [판정 기준의 근거](#판정-기준의-근거)에 있습니다. 블록이 없거나 `enable: false` 면
-기존과 완전히 같게 동작합니다.
+처리 방식은 세 단어로 통일합니다. 검사를 끌 때만 `disabled` 를 씁니다.
 
-`faq`·`menu` 예시처럼 짧은 답이 정상인 문서 유형은 `min_chars: 0` 으로 완화합니다. 행 청크는 원래
-`row_min_chars: 0` 이라 이 완화는 문서·평문 청크(예: 단독 청크로 나온 `없음`)에 적용됩니다. `by_doc_type` 은
-청커 요청의 `doc_type` 파라미터로 고르므로, 요청에 `doc_type` 이 없거나 이름이 다르면 공통 기준을 씁니다.
+| 값 | 걸린 청크 | 문서 |
+|---|---|---|
+| `disabled` | 검사하지 않음 | - |
+| `report` | 그대로 두고 로그와 [응답 요약](#응답-요약)에만 기록 | 적재 |
+| `drop` | 그 청크만 적재에서 뺌(warning 로그) | 남은 청크로 적재, 전부 빠지면 실패 |
+| `fail` | - | 문서 전체 실패(보류) |
+
+- **값을 정하는 순서:** `by_doc_type` 의 값을 먼저 덮어씁니다. 일반 키는 바꾸고 `checks` 는 검사 이름 단위로
+  합칩니다. 그다음 `checks` 에 적은 검사는 그 값을, 적지 않은 기본 검사는 `action` 을 씁니다.
+  `char_stutter`·`foreign_script` 는 적지 않으면 검사하지 않습니다.
+  - 그래서 위 예에서 `product_slf` 는 기본 검사에 걸리면 문서 실패이지만 `foreign_script` 는 기록만 합니다.
+- **여러 검사에 걸리면** 가장 무거운 처리를 따릅니다: `fail` > `drop` > `report`.
+- 값은 따옴표 없이 적어도 되는 단어만 씁니다. `off`·`no` 는 YAML 이 `false` 로 읽어 기동 오류가 납니다.
+
+블록이 없거나 `enable: false` 면 검증하지 않습니다. 판정 기준 숫자는 [판정 기준값](#판정-기준값)에 있으며 보통은
+바꾸지 않습니다.
+
+`faq` 예시처럼 짧은 답이 정상인 문서 유형은 `min_chars: disabled` 로 완화합니다. 행 청크는 원래 길이 하한이
+0 이라 이 완화는 문서·평문 청크(예: 단독 청크로 나온 `없음`)에 적용됩니다. `by_doc_type` 은 청커 요청의
+`doc_type` 파라미터로 고르므로, 요청에 `doc_type` 이 없거나 이름이 다르면 공통 값을 씁니다.
 
 ### 판정 사유
 
-앞의 사유에 걸리면 그 사유가 대표 사유입니다.
+사유 코드가 곧 `checks` 의 검사 이름입니다. 한 청크가 여러 검사에 걸리면 가장 무거운 처리를 가진 검사가 대표
+사유이고, 처리가 같으면 아래 순서의 앞 검사가 대표 사유입니다. 나머지는 로그의 `extra` 에 남습니다.
+`blank` 면 다른 기본 검사를, `no_content` 면 3~5번을 따로 세지 않습니다.
 
 | 순서 | 사유 | 판정 | 근거 예 |
 |---|---|---|---|
-| 0 | `char_stutter` | 한글·한자에서 같은 글자가 `stutter_min_run` 회 이상 이어진 덩어리가 2개 이상 붙어 있음(`무무무무배배배배`). 제목(HEADER 줄)까지 포함해 보고 다른 사유보다 먼저 판정합니다(`foreign_script` 도 제목을 보지만 다른 사유 뒤에 판정합니다). `stutter_min_run: 0`(기본)이면 검사하지 않습니다 | 같은 글자 3회 이상 반복 2구간 연속 |
+| 0 | `char_stutter` | 한글·한자에서 같은 글자가 3회 이상 이어진 덩어리가 2개 이상 붙어 있음(`무무무무배배배배`). 제목(HEADER 줄)까지 포함해 봅니다. `checks` 에 적어야 검사합니다 | 같은 글자 3회 이상 반복 2구간 연속 |
 | 1 | `blank` | 본문이 공백뿐 | 본문 없음 |
 | 2 | `no_content` | 내용 문자(글자·숫자, 언어 무관) 0자 | 내용 문자 0자 |
-| 3 | `broken_chars` | 깨진 문자(U+FFFD, 제어 문자, `GLYPH<…>`, 잘못된 인코딩으로 바뀐 한글 `占쏙옙`·`ë³´í—˜`) 개수 ≥ `broken_min_count` **그리고** 점유율 ≥ `broken_max_share` | 깨진 문자 100자 / 101자(99%) |
-| 4 | `repetition` | 동일 문자 연속·동일 줄·동일 문구 연속 중 하나가 `repeat_min_count` 이상 **그리고** 중복 점유율 ≥ `repeat_max_share` | 동일 문구 29회, 중복 93% |
-| 5 | `min_chars` | 내용 문자 수 < 하한 | 내용 문자 1자 < 하한 4자 |
-| 6 | `foreign_script` | 한 낱말 안에 한글과 다른 문자체계 글자가 함께 있음(`保険나이`), 또는 다른 문자체계 글자가 `foreign_min_count` 자 이상. 다른 문자체계는 한글·라틴·그리스 문자·KS X 1001 한자가 아닌 글자와 미할당 코드포인트이며, 숫자·구두점·기호·사용자 영역 문자는 세지 않습니다. 제목(HEADER 줄)도 포함해 봅니다. `foreign_min_count: 0`(기본)이면 검사하지 않습니다 | 한글과 다른 문자체계가 섞인 낱말 1개, 다른 문자체계 2자(하한 10자) |
+| 3 | `broken_chars` | 깨진 문자(U+FFFD, 제어 문자, `GLYPH<…>`, 잘못된 인코딩으로 바뀐 한글 `占쏙옙`·`ë³´í—˜`) 개수 ≥ 3 **그리고** 점유율 ≥ 0.3 | 깨진 문자 100자 / 101자(99%) |
+| 4 | `repetition` | 동일 문자 연속·동일 줄·동일 문구 연속 중 하나가 10회 이상 **그리고** 중복 점유율 ≥ 0.5 | 동일 문구 29회, 중복 93% |
+| 5 | `min_chars` | 내용 문자 수 < 하한(문서·평문 청크 4, 행·표 청크 0) | 내용 문자 1자 < 하한 4자 |
+| 6 | `foreign_script` | 한 낱말 안에 한글과 다른 문자체계 글자가 함께 있음(`保険나이`), 또는 다른 문자체계 글자가 10자 이상. 다른 문자체계는 한글·라틴·그리스 문자·KS X 1001 한자가 아닌 글자와 미할당 코드포인트이며, 숫자·구두점·기호·사용자 영역 문자는 세지 않습니다. 제목(HEADER 줄)도 포함해 봅니다. `checks` 에 적어야 검사합니다 | 한글과 다른 문자체계가 섞인 낱말 1개, 다른 문자체계 2자(하한 10자) |
 
 정상 청크를 빼지 않는 것이 우선이라, 아래는 판정에서 보호합니다.
 
@@ -346,7 +373,7 @@ chunking:
   겹쳐 세지 않으므로 100% 를 넘지 않습니다.
 - 내용 문자를 셀 때 걷어내는 것은 HTML 태그(`<p>`, `</td>`, `<!-- … -->`)뿐입니다. `0 < 금리 < 5%` 같은
   비교식이나 `<가입대상>` 같은 꺾쇠 표기는 본문으로 셉니다.
-- 표가 든 청크는 길이 하한을 적용하지 않습니다(`table_min_chars: true` 로 켤 수 있습니다).
+- 표가 든 청크는 길이 하한을 적용하지 않습니다(`limits.min_chars.table` 로 켤 수 있습니다).
 - 코드·수식 청크(docling 라벨 `code`·`formula`)는 길이 하한과 반복 판정을 적용하지 않습니다.
   행·평문 청크에는 라벨이 없어 일반 기준을 씁니다.
 - 반복·손상은 횟수와 점유율을 **함께** 넘어야 합니다. 본문 중간의 구분선 한 줄이나 깨진 글자
@@ -378,7 +405,7 @@ chunking:
 
 | 필드 | 설명 |
 |---|---|
-| `action` | `report` 면 검증 때문에 빠진 청크는 없습니다(훅이 고치거나 버렸을 수는 있습니다). `drop` 이면 `items` 의 청크가 `data` 에서 빠졌습니다 |
+| `action` | 그 문서에 적용된 `action` 설정값(`report`·`drop`·`fail`)입니다. 청크마다의 처리는 검사별 값(`checks`)을 따르므로, `checks` 에 `report` 로 적은 검사로만 걸린 청크는 `drop`·`fail` 이어도 `data` 에 남아 있습니다. `fail` 인데 성공 응답이 왔다면 `report` 검사로만 걸린 경우입니다 |
 | `count` | 판정에 걸린 청크 전체 건수 |
 | `reasons` | 사유 코드별 건수. `items` 가 20건에서 잘려도 전체 분포를 알 수 있습니다. 합계는 `count` 와 같습니다 |
 | `items` | 판정 순서로 최대 20건 |
@@ -425,27 +452,23 @@ chunking:
 
 1. `action: report` 로 배포합니다. 청크는 그대로 적재되고 판정은 로그와 [응답 요약](#응답-요약)에 남습니다.
 2. 로그에서 `[chunk_validation]` 줄을 모아 걸린 청크와 근거를 검토합니다. 정상 청크가 걸렸으면
-   임계값을 조정하거나 `by_doc_type` 으로 그 문서 유형만 완화합니다.
+   `by_doc_type` 으로 그 문서 유형만 완화하거나 그 검사를 `report`·`disabled` 로 둡니다.
 3. 기준에 합의한 뒤 `action: drop` 으로 바꿉니다.
 
-로그는 청크마다 한 줄(파일명, 원래 순번, 페이지, 검사 시점, 사유, 측정값, 임계값, 모드)과 문서마다
+로그는 청크마다 한 줄(처리, 파일명, 원래 순번, 페이지, 검사 시점, 사유, 측정값, 임계값)과 문서마다
 한 줄(입력·판정·제외·생존 건수, 사유별 건수, 판정률, 청크가 모두 걸린 페이지)입니다. 로그에는 본문을
 남기지 않습니다. 출력 본문의 앞부분은 응답 요약의 `preview` 에만 실립니다.
 
 ### 실패 처리
 
-| 상황 | `report` | `drop` | `drop` + `fail_on_any` |
+| 상황 | `report` | `drop` | `fail` |
 |---|---|---|---|
 | 일부 청크 불량 | 전부 반환, 로그·응답 요약 기록 | 해당 청크 제외 후 반환, 로그·응답 요약 기록 | 문서 실패 `CHUNK_REJECTED` |
 | 전부 불량 | 전부 반환, 로그·응답 요약 기록 | 문서 실패 `CHUNK_ALL_REJECTED` | 문서 실패 `CHUNK_REJECTED` |
 | 판정기 오류 | 전부 반환, 오류 로그 기록 | 문서 실패 `CHUNK_VALIDATION_ERROR` | 같음 |
 
-위 표보다 사유 목록이 우선합니다.
-
-- `fail_reasons` 에 적은 사유가 나오면 `action`·`fail_on_any` 와 상관없이 문서 실패 `CHUNK_REJECTED` 입니다.
-  `report_reasons` 로 남긴 청크라도 훅이 바꾼 출력 본문에서 이 사유가 나오면 같습니다.
-- `report_reasons` 에 적은 사유로만 걸린 청크는 `drop`·`fail_on_any` 에서도 빼지 않고 로그와 응답 요약에만
-  기록합니다. 이때 응답 요약의 `action` 은 설정값(`drop`)이며 그 청크를 뺐다는 뜻이 아닙니다.
+- 표의 열은 걸린 청크에 적용된 처리입니다. 판정기 오류는 `drop`·`fail` 인 검사가 하나라도 있으면 문서 실패입니다.
+- 초기 검사에서 기록만 한 청크라도 훅이 바꾼 출력 본문이 `drop`·`fail` 검사에 걸리면 그 처리를 따릅니다.
 
 세 경우 모두 실패 응답(`code: 1`, `stage: chunk_validation`, `error_kind: permanent`)이며 재시도로 해결되지
 않습니다. HTTP 상태는 200 이므로 응답 본문의 `code` 로 실패를 판단합니다. 오류 코드는 `error_msg` 에 실리지만
@@ -458,9 +481,29 @@ chunking:
 
 - 검증 키는 **요청 파라미터로 바꿀 수 없습니다.** `text_cleanup=off` 요청에서도 검증은 그대로입니다.
   `CONFIG_BY_DOC_TYPE` 에 적어도 건너뜁니다 — doc_type 별 차등은 `by_doc_type` 으로 합니다.
-- 오기입(음수, 정수 자리의 true/false, 0~1 밖의 비율, 모르는 키, 모르는 `action`)은 **기동 시** 실패합니다.
+- 오기입(음수, 정수 자리의 true/false, 0~1 밖의 비율, 모르는 키·검사, 모르는 처리 값)은 **기동 시** 실패합니다.
+  `enable: false` 여도 검사합니다. 예전 키(`fail_on_any`·`fail_reasons`·`report_reasons`·`stutter_min_run`·`foreign_min_count`·
+  `min_chars` 등)를 적으면 새 위치를 알려 주며 실패합니다. 예: `chunking.validation.fail_on_any: 지원하지 않는 키임, chunking.validation.action: fail 로 지정 필요`
 - 오디오(`[AUDIO]`)·legacy 표(`[DA]`) 단일 청크는 검증하지 않습니다. 단 `char_stutter`·`foreign_script` 는 문서 유형과
   상관없이 적용하므로 이 청크도 판정합니다.
+
+### 판정 기준값
+
+운영 원천으로 오탐·미탐을 확인한 경우에만 바꿉니다. 아래가 기본값이며 `validation` 안이나 `by_doc_type.<유형>`
+안에 적습니다(항목 단위로 덮어씁니다). 검사를 켜고 끄는 것은 `checks` 가 하고, 이 값은 기준만 바꿉니다.
+오탐이 나면 먼저 그 검사를 `report` 로 낮추고, 기준값은 표본을 확인한 뒤 바꿉니다.
+
+```yaml
+    limits:
+      min_chars: {text: 4, row: 0, table: 0}   # 청크 종류별 내용 문자(글자·숫자) 하한. 0 이면 걸리지 않음
+      repetition: {count: 10, share: 0.5}      # 반복 횟수 하한 그리고 중복 점유율 하한
+      broken_chars: {count: 3, share: 0.3}     # 깨진 문자 수 하한 그리고 점유율 하한
+      char_stutter: {run: 3}                   # 같은 글자 반복 횟수(2 이상). 이런 덩어리가 2개 이상 붙으면 걸림
+      foreign_script: {count: 10}              # 다른 문자체계 글자 수 하한(1 이상). 한 낱말 안 혼합은 수와 무관하게 걸림
+```
+
+- `text` 는 문서·평문 청크, `row` 는 레코드(행) 청크, `table` 은 표가 든 청크입니다. 코드·수식 청크는 하한을 적용하지 않습니다.
+- `share` 는 0~1 비율, 나머지는 정수입니다.
 
 ### 판정 기준의 근거
 
@@ -580,8 +623,8 @@ EOF
 
 | 증상 | 원인 | 조치 |
 |---|---|---|
-| 청크가 하나로 뭉쳐 나온다 | `chunk_size: 0` 이거나 문서에 섹션 헤더가 없음 | `chunk_size` 확인. 헤더가 없으면 `resize_all` |
-| 청크가 너무 잘게 쪼개진다 | `split_only` + 섹션이 많은 문서 | `resize_all` 로 바꾸거나 `chunk_size` 를 키움 |
+| 청크가 하나로 뭉쳐 나온다 | `chunk_size: 0` 이거나 문서에 섹션 헤더가 없음 | `chunk_size` 확인. 헤더가 없으면 `section_merge` |
+| 청크가 너무 잘게 쪼개진다 | `section` + 섹션이 많은 문서 | `section_merge` 로 바꾸거나 `chunk_size` 를 키움 |
 | `chunk_size` 를 줬는데 1024 미만이 안 나온다 | docling 경로의 하한 보정 | 의도된 동작. 행 element 는 보정이 없습니다 |
 | 표가 본문에 섞인다 | `table_as_chunk: false` | `true` 로 |
 | 표 계층이 사라진다 | `table_format: markdown` + 병합 셀 | `html` 또는 `auto` |

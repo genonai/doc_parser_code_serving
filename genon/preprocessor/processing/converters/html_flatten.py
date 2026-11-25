@@ -15,8 +15,7 @@
 
   - `<span class="option-label" aria-hidden="true">` → "대중교통·택시·전기차 충전요금
     10% 결제일할인", "주유 10,000원 결제일할인" 등 **혜택 텍스트**. `aria-hidden` 은
-    접근성 속성일 뿐 화면에는 보이는 내용이고, 이건 custom_field_card.yaml 의
-    `benefit_text` 가 노리는 바로 그 데이터다.
+    접근성 속성일 뿐 화면에는 보이는 내용이고, 검색에 필요한 상품 혜택 본문이다.
   - `<div class="accordion-collapse" style="display:none">` → 부가서비스 변경 약관 본문.
 
 13페이지 monimo 카드로 분리 측정한 결과(docling BODY 텍스트):

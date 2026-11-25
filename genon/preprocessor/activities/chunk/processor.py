@@ -1,4 +1,4 @@
-# 청킹용 전처리기 — parse 단계 결과를 받아 chunk 로 나눈다.
+# 청킹 — 파싱 결과를 chunk 로 나눔
 # 수정가능: GenOSVectorMeta, GenosSmartChunker 상수, ROW_CATEGORIES, CONFIG_BY_DOC_TYPE,
 # hook 메소드(config_by_condition·edit_input·edit_chunk·edit_output).
 from typing import Optional
@@ -10,7 +10,7 @@ from genon.preprocessor.processing.core.errors import GenosServiceException  # n
 
 
 class GenOSVectorMeta(BaseModel):
-    """chunk 한 건 = vector DB 한 행. 선언하지 않은 키도 그대로 실린다."""
+    """chunk 한 건 = vector DB 한 행. 선언하지 않은 키도 그대로 실림."""
 
     class Config:
         extra = 'allow'
@@ -49,13 +49,13 @@ class GenosSmartChunker(sc.SmartChunkerBase):
 
 
 class DocumentProcessor(ChunkerCore):
-    """청킹 전용 전처리기. main.py 가 /chunker 요청을 이 클래스로 보낸다."""
+    """청킹 처리기. 처리 순서는 __call__ 참고."""
 
     IS_CHUNKER = True
     VECTOR_META = GenOSVectorMeta
     CHUNKER = GenosSmartChunker
 
-    # 나누지 않고 1건 = chunk 1개로 만드는 element category. 예: | {"my_row"}
+    # 나누지 않고 1건 = chunk 1개로 만드는 element category. 추가 예: ChunkerCore.ROW_CATEGORIES | {"my_row"}
     ROW_CATEGORIES = ChunkerCore.ROW_CATEGORIES
 
     async def __call__(self, request, file_path="", **kwargs):
@@ -71,7 +71,7 @@ class DocumentProcessor(ChunkerCore):
         return self.split_records(job)
 
     async def chunks_to_vector_metas(self, job, chunks, converted_pdf_path=None):
-        # 순서 유지: 마스킹은 정제보다 먼저, 반복문은 start_chunk_loop/finish_chunk_loop 로 감싼 채 둔다
+        # 순서 유지: 마스킹은 정제보다 먼저. 반복문은 start_chunk_loop/finish_chunk_loop 로 감싼 채 둠
         vector_metas = []
         for chunk in self.start_chunk_loop(job, chunks, converted_pdf_path):
             text = self.build_chunk_text(job, chunk)
@@ -84,28 +84,28 @@ class DocumentProcessor(ChunkerCore):
             vector_metas.append(self.chunk_to_vector_meta(job, chunk, text))
         return await self.finish_chunk_loop(job, vector_metas)
 
-    # doc_type 별 설정. 키는 config.yaml 경로(점 표기) 또는 요청 파라미터 이름.
-    # 우선순위: config.yaml < CONFIG_BY_DOC_TYPE < config_by_condition() < 요청 파라미터
+    # doc_type 별 설정. 키는 config.yaml 경로(점 표기) 또는 요청 파라미터 이름
+    # 우선순위(오른쪽이 우선): config.yaml < CONFIG_BY_DOC_TYPE < config_by_condition() < 요청 파라미터
     CONFIG_BY_DOC_TYPE = {
         # "faq":    {"chunking.chunk_size": 500},
-        # "manual": {"chunking.chunk_mode": "split_only", "chunking.chunk_size": 2000},
+        # "manual": {"chunking.chunk_mode": "section", "chunking.chunk_size": 2000},
     }
 
     def config_by_condition(self, job):
-        """표로 정할 수 없는 조건부 설정. 빈 dict 면 바꾸지 않는다.
+        """CONFIG_BY_DOC_TYPE 으로 정할 수 없는 조건부 설정. 형식은 같고, 빈 dict 면 변경 없음.
 
             if job.params.get("dept") == "INS":
                 return {"chunking.chunk_size": 800}
         """
         return {}
 
-    # hook 메소드. 요청 파라미터가 필요하면 **kwargs 로 받고, 외부 API 호출은 async def 로 쓴다.
+    # hook 메소드. 요청 파라미터는 **kwargs 로 받음. 외부 API 를 호출하면 async def 로 써도 됨
     def edit_input(self, kind, data, **kwargs):
-        """청킹 전 입력 수정. kind="parse" 면 list[dict], kind="docling" 이면 dict(본문은 data["texts"][i]["text"])."""
+        """청킹 전 입력 수정. kind="parse" 면 list[dict], kind="docling" 이면 dict(본문은 data["texts"][i]["text"]). 같은 타입으로 반환."""
         return data
 
     def edit_chunk(self, text, info, **kwargs):
-        """chunk 마다 불린다. str 이면 본문 교체, None 이면 그대로, tb.DROP 이면 제외.
+        """chunk 마다 호출. 반환값: str=본문 교체, None=그대로, tb.DROP=제외.
 
         info: kind("docling"|"row"|"text"), page, index, headings, metadata(읽기 전용),
               fields(넣은 값이 vector_meta 필드로 실림)
@@ -117,11 +117,11 @@ class DocumentProcessor(ChunkerCore):
         return None
 
     def edit_output(self, vector_metas, **kwargs):
-        """응답 직전 vector_meta 목록 수정. 개수나 본문을 바꿨으면 tb.refresh_stats(vector_metas) 를 부른다."""
+        """응답 직전 vector_meta 목록 수정. 개수나 본문을 바꿨으면 tb.refresh_stats(vector_metas) 호출(본문 수정·제외는 edit_chunk 권장)."""
         return vector_metas
 
 
-# 단독 실행(저장소 최상위에서). 입력은 parse 단계 결과 JSON 이다.
+# 단독 실행(저장소 최상위에서). 입력은 파싱 결과 JSON
 #   python -m genon.preprocessor.activities.chunk parsed.json --doc-type contract -o chunks.json
 if __name__ == "__main__":
     DocumentProcessor.cli()

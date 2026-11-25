@@ -15,9 +15,12 @@
 
 ## 레코드 경계
 
-물리 줄이 아니라 **인용 상태**가 경계를 정한다. 마지막 필드가 인용부호로 열렸는데 아직
-닫히지 않았으면 그 개행은 레코드 내부 개행이므로 다음 줄을 이어 붙인다. 이 판정이 없으면
-HTML 안의 개행마다 레코드가 끊겨 본문이 조각난다.
+**다음 레코드의 첫 줄**이 경계를 정한다. 구분자가 필드 수만큼 든 줄이 새 레코드의
+시작이고, 그 밖의 줄은 마지막 필드 안의 개행으로 보고 직전 레코드에 이어 붙인다.
+
+인용부호 개수로는 경계를 정하지 않는다. 본문 안 따옴표를 `""` 로 적지 않은 원천이 있어,
+본문의 인용부호 한 개에서 레코드가 끝난 것으로 판정되어 뒷부분이 버려졌다(#782).
+대신 본문 한 줄에 구분자가 필드 수만큼 들어 있으면 그 줄에서 레코드가 갈린다.
 
 파일을 통째로 메모리에 올리지 않고 줄 단위로 흘린다 — 원천이 수백 MB 다.
 
@@ -27,7 +30,6 @@ docling 타입에 의존하지 않는다(텍스트 처리만 한다).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -130,55 +132,44 @@ def iter_records(path: str, spec: DelimitedSpec) -> Iterator[dict[str, str]]:
     붙이고 다시 쪼개면 레코드 길이의 제곱에 비례하는 비용이 든다 — 본문이 수백 줄인
     원천에서는 그 차이가 크다(실측: 200MB·32,787건 기준 167초 → 1.5초).
 
-    인용이 닫혔는지는 **누적 따옴표 패리티**로 본다. 인용부호 2개는 이스케이프라 패리티를
-    바꾸지 않으므로, 줄 경계를 넘는 `""` 도 따로 다루지 않아도 맞는다.
+    레코드는 다음 레코드의 첫 줄을 만나거나 파일이 끝날 때 내보낸다. 끝에 붙은 빈 줄은
+    레코드 사이의 빈 줄이므로 버린다 — 남기면 닫는 인용부호 뒤에 개행이 붙어 `_unquote` 가
+    인용부호를 떼지 못한다.
     """
     limit = len(spec.columns) - 1
-    quote = spec.quote
     head: list[str] | None = None      # 첫 줄에서 확정한 앞 필드들
     chunks: list[str] = []             # 마지막 필드에 이어 붙일 조각들
-    open_quote = False
     skipped = not spec.skip_header
+
+    def finish(head: list[str]) -> dict[str, str] | None:
+        nonlocal skipped
+        while len(chunks) > 1 and not chunks[-1].strip():
+            chunks.pop()
+        if not skipped:
+            skipped = True                         # 헤더 행 1건만 버린다
+            return None
+        return _to_record([*head, "\n".join(chunks)], spec)
 
     with _open_text(path, spec.encoding) as handle:
         for line in handle:
             line = line.rstrip("\r\n")
+            parts = line.split(spec.separator, limit)
 
-            if head is None:                       # 새 레코드의 첫 줄
-                parts = line.split(spec.separator, limit)
-                if len(parts) <= limit:
-                    # 구분자가 모자란 줄. 앞 레코드가 닫힌 뒤라 이어 붙일 곳이 없다.
-                    if line.strip():
-                        _log.warning(
-                            f"[delimited] 필드가 모자란 줄 건너뜀: "
-                            f"필드={len(parts)}/{len(spec.columns)} 줄={line[:80]!r}"
-                        )
-                    continue
-                head, body = parts[:-1], parts[-1]
-                chunks = [body]
-                # 여는 따옴표까지 세므로, 아직 닫히지 않았으면 개수가 **홀수**다.
-                open_quote = body.startswith(quote) and body.count(quote) % 2 == 1
-            else:                                  # 인용 안 개행 — 이어지는 줄
+            if len(parts) > limit:                 # 새 레코드의 첫 줄
+                if head is not None and (record := finish(head)) is not None:
+                    yield record
+                head, chunks = parts[:-1], [parts[-1]]
+            elif head is not None:                 # 마지막 필드 안의 개행 — 이어지는 줄
                 chunks.append(line)
-                if line.count(quote) % 2:
-                    open_quote = not open_quote
+            elif line.strip():
+                # 첫 레코드 앞의 구분자가 모자란 줄. 이어 붙일 레코드가 없다.
+                _log.warning(
+                    f"[delimited] 필드가 모자란 줄 건너뜀: "
+                    f"필드={len(parts)}/{len(spec.columns)} 줄={line[:80]!r}"
+                )
 
-            if open_quote:
-                continue                           # 아직 닫히지 않았다
-
-            if skipped:
-                yield _to_record([*head, "\n".join(chunks)], spec)
-            else:
-                skipped = True                     # 헤더 행 1건만 버린다
-            head = None
-            chunks = []
-
-    if head is not None:
-        # 인용이 끝내 닫히지 않은 채 파일이 끝났다. 모은 만큼은 레코드로 낸다 —
-        # 버리면 마지막 건이 조용히 사라진다.
-        _log.warning(f"[delimited] {os.path.basename(path)}: 마지막 레코드의 따옴표({quote})가 닫히지 않은 채 파일이 끝남")
-        _log.warning(f"파일 끝까지 {len(chunks)}줄을 마지막 레코드의 {spec.columns[-1]} 값으로 넣음")
-        yield _to_record([*head, "\n".join(chunks)], spec)
+    if head is not None and (record := finish(head)) is not None:
+        yield record
 
 
 def read_records(path: str, spec: DelimitedSpec) -> list[dict[str, str]]:

@@ -12,16 +12,9 @@
 #  ① 이 파일을 parse activity 설정 폴더(config.yaml 이 있는 폴더)에 custom_field_<유형>.yaml 로
 #     복사한다.
 #  ② <...> 를 채우고 쓰지 않는 [선택] 블록은 지운다. `schema: v2` 줄은 지우지 않는다(없으면 기동 실패).
-#  ③ 아래 두 방법 중 하나로 등록한다. 같은 유형을 두 방법으로 함께 등록하면 기동이 실패한다.
-#     · 이 파일 최상위에 `doc_type: <유형>` 한 줄을 적는다(Studio 의 문서유형 추가도 이 방식이다).
-#       같은 설정 폴더를 읽는 모든 처리기에 등록된다.
-#     · 같은 폴더의 처리기 설정(config.yaml, HTTP 서비스는 parse_config_simple.yaml 등)의
-#       enrichment 목록에 등록 블록을 넣는다.
-#         - custom_fields:
-#             enable: true
-#             doc_type: <유형>                       # 요청 params 의 doc_type 과 같은 값
-#             config_file: custom_field_<유형>.yaml   # 파일명만 적는다(같은 폴더 기준)
-#     extractor 는 적지 않는다(source.kind 로 정해진다).
+#  ③ 이 파일 최상위에 `doc_type: <유형>` 한 줄을 적는다. 이 한 줄이 등록이고 파일을 지우면 빠진다
+#     (Studio 의 문서유형 추가도 이 방식이다). 같은 설정 폴더를 읽는 모든 처리기에 등록되며,
+#     처리기 설정(config.yaml 등)에는 아무것도 적지 않는다. extractor 도 적지 않는다(source.kind 로 정해진다).
 #
 #  ── 작성 요점 ────────────────────────────────────────────────────────────
 #  사람이 정하는 것은 `fields`(모든 청크에 넣을 공통 정보), `source.sections`(key 별 표시 이름),
@@ -103,6 +96,7 @@ fields:
 #   regex_extract  pattern, group=1, on_error=null   정규식 추출. 일치하지 않으면 on_error
 #   to_int         on_error=null                     "18,000원" → 18000. 소수이거나 숫자가 둘 이상이면 on_error
 #   percent                                          "분자/분모" → 백분율 정수(내림). "10600/25000" → 42
+#   unique                                           목록에서 같은 값을 지움(처음 나온 순서 유지). 목록이 아니면 그대로
 #   hash           length=16, prefix=""              해시코드로 변환(SHA-1)
 #   truncate       length, suffix=""                 길이 자르기
 #   to_json        on_scalar=wrap|drop, key="value"  JSON 컬럼용 문자열. 단일 값은 wrap(기본)이면 {key: 값},

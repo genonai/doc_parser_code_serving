@@ -1,6 +1,7 @@
 # term(금융용어사전) custom_fields
 
 schema: v2
+doc_type: term
 source:
   kind: rows
 fields:

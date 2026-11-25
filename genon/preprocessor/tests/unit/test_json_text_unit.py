@@ -210,7 +210,7 @@ def test_missing_policy_error_raises():
 def test_monimo_sample_preserves_benefit_text(sample_dir):
     """픽스처의 aria-hidden/display:none 안 본문이 병합 결과에 남아야 한다.
 
-    이게 깨지면 custom_field_card.yaml 의 benefit_text 추출이 조용히 열화된다.
+    이게 깨지면 상품 혜택 본문이 chunk 에서 빠진다.
     """
     path = sample_dir / "json" / "monimo_card_sample.json"
     payload = json.loads(path.read_text(encoding="utf-8"))

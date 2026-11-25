@@ -11,20 +11,13 @@
 #  ① 이 파일을 parse activity 설정 폴더(config.yaml 이 있는 폴더)에 custom_field_<유형>.yaml 로
 #     복사한다.
 #  ② <...> 를 채우고 쓰지 않는 [선택] 블록은 지운다. `schema: v2` 줄은 지우지 않는다(없으면 기동 실패).
-#  ③ 아래 두 방법 중 하나로 등록한다. 같은 유형을 두 방법으로 함께 등록하면 기동이 실패한다.
-#     · 이 파일 최상위에 `doc_type: <유형>` 한 줄을 적는다(Studio 의 문서유형 추가도 이 방식이다).
-#       같은 설정 폴더를 읽는 모든 처리기에 등록된다.
-#     · 같은 폴더의 처리기 설정(config.yaml, HTTP 서비스는 parse_config_simple.yaml 등)의
-#       enrichment 목록에 등록 블록을 넣는다.
-#         - custom_fields:
-#             enable: true
-#             doc_type: <유형>                       # 요청 params 의 doc_type 과 같은 값
-#             config_file: custom_field_<유형>.yaml   # 파일명만 적는다(같은 폴더 기준)
-#     extractor 는 적지 않는다(source.kind 로 정해진다).
+#  ③ 이 파일 최상위에 `doc_type: <유형>` 한 줄을 적는다. 이 한 줄이 등록이고 파일을 지우면 빠진다
+#     (Studio 의 문서유형 추가도 이 방식이다). 같은 설정 폴더를 읽는 모든 처리기에 등록되며,
+#     처리기 설정(config.yaml 등)에는 아무것도 적지 않는다. extractor 도 적지 않는다(source.kind 로 정해진다).
 #
 #  ── 주의 사항 ────────────────────────────────────────────────────────────
 #  · 한 파일에 성격이 다른 배열이 여럿이면(예: `faqList` 와 `noticeList`) 이 설정을 배열마다 하나씩
-#    만들어 각각 등록 블록으로 같은 doc_type 에 등록하고, `records_at` 에 서로 다른 배열을 적는다.
+#    만들어 각각 최상위에 같은 `doc_type:` 을 적고, `records_at` 에 서로 다른 배열을 적는다.
 # ═══════════════════════════════════════════════════════════════════════════
 
 schema: v2
@@ -105,6 +98,7 @@ fields:
 #   values    : 값의 표기를 표준값으로 통일한다. 형식은 `표준값: [별칭…]` 이며 표준값 자신도 별칭이다.
 #               대소문자·공백·`_-./`·전각/반각 차이는 무시하고 비교한다. 목록에 없는 값은 원래 값을
 #               두고 경고만 남긴다. 영문 yes/no/on/off 별칭은 따옴표로 감싼다(YAML 이 true/false 로 읽는다).
+#   keep      : 목록 값에서 적은 값만 남긴다(`keep: [A01, B02]`). 남은 값이 없으면 그 레코드는 적재하지 않는다. 비워 두면 전부 적재한다.
 #   transform : 값 변환. 아래 [변환기] 참고.
 #   template  : 여러 필드를 합쳐 새 필드를 만든다(`"{{L1}} > {{L2}}"`).
 #   pack      : 여러 필드를 JSON 객체 문자열 하나로 묶는다(`[A, B]` → `{"A": ..., "B": ...}`).
@@ -125,6 +119,7 @@ fields:
 #   regex_extract  pattern, group=1, on_error=null   정규식 추출. 일치하지 않으면 on_error
 #   to_int         on_error=null                     "18,000원" → 18000. 소수이거나 숫자가 둘 이상이면 on_error
 #   percent                                          "분자/분모" → 백분율 정수(내림). "10600/25000" → 42
+#   unique                                           목록에서 같은 값을 지움(처음 나온 순서 유지). 목록이 아니면 그대로
 #   hash           length=16, prefix=""              해시코드로 변환(SHA-1)
 #   truncate       length, suffix=""                 길이 자르기
 #   to_json        on_scalar=wrap|drop, key="value"  JSON 컬럼용 문자열. 단일 값은 wrap(기본)이면 {key: 값},
@@ -132,7 +127,7 @@ fields:
 #                                                    쓸 수 없다
 #
 # ── [참고] 값 적용 순서 ──────────────────────────────────────────────────────
-#   처리 순서: alias·collect·$file 매핑 → merge_rows → default → const → values → transform → template
+#   처리 순서: alias·collect·$file 매핑 → merge_rows → default → const → values → keep → transform → template
 #   → filter → require → seq → llm → pack
 
 # ── [선택] 값이 반드시 있어야 하는 필드(require) ────────────────────────────
@@ -171,6 +166,7 @@ body:
 #     in:  [<TARGET_FIELD_1>]               # 프롬프트 {{raw_text}} 에 넣을 필드
 #     concurrency: 4                        # 동시 호출 상한(기본 4)
 #     on_error: null                        # null(이 필드만 null 로 두고 진행) | skip_record(그 레코드를 제외)
+#                                           # parse 설정 defaults.llm_call_failure: fail 이면 적용 안 함(LLM 호출 실패에서 중단)
 #     parser: {type: json}
 #
 #     # 접속 정보는 model_presets.yaml 의 이름을 사용한다.

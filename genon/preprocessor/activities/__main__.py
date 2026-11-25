@@ -8,6 +8,7 @@
     python -m genon.preprocessor.activities doc-types validate --name <doc_type> [--activity parse]
     python -m genon.preprocessor.activities doc-types add --name <doc_type> --from <있는 doc_type> --activity <parse slug> [--title <설명>]
     python -m genon.preprocessor.activities doc-types remove --name <doc_type> --activity <parse slug>
+    python -m genon.preprocessor.activities doc-types rename --name <doc_type> --to <새 doc_type> --activity <parse slug>
 
     parse  <file> = 원본 문서        → 파싱 결과 JSON(-o, 기본 ./<파일명>.<slug>.json)
     chunk  <file> = 파싱 결과 JSON   → 청크 배열 JSON
@@ -37,11 +38,12 @@ config.yaml 이 처음 들어온 커밋)을 찾아, 그때의 원형 폴더와 �
 changed, added, removed, unchanged}.
 
 `doc-types` (#712, Studio 의 doc_type 추가): parse 액티비티 폴더의 doc_type 등록을 읽고(`list`·`validate`) 더하거나(`add`)
-뺀다(`remove`, #739). 등록은 규칙 파일(`custom_field_<doc_type>.yaml`) 최상위의 `doc_type:` 과 `config.yaml` 의 등록 블록
-(`- custom_fields:`) 두 곳에 있다(#748). 본체는 `_doc_types.py`. `add` 는 규칙 파일 하나만 만든다 — `config.yaml` 을
-고치지 않으므로 원형 `parse` 에도 쓴다. `data.files` = [규칙 파일](저장소 루트 기준). 거부 사유는
-`error.detail.reason` 에 싣는다(`DocTypeError`). `list` 항목의 `registered_in`·`removable`·`copyable` 은
-등록 위치와 `remove`·`add --from` 이 거부하지 않는지다(#756). `validate` 는 검사 결과가 실패여도 `ok: true` · `data.valid: false`.
+뺀다(`remove`, #739). 등록은 규칙 파일(`custom_field_<doc_type>.yaml`) 최상위의 `doc_type:` 한 가지다(#748·#798).
+본체는 `_doc_types.py`. `add` 는 규칙 파일 하나를 만들고 `remove` 는 그 파일을 지운다 — `config.yaml` 을 고치지
+않으므로 원형 `parse` 에도 쓴다. `rename`(#808)은 등록한 규칙 파일의 `doc_type:` 값을 그 자리에서 바꾸고 관례 이름
+파일만 새 이름으로 옮긴다. `data.files` = [바뀐 규칙 파일](저장소 루트 기준, 옮긴 파일은 옮기기 전·뒤 경로 둘 다). 거부 사유는
+`error.detail.reason` 에 싣는다(`DocTypeError`). `list` 항목의 `removable`·`copyable` 은 `remove`·`add --from` 이
+거부하지 않는지다(#756). `enable`·`registered_in` 은 늘 true·`rule_file` 이다. `validate` 는 검사 결과가 실패여도 `ok: true` · `data.valid: false`.
 결과 줄의 `stage` 는 null 이다(pipeline 의 같은 이름 명령과 맞춘다).
 """
 from __future__ import annotations
@@ -93,7 +95,7 @@ def _parser() -> argparse.ArgumentParser:
     diff = sub.add_parser("diff", help="사본 slug 가 복사된 뒤 원형이 바뀐 것을 보여 준다")
     diff.add_argument("slug", help="사본 slug(= activities/<slug>/ 폴더 이름)")
     diff.add_argument("--from", dest="origin", help="원형 slug(기본: 단계 원형 parse·chunk)")
-    doc_types = sub.add_parser("doc-types", help="parse 액티비티의 doc_type 등록을 보고·검사하고·추가한다")
+    doc_types = sub.add_parser("doc-types", help="parse 액티비티의 doc_type 등록을 보고·검사하고·추가·삭제·이름 변경한다")
     action = doc_types.add_subparsers(dest="action", required=True, parser_class=_Parser)
     listing = action.add_parser("list", help="등록된 doc_type 과 규칙 파일")
     listing.add_argument("--activity", default="parse", help="parse 액티비티 slug(기본 parse)")
@@ -108,6 +110,10 @@ def _parser() -> argparse.ArgumentParser:
     dt_remove = action.add_parser("remove", help="parse activity 에서 doc_type 등록을 뺀다(규칙 파일로 등록했으면 그 파일을, config.yaml 에 등록했으면 그 블록을 지운다)")
     dt_remove.add_argument("--name", required=True, help="뺄 doc_type")
     dt_remove.add_argument("--activity", required=True, help="parse activity 이름. 기본 activity parse 의 config.yaml 에 등록된 doc_type 은 거부")
+    dt_rename = action.add_parser("rename", help="등록된 doc_type 의 이름을 규칙 파일에서 그 자리에서 바꾼다(새 규칙 파일을 만들지 않는다)")
+    dt_rename.add_argument("--name", required=True, help="바꿀 doc_type")
+    dt_rename.add_argument("--to", required=True, help="새 doc_type 이름(소문자로 시작, 소문자·숫자·_)")
+    dt_rename.add_argument("--activity", required=True, help="parse activity 이름(parse 또는 parse_xxx)")
     return p
 
 
@@ -246,7 +252,7 @@ def diff_origin(slug: str, origin: str | None = None, activities_dir: Path | Non
 
 
 def doc_types_command(args) -> dict:
-    """`doc-types list | validate | add | remove` → 결과 줄의 data. 거부는 `DocTypeError`(사유 = `detail.reason`)."""
+    """`doc-types list | validate | add | remove | rename` → 결과 줄의 data. 거부는 `DocTypeError`(사유 = `detail.reason`)."""
     from genon.preprocessor.activities import _doc_types, _folders
 
     if args.action == "list":
@@ -255,6 +261,9 @@ def doc_types_command(args) -> dict:
         return _doc_types.validate_doc_type(args.name, args.activity)
     if args.action == "remove":
         data, files = _doc_types.remove_doc_type(args.name, args.activity)
+        return {**data, "files": _repo_relative(_folders.ACTIVITIES_DIR, files)}
+    if args.action == "rename":
+        data, files = _doc_types.rename_doc_type(args.name, args.to, args.activity)
         return {**data, "files": _repo_relative(_folders.ACTIVITIES_DIR, files)}
     if args.title is not None and ("\n" in args.title or "\r" in args.title):
         raise _UsageError("--title 은 한 줄만 허용(규칙 파일 첫 줄 주석)")

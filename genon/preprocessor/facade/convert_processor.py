@@ -1,6 +1,7 @@
 # 변환용 전처리기 v.2.2.5.2 (2026-10-29 Release)
 from __future__ import annotations
 
+import functools
 import json
 import os
 import logging
@@ -47,7 +48,8 @@ _normalize_filename_title = hp.normalize_filename_title
 _parse_optional_bool = cp.parse_optional_bool
 _parse_optional_float = cp.parse_optional_float
 _parse_optional_int = cp.parse_optional_int
-_resolve_chunk_mode = cp.resolve_chunk_mode
+# 이 처리기는 chunk_mode=character 를 지원하지 않는다(경고 후 section).
+_resolve_chunk_mode = functools.partial(cp.resolve_chunk_mode, allow_character=False)
 _resolve_include_chunk_header = cp.resolve_include_chunk_header
 _union_paths = hp.union_paths
 _warn_unresolved_placeholders = cp.warn_unresolved_placeholders
@@ -185,7 +187,7 @@ _CHUNK_PATH_SEP = " | "
 
 
 # 다경로 청크에서 나열할 리프 최대 개수. 초과분은 "… 외 N개" 로 접는다.
-# resize_all 로 수십 개 섹션이 한 청크에 뭉치면 경로를 전부 나열한 헤더가 노이즈가 된다
+# section_merge 로 수십 개 섹션이 한 청크에 뭉치면 경로를 전부 나열한 헤더가 노이즈가 된다
 # (실측: hwp 71경로 → 헤더 3,239자, 청크가 chunk_size 를 30% 초과).
 _CHUNK_PATH_MAX_LEAVES = 5
 
@@ -379,11 +381,8 @@ class DocumentProcessor(DoclingRuntimeBase):
         # 청크 최대 크기(GenosSmartChunker.max_tokens) 기본값. kwargs 의 chunk_size 가 우선.
         self._chunk_size = _parse_optional_int(chunking_cfg.get("chunk_size"), "chunking.chunk_size")
 
-        # 청킹 모드: "split_only"(기본, chunk_size 초과 청크만 분할) | "resize_all"(모든 청크를 chunk_size 에 맞게 병합/분할)
-        self._chunk_mode = str(chunking_cfg.get("chunk_mode", "split_only")).strip().lower()
-        if self._chunk_mode not in {"split_only", "resize_all"}:
-            _log.warning(f"[DocumentProcessor] Unknown chunking.chunk_mode '{self._chunk_mode}', fallback to 'split_only'.")
-            self._chunk_mode = "split_only"
+        # 청킹 방식: "section"(기본, chunk_size 초과 섹션만 분할) | "section_merge"(섹션을 chunk_size 에 맞게 병합/분할)
+        self._chunk_mode = _resolve_chunk_mode({}, chunking_cfg.get("chunk_mode", "section"))
 
         # 청크 선두 "HEADER: <섹션 경로>" 라인 부착 여부(기본 True). kwargs 의 include_chunk_header 가 우선.
         _ich = _parse_optional_bool(chunking_cfg.get("include_chunk_header"), "chunking.include_chunk_header")
@@ -635,8 +634,8 @@ class DocumentProcessor(DoclingRuntimeBase):
         if chunk_size is None:
             chunk_size = self._chunk_size
         chunk_size = _clamp_chunk_size(chunk_size)
-        # chunk_mode 우선순위: kwargs > yaml(chunking.chunk_mode) > "split_only"
-        # chunk_mode(0/1 또는 'split_only'/'resize_all') > yaml > "split_only"
+        # chunk_mode 우선순위: kwargs > yaml(chunking.chunk_mode) > "section"
+        # chunk_mode(0/1 또는 'section'/'section_merge') > yaml > "section"
         chunk_mode = _resolve_chunk_mode(kwargs, self._chunk_mode)
         chunker: GenosSmartChunker = GenosSmartChunker(
             max_tokens = chunk_size if chunk_size is not None else 0,
@@ -1204,7 +1203,7 @@ class DocumentProcessor(DoclingRuntimeBase):
             document = await self.enrich_custom_fields(document, **enrichment_kwargs)
         except Exception as exc:
             _log.warning(f"[DocumentProcessor] custom_fields enrichment skipped: {exc}")
-        # doc_type 스탬프(예: card): 요청 kwargs 로 doc_type 이 오면 문서 메타에 저장 → compose_vectors 가
+        # doc_type 스탬프(예: product_slf): 요청 kwargs 로 doc_type 이 오면 문서 메타에 저장 → compose_vectors 가
         # 모든 청크에 broadcast(+ context metadata 노출). (faq 는 xlsx tabular 경로에서 별도 처리)
         doc_type = normalize_doc_type(kwargs.get("doc_type"))
         if doc_type:

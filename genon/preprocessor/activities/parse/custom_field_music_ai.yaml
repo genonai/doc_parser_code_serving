@@ -5,21 +5,20 @@ doc_type: music_ai
 source:
   kind: records
   records_at: playList
-  on_missing: error
 fields:
   BIZ_ID:
-    template: "{{TXT}}"
+    template: "{{THEME_NM}}"
     transform: {name: hash, prefix: MUSIC_AI_, length: 16}
   GROUP_C:
     const: IFP
-  TXT:
+  THEME_NM:
     alias: [text]
     transform: to_text
-  LAND_TYPE:
+  LANDING_TYPE_C:
     alias: [landingType]
     default: null
 require:
-  fields: [TXT]
+  fields: [THEME_NM]
 body:
-  fields: [TXT]
+  fields: [THEME_NM]
   split: true

@@ -1,149 +1,124 @@
-# 청킹 전용 전처리기(/chunker) 설정 — GenOS Temporal 파이프라인의 chunk activity 가 읽는다.
+# 청킹 activity 설정. 파싱 결과(docling 문서 JSON)를 chunk 로 나눔.
+# 파일 읽기·OCR·layout·LLM 보강은 parse activity 담당이라 ocr·layout·pdf_pipeline·enrichment 항목이 없음.
+# 적지 않은 값은 코드 기본값 사용.
 #
-# 이 activity(activities/chunk/processor.py)는 파싱 결과(docling 문서 JSON)를 받아 chunk 로 나누기만 한다.
-# 파일 읽기·OCR·layout 분석·enrichment(그림 설명 등 덧붙이기)는 앞 단계인 parse activity 에서
-# 끝났으므로 여기서는 하지 않는다. 그래서 ocr/layout/pdf_pipeline/enrichment 섹션은 두지 않고,
-# 없는 값은 코드 기본값을 쓴다.
-#
-# 전처리 Studio 는 옵션 이름 옆 툴팁으로 그 키의 같은 줄 주석과 바로 위에 붙은 주석 줄을 보여 준다
-# (빈 줄이나 다른 키를 만나면 끝난다). 그래서 키 바로 위에는 툴팁용 짧은 설명
-# (무엇을 정하는지 · 값과 기본값 · 바꾸면 무엇이 달라지는지)만 두고, 긴 설명은 빈 줄로 떼어 그 위에 둔다.
+# 주석 규칙: 항목 오른쪽 주석과 항목 바로 위(빈 줄 전까지)의 주석이 전처리 Studio 도움말로 표시됨.
+# 긴 설명은 빈 줄로 떼어 그 위에 둠.
 
+# 실행 공통 설정
 defaults:
-  # 실행 로그를 얼마나 자세히 남길지. 5=DEBUG 4=INFO(기본) 3=WARNING 2=ERROR 1=CRITICAL 0=끄기. 클수록 로그가 많다
+  # 로그 상세도. 5=DEBUG 4=INFO(기본) 3=WARNING 2=ERROR 1=CRITICAL 0=끄기
   log_level: 4
 
-# 청킹(GenosSmartChunker) 설정
+# chunk 를 나누는 방법
 chunking:
-  # chunk_size 는 docling 문서(PDF·DOCX·HTML 등)에서는 GenosSmartChunker 의 max_tokens 로, 그 밖의 텍스트
-  # 입력(parse-format — 아래 recursive 참조)에서는 글자 단위 splitter 의 크기로 쓰인다.
-  # docling 문서: 0 이면 나누지 않고, 0 보다 크고 min_chunk_size 보다 작으면 min_chunk_size 로 올린다.
-  # parse-format: 0 이나 음수면 사실상 나누지 않는다(1000000). 크기는 항상 글자 수다.
-  # chunk_size·chunk_mode·table_as_chunk·include_chunk_header 는 요청 파라미터로 온 값이 아래 값보다 우선한다.
+  # chunk_size·chunk_mode·table_as_chunk·include_chunk_header 는 요청 파라미터 값이 우선.
+  # docling 문서(PDF·DOCX·HTML 등)가 아닌 일반 텍스트 입력은 아래 recursive 설정으로 나누며,
+  # 이때 chunk_size 는 항상 글자 수(0 이하=나누지 않음).
 
-  # chunk 하나의 최대 크기. 단위는 글자 수(tokenizer_type 이 huggingface 면 토큰 수). 0=나누지 않음.
-  # 줄이면 chunk 가 짧아지고 개수가 늘어난다
+  # chunk 최대 크기. 글자 수(tokenizer_type 이 huggingface 면 token 수). 0=나누지 않음.
+  # 0 보다 크고 min_chunk_size 보다 작으면 min_chunk_size 로 올림
   chunk_size: 1500
-  # chunk 를 만드는 방식. split_only(기본)=문서 구조(제N조 등 섹션) 단위를 유지하고 chunk_size 를 넘는 것만 나눔
-  # | resize_all=작은 섹션은 합치고 큰 섹션은 나눠 모든 chunk 를 chunk_size 에 맞춤
-  # chunk_mode: split_only
-  # 표를 본문과 섞지 않고 따로 chunk 로 만들지. true(기본)=표만 담은 chunk(섹션 제목·캡션·표 설명 포함,
-  # 큰 표는 행 단위로 나누고 나뉜 chunk 마다 헤더 행 반복) | false=표를 앞뒤 본문과 한 chunk 로
+  # 나누는 방식. 바꾸면 chunk 경계가 바뀌어 문서 재적재 필요
+  #   section(기본)=섹션 단위, 큰 섹션만 다시 나눔(제목만 있는 chunk 는 이웃과 합침) | section_merge=섹션을 chunk_size 까지 이어 붙이고 큰 섹션은 나눔
+  #   character=섹션 무시, 본문을 chunk_size 글자씩 자름(HEADER 줄 없음)
+  # chunk_mode: section
+
+  # 표를 별도 chunk 로 만들지. chunk_mode 가 character 이면 미사용
+  #   true(기본): 표만 담은 chunk(섹션 제목·캡션·표 설명 포함). 큰 표는 행 단위로 나누고 chunk 마다 헤더 행 반복
+  #   false: 표를 앞뒤 본문과 같은 chunk 에 넣음
   table_as_chunk: false
-  # chunk 맨 앞에 "HEADER: <섹션 경로>" 줄을 붙일지. true(기본) | false=본문만.
-  # 끄면 검색 때 섹션 문맥이 사라지므로 신중히 바꾼다
+  # chunk 맨 앞에 "HEADER: <섹션 경로>" 줄 추가. true(기본) | false=본문만.
+  # 끄면 검색 시 섹션 문맥이 빠짐. chunk_mode 가 character 이면 true 여도 붙이지 않음
   # include_chunk_header: true
-  # chunk 텍스트 정리(검색용). safe 로 켜면 검색 매칭을 방해하는 문자만 지운다. 같은 입력이면 늘 같은 결과다.
-  #   - 자모가 분리된 한글(NFD) 복원, BOM·폭 없는 문자·제어 문자 제거
-  #   - NBSP 등 특수 공백을 일반 공백으로, 줄바꿈을 LF 로 통일
-  #   - 전각 영숫자를 반각으로, 따옴표·대시 모양 통일
-  #   - 줄 끝 공백 제거, 빈 줄은 연속 1개까지, 내용 없는 chunk 제거
-  # 표·코드 블록의 구조와 원문 뜻은 건드리지 않는다(문장을 고쳐 쓰거나 공백을 합치지 않는다).
-  # 우선순위: 요청 파라미터 text_cleanup > 아래 값 > off.
+
+  # 검색에 방해되는 글자 정리(문장 내용은 바꾸지 않음). 우선순위: 요청 파라미터 text_cleanup > 이 파일 값 > off
   text_cleanup:
-    # chunk 글자 정리. off(기본)=안 함 | safe=깨진 한글·보이지 않는 문자·특수 공백 등 검색을 방해하는 문자만
-    # 정리(문장은 바꾸지 않음). 아래 rules 는 safe 일 때만 동작한다. 켜면 chunk 본문이 바뀐다
+    # safe 정리 대상(표·코드 블록 구조는 유지):
+    #   - 분리된 한글 자모 복원, BOM·폭 없는 문자·제어 문자 제거
+    #   - NBSP 등 특수 공백은 일반 공백으로, 줄바꿈은 LF 로 통일
+    #   - 전각 영숫자는 반각으로, 따옴표·대시 모양 통일
+    #   - 줄 끝 공백 제거, 연속 빈 줄은 1개로, 내용 없는 chunk 제거
+
+    # 정리 방식. off(기본)=정리 안 함 | safe=위 목록 정리. 켜면 chunk 본문이 바뀜
     mode: safe
+    # 추가 정규식 규칙. mode 가 safe 일 때만, 적은 순서대로 적용
     rules:
-      # 장식용 글머리표: 줄 맨 앞의 글머리표만 지운다(들여쓰기는 남긴다). 대상은 • 와
-      # 도형(U+25A0-25FF ■○◇▣▶ 등)·기타 기호(U+2600-26FF ☞ 등)이고, 뒤에 공백과 글자가
-      # 이어질 때만 지운다(• • 처럼 띄어 쓴 연속 글머리표는 한꺼번에 지운다).
-      # 체크(□☐☑☒)·증감(△▲▽▼)·평점(★☆)·성별(♀♂)·전화(☎☏) 기호와 ※ 는 뜻이 있으므로
-      # 남긴다. ❏ 는 실제 문서에서 표 칸의 체크박스(❏ True)로 쓰이므로 대상에서 뺐다.
-      # 글 중간의 기호(○○○님, | ○ |)는 건드리지 않는다.
+      # 줄 맨 앞의 장식용 글머리표 제거(들여쓰기 유지). 대상: •, 도형 기호(■○◇▣▶ 등), 기타 기호(☞ 등). 뒤에 공백과 글자가 올 때만.
+      # 뜻이 있는 기호(□☐☑☒ △▲▽▼ ★☆ ♀♂ ☎☏ ※ ❏)와 글 중간의 기호(○○○님)는 유지
       - {find: "(?m)^([ \\t]*)(?:(?![□☐☑☒△▲▽▼★☆♀♂☎☏])[\\u2022\\u25A0-\\u25FF\\u2600-\\u26FF]\\uFE0F?[ \\t]*)+(?<=[ \\t])(?=[^\\W_])", replace: "\\1"}
-  #
-  # 특정 사이트 문서에만 있는 불필요한 글자는 위 safe 정리로 지워지지 않는다. 아래처럼 블록으로
-  # 쓰면 정규식 규칙을 줄 수 있다(기본은 규칙 없음 — 적지 않으면 결과가 바뀌지 않는다).
-  #
+
+  # 규칙 작성 예:
   #   text_cleanup:
   #     mode: safe
   #     rules:                                        # 적은 순서대로 적용
-  #       - {line: "^\\s*목차\\s*$"}                   # 매칭되는 줄을 지운다
-  #       - {find: "\\[이미지[^\\]]*\\]", replace: ""}  # 부분 치환(replace 생략 시 삭제)
-  #       - {chunk: "^본 문서는 참고용"}                # chunk 를 통째로 버린다
+  #       - {line: "^\\s*목차\\s*$"}                   # 맞는 줄 삭제
+  #       - {find: "\\[이미지[^\\]]*\\]", replace: ""}  # 맞는 부분 치환(replace 생략 시 삭제)
+  #       - {chunk: "^본 문서는 참고용"}                # 맞는 chunk 를 통째로 버림
   #
-  # 규칙은 mode 가 safe 일 때만 적용된다.
-  # line/find 는 **청킹 전 입력**에 적용된다 — 그래야 지운 결과가 chunk 경계와 n_char 에 반영된다.
-  # chunk 는 분할 직후, HEADER 를 붙이기 전의 chunk 본문으로 판단하며 레코드(행) chunk 에는 적용하지 않는다.
-  # 코드 블록(``` 펜스·인라인 백틱)에는 규칙을 적용하지 않는다 — 예제 코드가 망가지지 않게 하려는 것이다.
-  # 마크다운 표 행을 건너뛰는 것은 `line` 뿐이다. `find` 는 표 안에서도 바꾸므로
-  # `- {find: "\\|"}` 같은 규칙은 표를 통째로 깨뜨린다. 표 칸의 글자를 지울 때만 쓴다.
-  # 잘못된 정규식이나 모르는 키는 요청 때가 아니라 **서버가 뜰 때** 실패한다.
-  # 규칙을 켜면 chunk 본문이 바뀌므로 문서를 다시 적재해야 한다.
-  #
-  # 실제 상담 HTML 문서로 확인한 결과다. 원문에는 `<table>` 마크업이 261쌍 있지만 chunk 에는
-  # 남지 않는다 — docling 이 표로 바꿔 준다. chunk 에 남는 불필요한 글자는 장식용 글머리표와
-  # 풀리지 않은 HTML 엔티티뿐이다. 글머리표 규칙은 위 rules 의 한 줄이다.
-  #
-  # HTML 엔티티(`&gt;` 등)를 지우는 규칙은 두지 않는다. 마크다운 변환기가 본문과 표 칸에서
-  # 엔티티를 풀어 주므로, 규칙을 따로 두면 변환기 쪽 문제가 생겨도 가려져 보이지 않는다.
-  #
-  # 문장부호(`.` `,` `(` `)` `:` `-`)와 `|` 는 지우지 않는다. `|` 는 마크다운 표의 칸
-  # 경계이고, `[` `]` 는 파이프라인이 붙인 `[표 검색 설명]` 라벨이다 — 지우면 표와
-  # 라벨이 함께 깨진다. 실제 문서로 비교해 보려면 examples/text_cleanup/ 을 돌려 본다.
+  # line·find 는 chunk 로 나누기 전 본문에 적용(chunk 경계·글자 수에 반영).
+  # chunk 는 HEADER 를 붙이기 전 본문으로 판단하며, 레코드(행) 단위 chunk 에는 미적용.
+  # 코드 블록(``` 블록, `인라인 코드`)에는 규칙 미적용.
+  # 마크다운 표 행을 건너뛰는 것은 line 뿐. find 는 표 안에서도 바꾸므로 `|` 를 지우면 표가 깨짐.
+  # `[` `]` 를 지우면 표 설명 앞의 `[표 검색 설명]` 라벨이 깨짐.
+  # 잘못된 정규식이나 모르는 키가 있으면 서버 시작 실패. 규칙을 바꾸면 문서 재적재 필요.
+  # 실제 문서로 결과를 비교하려면 examples/text_cleanup/ 의 예제 실행.
 
-  # parse-format(docling 이 아닌 입력)을 글자 단위로 나누는 splitter 설정.
-  # parse 단계가 docling 문서를 만들지 않는 입력은 parse-format({"elements":[...]})으로 들어오고, 그중 일반 텍스트는
-  # RecursiveCharacterTextSplitter 로 나눈다. 크기는 위 chunk_size 를 쓴다.
-  # audio([AUDIO])·csv/xlsx([DA])처럼 vector 하나로 적재하는 입력과 레코드(행) chunk 에는 적용하지 않는다.
-  # 우선순위: 요청 파라미터(chunk_overlap/recursive_chunk_overlap) > 아래 값 > 코드 기본값(100).
+  # chunk_mode 가 character 일 때만 사용
+  # character:
+  #   # 이웃 chunk 가 겹치는 글자 수. 기본 0. 늘리면 경계 문맥이 이어지지만 중복 본문 증가.
+  #   # 음수면 서버 시작 실패, chunk_size 이상이면 0 으로 처리. 요청 파라미터 character_chunk_overlap 이 우선
+  #   chunk_overlap: 0
+
+  # docling 문서가 아닌 일반 텍스트 입력을 글자 수로 나누는 설정(크기는 chunk_size).
+  # 음성·csv·xlsx 처럼 문서 하나를 vector 하나로 적재하는 입력과 레코드(행) 단위 chunk 에는 미사용
   # recursive:
-  #   # 이웃 chunk 끼리 겹치는 글자 수(없거나 음수면 100). docling 이 아닌 일반 텍스트 입력을 나눌 때만 쓴다.
-  #   # 늘리면 경계의 문맥이 이어지지만 중복 본문이 늘어난다
+  #   # 이웃 chunk 가 겹치는 글자 수. 기본 100(없거나 음수면 100).
+  #   # 요청 파라미터 chunk_overlap·recursive_chunk_overlap 이 우선
   #   chunk_overlap: 100
 
-  # 이상 chunk 검증. 내용이 없거나, 너무 짧거나, 같은 말이 반복되거나, 문자가 깨진 chunk 를 찾는다.
-  # 결과는 로그([chunk_validation])와 성공 응답의 chunk_validation 요약에 남는다. 키 목록과
-  # 기본값은 manual/chunking_processor.md 의 "이상 chunk 검증" 절을 본다. 요청 파라미터로는 바꿀 수
-  # 없고, 값을 잘못 적으면 서버가 뜰 때 실패한다.
+  # 비정상 chunk 검사(내용 없음·너무 짧음·같은 말 반복·깨진 글자).
+  # 결과는 로그([chunk_validation])와 성공 응답의 chunk_validation 에 기록. 요청 파라미터로 변경 불가.
+  # 판정 기준은 manual/chunking_processor.md 의 "이상 chunk 검증" 절 참고
   validation:
-    # 이상 chunk(내용 없음·너무 짧음·같은 말 반복·깨진 문자) 검증을 할지. true | false(기본)=검증하지 않음
+    # 검사 여부. false(기본) | true
     enable: true
-    # 검증에 걸린 chunk 를 어떻게 할지. drop=적재에서 뺌(전부 빠지면 그 문서는 실패)
-    # | report(기본)=chunk 는 그대로 두고 로그와 응답 요약에만 기록
+    # 기본 검사에 걸린 chunk 의 처리. 기본 report
+    #   report: 로그와 응답에만 기록
+    #   drop: 그 chunk 만 적재에서 제외(warning 로그). 모든 chunk 가 빠지면 문서 실패
+    #   fail: 문서 전체 실패
     action: drop
-    # drop 일 때 걸린 chunk 가 하나라도 있으면 그 문서 전체를 실패로 처리할지. false(기본)=걸린 chunk 만 뺌
-    # | true=문서 전체 보류. chunk 만 빼도 로그에 warning 이 남는다.
-    # fail_on_any: false
-    # 같은 글자가 겹쳐 반복되는 깨짐(무무무무배배배배)을 찾을지. 한글·한자에서 같은 글자가 이 횟수 이상
-    # 이어진 덩어리가 2개 이상 붙어 있으면 걸린다(사유 char_stutter). 제목(HEADER) 줄도 함께 본다.
-    # 0(기본)=검사하지 않음, 권장 3
-    stutter_min_run: 3
-    # 여기 적은 사유가 나오면 action·fail_on_any·doc_type 과 상관없이 문서 전체를 실패로 처리한다
-    fail_reasons: [char_stutter]
-    # 한국어·영어가 아닌 문자체계가 섞인 깨짐(保険나이, категории별)을 찾을지(사유 foreign_script). 한 낱말 안에
-    # 한글과 다른 문자체계가 붙어 있거나, 다른 문자체계 글자가 이 수 이상이면 걸린다. 제목(HEADER) 줄도 함께 본다.
-    # 한자(KS X 1001)·그리스 문자·사용자 영역 문자는 세지 않는다. 0(기본)=검사하지 않음, 권장 10
-    foreign_min_count: 10
-    # 여기 적은 사유로만 걸린 chunk 는 빼거나 문서를 실패시키지 않고 로그와 응답 요약에만 기록한다
-    # 운영 원천의 실제 깨짐 표본이 없어 처음에는 기록만 한다
-    report_reasons: [foreign_script]
-    # doc_type 별로 위 값을 덮어쓴다. 문서 하나를 여러 chunk 로 나누는 유형(상품설명서 등)은 일부만 빠지면
-    # 내용이 끊기므로 문서 단위로 보류하고, 레코드 하나가 chunk 하나인 유형은 걸린 chunk 만 뺀다.
-    # 모니모: 파일 하나가 BIZ_ID 하나이고 여러 chunk 로 나뉘는 유형은 문서 단위로 보류한다.
-    # 레코드 하나가 chunk 하나인 유형(menu·term·faq·cs_*·monimo_event·music_ai·stock_insight)은 걸린 chunk 만 뺀다.
+    # 검사별 처리. 적은 검사는 action 대신 이 값을 따름. disabled(검사 안 함) | report | drop | fail.
+    # 두 검사 모두 적지 않으면 검사하지 않으며, 검사 시 HEADER 줄도 포함. 여러 검사에 걸리면 fail > drop > report 순
+    checks:
+      # 같은 글자가 겹쳐 반복되는 깨짐(무무무무배배배배). 기본 disabled.
+      # 모니모는 fail: 문서 유형과 관계없이 문서 처리 중단
+      char_stutter: fail
+      # 한국어·영어가 아닌 글자가 섞인 깨짐(保険나이, категории별). 기본 disabled.
+      # 모니모는 report: 운영 원천의 실제 깨짐 표본이 없어 기록만 함. 중단하려면 fail 로 변경
+      foreign_script: report
+    # 문서 유형별로 위 값 변경. 적은 키만 바뀌고 checks 는 검사 이름 단위로 바뀜.
+    # 파일 하나가 BIZ_ID 하나이고 여러 chunk 로 나뉘는 유형은 일부만 빠지면 내용이 끊기므로 fail(문서 단위 보류).
+    # 레코드 하나가 chunk 하나인 유형(menu·term·faq·cs_*·monimo_event·music_ai·stock_insight)은 위 action(drop)대로 걸린 chunk 만 제외
     by_doc_type:
-      product_slf: {fail_on_any: true}
-      product_ssf: {fail_on_any: true}
-      product_hpp: {fail_on_any: true}
-      monimo_news: {fail_on_any: true}
-    # 출력 chunk 글자 수 상한. 넘은 chunk 는 버리지 않고 응답 chunk_validation.max_length 와 로그로 알린다.
-    # 0(기본)이면 검사하지 않는다. embedding 모델 입력 한도(토큰)를 글자 수로 바꿔 계산해, 한도보다 조금 낮게 둔다.
-    # 글자 수는 HEADER: 같은 앞부분까지 포함한 최종 본문 기준이다. by_doc_type 으로 문서 유형별로 다르게 둘 수 있다.
+      product_slf: {action: fail}
+      product_ssf: {action: fail}
+      product_hpp: {action: fail}
+      monimo_news: {action: fail}
+    # max_chars: chunk 최대 글자 수(HEADER 줄 포함). 넘은 chunk 는 버리지 않고 응답의 chunk_validation.max_length 와 로그로 알림.
+    # 적지 않으면 검사 안 함. embedding 모델 입력 한도(token)를 글자 수로 환산한 값보다 조금 낮게 설정
     # max_chars: 7000
 
-# 표를 텍스트로 바꾸는 방식. parse 단계와 chunk 단계는 따로 호출되므로 parse 단계 설정이 넘어오지 않는다 —
-# /chunker 로 들어오는 일반 문서(PDF·DOCX·HTML 등)의 표 모양은 여기서 정한다.
-# custom_fields 레코드 단위 문서는 parse 단계가 chunk 본문을 다 만들어 넘기므로, 그 표 모양은
-# parse 단계 설정(activities/parse/config.yaml)의 output.table_format 이 정한다(여기서 다시 그리지 않는다).
-# 최종 chunk 의 표 모양을 맞추려면 두 설정의 table_format 을 같은 값으로 둔다
-# (precheck_custom_fields.sh 가 같은 폴더의 두 값이 다르면 경고한다).
-# markdown 은 병합 셀을 표현하지 못해 헤더의 상하 관계가 사라진다.
+# 일반 문서(PDF·DOCX·HTML 등)의 표 모양은 이 파일이 정함(parse 단계 설정은 넘어오지 않음).
+# 문서 유형 설정(custom_fields)으로 레코드 단위 chunk 를 만드는 문서는 parse 단계가 chunk 본문을 완성하므로
+# activities/parse/config.yaml 의 output.table_format 이 정함.
+# 최종 chunk 의 표 모양을 맞추려면 두 파일의 table_format 을 같게 둠(precheck_custom_fields.sh 가 다르면 경고).
+
+# chunk 본문의 표 형식
 output:
-  # chunk 본문에 표를 넣는 형식. html(기본) | markdown | auto(병합 셀·여러 줄 헤더가 있는 표는 html,
-  # 단순한 표는 markdown). 바꾸면 검색 본문의 표 모양이 바뀐다
+  # 표 형식. html(기본) | markdown | auto(병합 셀·여러 줄 헤더가 있으면 html, 아니면 markdown).
+  # markdown 은 병합 셀을 표현하지 못해 헤더의 상하 관계가 사라짐
   table_format: "markdown"
-  # 병합 셀이 있는 표 뒤에 "컬럼=값 | 컬럼=값" 형태의 행 문장을 덧붙일지. false(기본) | true.
-  # 켜면 값이 어느 헤더에 걸렸는지 문장으로 드러나 검색이 쉬워지지만 chunk 가 커진다. 단순한 표에는 적용 안 됨
+  # 병합 셀이 있는 표 뒤에 "컬럼=값 | 컬럼=값" 행 문장 추가. false(기본) | true.
+  # 값이 어느 헤더에 속하는지 드러나 검색에 유리하지만 chunk 가 커짐. 단순한 표에는 미적용
   table_row_serialization: true

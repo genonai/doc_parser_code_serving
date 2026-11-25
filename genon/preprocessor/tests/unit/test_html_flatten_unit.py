@@ -6,8 +6,8 @@
    않는다는 보장.
 2) 정리(extract_content)가 aria-hidden / display:none 안의 **실제 본문을 지우지
    않는다** — 이 모듈의 조상(크롤러측 flatten_merged_html.py)은 이것들을 모두 지웠고,
-   그래서 monimo 카드의 혜택 텍스트("대중교통·택시·전기차 충전요금 10% 결제일할인" 등,
-   custom_field_card.yaml 의 benefit_text 대상)가 소실됐다. 회귀 방지용 고정 테스트다.
+   그래서 monimo 카드의 혜택 텍스트("대중교통·택시·전기차 충전요금 10% 결제일할인" 등)가
+   소실됐다. 회귀 방지용 고정 테스트다.
 """
 from io import BytesIO
 from pathlib import Path

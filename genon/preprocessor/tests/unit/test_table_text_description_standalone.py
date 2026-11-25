@@ -168,10 +168,11 @@ def test_without_own_connection_the_fused_path_still_owns_it():
 
 
 # 표 설명 런타임 실패는 문서를 막지 않는다(부가 기능). 설정 충돌은 그대로 facade 정책을 탄다.
+# LLM 호출 실패 중단 모드(defaults.llm_call_failure: fail·요청 strict)는 test_parser_processor_unit 이 본다.
 
 @pytest.mark.unit
 def test_runtime_failure_does_not_reach_the_facade_error_policy():
-    """LLM 실패는 strict facade 에서도 문서를 죽이지 않는다 — handle_error 로 가지 않는다."""
+    """중단 모드가 아니면 LLM 실패는 문서를 죽이지 않는다 — handle_error 로 가지 않는다."""
     doc = _document_with_table()
     enricher = _standalone()
     runner = enricher._get_runner()

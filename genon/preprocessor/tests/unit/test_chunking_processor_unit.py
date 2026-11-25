@@ -645,7 +645,7 @@ def test_no_item_text_is_lost():
     doc.add_text(label=DocItemLabel.TEXT, text="가가가가가", parent=same)
 
     sources = [t.text.strip() for t in doc.texts if (t.text or "").strip()]
-    for chunk_mode in ("split_only", "resize_all"):
+    for chunk_mode in ("section", "section_merge"):
         vectors = _chunk(doc.model_dump(mode="json"), chunk_mode=chunk_mode)
         joined = "\n".join(v.text for v in vectors)
         missing = [s for s in sources if s not in joined]
@@ -674,7 +674,7 @@ def test_repeated_body_text_is_not_deduped():
         doc.add_text(label=DocItemLabel.TEXT, text=repeated, parent=section)
         doc.add_text(label=DocItemLabel.TEXT, text="사이에 끼는 다른 문장.", parent=section)
 
-    for chunk_mode in ("split_only", "resize_all"):
+    for chunk_mode in ("section", "section_merge"):
         vectors = _chunk(doc.model_dump(mode="json"), chunk_mode=chunk_mode, chunk_size=10000)
         joined = "\n".join(v.text for v in vectors)
         assert joined.count(repeated) == n, (
@@ -781,7 +781,7 @@ def test_sibling_sections_are_not_rendered_as_parent_child():
         doc.add_text(label=DocItemLabel.TEXT, text=f"{name} 본문", parent=node)
 
     header = _header_of(_chunk(doc.model_dump(mode="json"),
-                               chunk_mode="resize_all", chunk_size=10000)[0])
+                               chunk_mode="section_merge", chunk_size=10000)[0])
     # 공통 조상은 한 번만, 형제는 PATH_SEP 로 나열된다.
     assert header.startswith("상품 안내" + HEADER_SEP), header
     assert PATH_SEP in header, header
@@ -801,7 +801,7 @@ def test_prefix_paths_are_collapsed():
     doc.add_text(label=DocItemLabel.TEXT, text="상세 본문", parent=child)
 
     header = _header_of(_chunk(doc.model_dump(mode="json"),
-                               chunk_mode="resize_all", chunk_size=10000)[0])
+                               chunk_mode="section_merge", chunk_size=10000)[0])
     assert header == f"삼성카드{HEADER_SEP}카드상세", header
 
 
@@ -820,7 +820,7 @@ def test_many_sibling_paths_are_capped():
         doc.add_text(label=DocItemLabel.TEXT, text=f"제{i}조 본문", parent=node)
 
     header = _header_of(_chunk(doc.model_dump(mode="json"),
-                               chunk_mode="resize_all", chunk_size=100000)[0])
+                               chunk_mode="section_merge", chunk_size=100000)[0])
     assert "외" in header and "개" in header, header
     assert header.count(PATH_SEP) < GenosSmartChunker.CHUNK_PATH_MAX_LEAVES, header
 
@@ -836,7 +836,7 @@ def test_single_oversized_text_item_is_split(chunk_size):
     section = doc.add_heading(text="제1조 목적", level=1)
     doc.add_text(label=DocItemLabel.TEXT, text="본문내용 " * 1000, parent=section)
 
-    for chunk_mode in ("split_only", "resize_all"):
+    for chunk_mode in ("section", "section_merge"):
         vectors = _chunk(doc.model_dump(mode="json"),
                          chunk_size=chunk_size, chunk_mode=chunk_mode)
         over = [len(v.text) for v in vectors if len(v.text) > effective]
@@ -1031,13 +1031,13 @@ async def test_validation_final_check_covers_hook_output(hook):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("values,bad,code,reason_code", [
     ({}, _BAD, "CHUNK_ALL_REJECTED", "CHUNK_D002"),
-    ({"fail_on_any": True}, _BAD, "CHUNK_REJECTED", "CHUNK_D003"),
-    # fail_reasons 의 사유는 report 에서도 문서 실패다(#767).
-    ({"action": "report", "stutter_min_run": 3, "fail_reasons": ["char_stutter"]},
+    ({"action": "fail"}, _BAD, "CHUNK_REJECTED", "CHUNK_D003"),
+    # checks 에 fail 로 적은 검사는 action: report 에서도 문서 실패다(#767).
+    ({"action": "report", "checks": {"char_stutter": "fail"}},
      "무무무무배배배배 안내", "CHUNK_REJECTED", "CHUNK_D003"),
 ])
 async def test_validation_fails_document(values, bad, code, reason_code):
-    """전부 제외되면 문서 실패, fail_on_any·fail_reasons 면 불량 청크 하나로 문서 실패."""
+    """전부 제외되면 문서 실패, action·checks 가 fail 이면 불량 청크 하나로 문서 실패."""
     cf = pytest.importorskip("facade.chunking_processor")
     document = _quality_doc(bad, bad) if not values else _quality_doc(_GOOD, bad)
 
@@ -1152,13 +1152,12 @@ async def test_validation_judge_error(monkeypatch, action):
 
 
 @pytest.mark.asyncio
-async def test_validation_report_reasons_keep_chunk_in_drop_mode():
-    """#775: report_reasons 로만 걸린 chunk 는 drop·fail_on_any 에서도 남기고 요약에만 기록한다."""
+async def test_validation_report_check_keeps_chunk_in_fail_mode():
+    """#775: checks 에 report 로 적은 검사로만 걸린 chunk 는 action: fail 에서도 남기고 요약에만 기록한다."""
     cf = pytest.importorskip("facade.chunking_processor")
     tb = pytest.importorskip("processing.core.toolbox")
     request = tb.mock_request()
-    proc = _validating(cf.DocumentProcessor(), fail_on_any=True, foreign_min_count=10,
-                       report_reasons=["foreign_script"])
+    proc = _validating(cf.DocumentProcessor(), action="fail", checks={"foreign_script": "report"})
 
     vectors = await proc(request, "", document=_quality_doc(_GOOD, "보장성保问题是란 무엇인가"))
 
@@ -1234,6 +1233,60 @@ async def test_zero_chunks_names_the_cause(make, elements, params, cause):
     with pytest.raises(cf.GenosServiceException, match=cause) as exc:
         await make(cf)(None, "", document={"elements": elements}, **params)
     assert (exc.value.error_type, exc.value.reason_code) == ("permanent", "CHUNK_D001")
+
+
+@pytest.mark.asyncio
+async def test_all_records_filtered_out_is_empty_result(tmp_path, caplog):
+    """레코드가 모두 keep·filter 에서 빠진 파일은 parse 가 그 사실을 싣고, chunk 는 0건 실패 대신 빈 결과로 돌려준다."""
+    cf = pytest.importorskip("facade.chunking_processor")
+    from genon.preprocessor.processing.core.parser import ParserCore
+    from genon.preprocessor.processing.enrichment.json_records import JsonRecordsMapper
+
+    (tmp_path / "custom_field_x.yaml").write_text(
+        "schema: v2\nsource: {kind: records}\n"
+        "fields: {T: {alias: [t]}, IDS: {alias: [ids], keep: [A]}}\nbody: {fields: [T]}\n",
+        encoding="utf-8")
+    src = tmp_path / "x.json"
+    src.write_text(json.dumps([{"t": "가", "ids": ["B"]}, {"t": "나", "ids": "C"}]), encoding="utf-8")
+    mapper = JsonRecordsMapper(config_file="custom_field_x.yaml", resource_path=str(tmp_path),
+                               doc_type="t", extractor="json_mapping")
+    parsed = await object.__new__(ParserCore)._parse_json_records(str(src), [mapper], doc_type="t")
+
+    with caplog.at_level(logging.WARNING):
+        vectors = await cf.DocumentProcessor()(None, "", document=parsed)
+
+    assert (parsed["elements"], vectors) == ([], [])
+    assert "레코드 2건이 모두 filter·keep 조건에서 제외됨" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_all_rows_filtered_out_is_empty_result(tmp_path, caplog):
+    """kind: rows 도 행이 모두 filter 에서 빠지면 chunk 0건 실패(CHUNK_D001) 대신 빈 결과다(#813).
+
+    입력은 실물 sample_files/monimo/monimo_menu_sample.xlsx(회사명 모니모·삼성화재 2행)와 모니모 menu
+    설정 사본이며, 설정에는 두 행 모두 해당하지 않는 filter 만 더했다.
+    """
+    cf = pytest.importorskip("facade.chunking_processor")
+    from genon.preprocessor.processing.core.parser import ParserCore
+    from genon.preprocessor.processing.enrichment.tabular_custom_fields import TabularCustomFieldsMapper
+
+    preprocessor = Path(__file__).resolve().parents[2]
+    site_cfg = preprocessor / "../sites/monimo/activities/parse/custom_field_menu.yaml"
+    (tmp_path / "custom_field_menu.yaml").write_text(
+        site_cfg.read_text(encoding="utf-8") + "filter:\n  - field: GROUP_C\n    in: [SSS]\n",
+        encoding="utf-8")
+    mapper = TabularCustomFieldsMapper(config_file="custom_field_menu.yaml", resource_path=str(tmp_path),
+                                       doc_type="menu", extractor="tabular_mapping")
+    src = preprocessor / "sample_files/monimo/monimo_menu_sample.xlsx"
+    parser = object.__new__(ParserCore)
+    parser._xlsx_cfg = {"header_row": 0, "multi_table": False}  # __init__ 을 거치지 않아 기본값을 채운다.
+    parsed = await parser._parse_tabular_records(str(src), [mapper], "menu")
+
+    with caplog.at_level(logging.WARNING):
+        vectors = await cf.DocumentProcessor()(None, "", document=parsed)
+
+    assert (parsed["elements"], vectors) == ([], [])
+    assert "레코드 2건이 모두 filter·keep 조건에서 제외됨" in caplog.text
 
 
 @pytest.mark.asyncio

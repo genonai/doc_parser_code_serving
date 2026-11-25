@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+import requests
 from PIL import Image
 
 from docling_core.types.doc import (
@@ -484,6 +485,81 @@ def test_llm_reason_reads_http_response_status():
     request = httpx.Request("POST", "http://llm/v1/chat/completions")
     exc = httpx.HTTPStatusError("x", request=request, response=httpx.Response(401, request=request))
     assert pp._llm_reason(exc, pp._classify_error(exc)) == "PARSE_S001"
+
+
+def _http_error(status: int):
+    import httpx
+
+    request = httpx.Request("POST", "http://llm/v1/chat/completions")
+    return httpx.HTTPStatusError("x", request=request, response=httpx.Response(status, request=request))
+
+
+def _summary_fails(dp, calls):
+    """문서 요약 — 단계 래퍼 안의 단건 호출. 공용 모듈이 올린 예외를 래퍼가 받는다."""
+    from docling_core.types.doc import DoclingDocument
+    from genon.preprocessor.processing.enrichment import body_summary as bs
+
+    doc = DoclingDocument(name="t")
+    doc.add_text(label=DocItemLabel.PARAGRAPH, text="본문")
+    with patch.object(bs, "post_chat_completion_sync", side_effect=_http_error(503)) as send:
+        try:
+            bs.summarize_body(doc, api_url="http://llm/v1/chat/completions")
+        finally:
+            calls.append(send.call_count)
+
+
+def _record_tables_fail(dp, calls):
+    """레코드 경로 표 설명 — 처리기가 skip_table_stage 에 단계 오류 처리를 넘긴다."""
+    enricher = MagicMock()
+    enricher.wants.return_value = True
+    enricher.describe_texts.side_effect = _http_error(401)
+    dp._intel.table_text_description_enricher = enricher
+    asyncio.run(dp._describe_record_tables({"elements": [{"content": "<table></table>"}]}))
+
+
+def _pictures_fail(dp, calls):
+    """그림 설명 — 건별 호출은 첫 실패 뒤 남은 그림을 부르지 않는다."""
+    intel = TestEnrichImageDescriptions._make_intel(None, enabled=True)
+    doc = _make_mock_doc([_make_picture_item(page_no=1), _make_picture_item(page_no=1)])
+    with patch.object(PictureItem, "get_image", return_value=Image.new("RGB", (8, 8))), patch(
+        "genon.preprocessor.processing.enrichment.image_request.api_image_request",
+        side_effect=requests.ConnectionError("refused"),
+    ) as send:
+        try:
+            intel.enrich_image_descriptions(doc)
+        finally:
+            calls.append(send.call_count)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("stage,run,reason_code,calls", [
+    ("doc_summary", _summary_fails, "PARSE_S101", [1]),
+    ("table_description", _record_tables_fail, "PARSE_S001", []),
+    ("image_description", _pictures_fail, "PARSE_S101", [2]),    # 첫 그림(재시도 1회)만, 둘째는 안 부름
+])
+def test_llm_call_failure_fail_aborts_parse_with_stage_and_reason(dp, stage, run, reason_code, calls):
+    """설정 defaults.llm_call_failure: fail 이면 LLM 호출 실패에서 단계·사유 코드를 실어 parse 를 중단한다."""
+    from docling.utils.llm_cache import reset_context, resolve_context, set_context
+    from processing.core import parser as pp
+    from genon.preprocessor.processing.enrichment.llm_response import with_llm_call_failure
+
+    token = set_context(with_llm_call_failure(resolve_context({}), "fail"))
+    seen: list = []
+    try:
+        with patch("genon.preprocessor.processing.enrichment.llm_response.time.sleep"), \
+                pytest.raises(GenosServiceException) as exc_info:
+            try:
+                run(dp, seen)
+            except GenosServiceException:
+                raise
+            except Exception as exc:   # 처리기의 단계 래퍼와 같은 자리
+                pp._handle_stage_error(exc, stage)
+    finally:
+        reset_context(token)
+
+    error = exc_info.value
+    assert (error.stage, error.reason_code, seen) == (stage, reason_code, calls)
+    assert error.error_msg.startswith(f"enrichment {stage} LLM 호출 실패로 parse 중단(defaults.llm_call_failure=fail)")
 
 
 @pytest.mark.unit

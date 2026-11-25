@@ -123,6 +123,8 @@ defaults:
   log_level: 4
   # 요청 doc_type 에 맞는 custom_fields 등록이 없을 때: warn(경고 후 기본 경로로 처리, 기본값) | fail(요청 실패)
   unknown_doc_type: warn
+  # LLM·VLM 호출이 실패했을 때: warn(경고 후 그 결과 없이 계속, 기본값) | fail(첫 실패에서 문서 처리 중단)
+  llm_call_failure: warn
 
 # ───────────────────────────────────────────────
 # 모델 프리셋 (아래 "모델 프리셋으로 접속 정보 모으기" 참고)
@@ -303,15 +305,8 @@ enrichment:
         enable: false        # true 면 재구성 HTML 로 표 본체 교체
         prompt_file: prompt_table_refine_combined.md   # 재구성 HTML + 요약 통합 프롬프트
 
-  # 커스텀 필드 추출 (여러 개 지정 가능). 인라인 옵션 또는 외부 config_file 사용.
-  # - custom_fields:
-  #     enable: true
-  #     model_preset: default
-  #     output_fields: [doc_category, keywords]
-  #     system_prompt_file: prompt_custom_fields_xxx_system.md  # 생략 시 built-in default
-  #     user_prompt_file: prompt_custom_fields_xxx_user.md      # 파일 안에서 {{raw_text}} 치환
-  #     # 또는 외부 config 파일로 분리:
-  #     # config_file: "custom_fields_xxx.yaml"
+  # 커스텀 필드 추출은 여기에 적지 않는다. 같은 폴더의 custom_field_<doc_type>.yaml 맨 위
+  # `doc_type: <이름>` 한 줄이 등록이다(적으면 기동 실패).
 
 # ───────────────────────────────────────────────
 # 출력 형식
@@ -469,6 +464,7 @@ llm:
 |------|----|--------|------|
 | `defaults` | `log_level` | `4` (INFO) | 로깅 레벨. `5`=DEBUG / `4`=INFO / `3`=WARNING / `2`=ERROR / `1`=CRITICAL / `0`=NOLOG(전체 비활성화). 누락/오류 시 4 폴백. 실행 시 `params.log_level` 이 주어지면 그 값이 우선 |
 | `defaults` | `unknown_doc_type` | `warn` | 요청 `doc_type` 에 맞는 custom_fields 등록이 없을 때의 처리. `warn` 은 경고 로그를 남기고 확장자 기본 경로로 처리하고, `fail` 은 요청을 실패시킨다. doc_type 목록이 확정된 현장은 `fail` 로 두어 등록 누락을 드러낸다. 등록 없이 `CONFIG_BY_DOC_TYPE` 이나 훅만으로 doc_type 을 쓰는 요청도 `fail` 에서는 실패한다. 그 밖의 값은 기동 실패 |
+| `defaults` | `llm_call_failure` | `warn` | parse 단계의 LLM·VLM 호출(문서 요약, 그림·표·PPT 페이지 설명, custom_fields LLM·`extractor: python` 안의 HTTP 호출, 레코드형 LLM 생성 필드, 민감정보 분류, 목차·메타데이터 추출)이 실패했을 때의 처리. `warn` 은 경고 후 그 결과 없이 계속하고(목차·메타데이터 내장 추출의 HTTP·연결 오류·시간 초과는 지금처럼 실패), `fail` 은 첫 실패에서 문서 처리를 중단한다(`PARSE_S001`·`S101`·`S102`·`S201`·`P001`). 실패로 보는 것은 HTTP 오류·연결 오류·시간 초과·요청 deadline 초과·응답 형식 이상(chat completion 형식 아님)·설정이 선언한 입력 길이 초과이고, 빈 응답·모델 출력 내용 이상과 OCR·layout·문서 품질 판정(`ocr_mode: auto`) 호출은 제외한다. 요청 `error_policy: strict` 도 `fail` 과 같이 중단하며, 요청으로 `fail` 을 해제할 수 없다. `fail` 이면 레코드형 `on_error` 는 적용되지 않는다. 그 밖의 값은 기동 실패 |
 | `ocr` | `ocr_mode` | `"disable"` | OCR 수행 정책. `disable`(OCR 안 함, 기본) / `auto`(첫 변환 뒤 판정해 필요할 때만 재OCR — 판정 LLM 이 없거나 응답이 없으면 재OCR 하지 않음, 글리프 깨짐·빈 페이지는 재OCR) / `force`. 유효하지 않으면 `disable`. 요청 파라미터 `ocr_mode` 가 문서 단위로 덮는다 |
 | `ocr` | `engine` | `"paddle"` | OCR 엔진 선택. `paddle` / `upstage` (유효하지 않으면 `paddle`) |
 | `ocr` | `table_cell_ocr_timeout` | `60` | 글리프 깨진 테이블 셀 재OCR 시 HTTP 타임아웃(초). 양의 정수, 유효하지 않으면 60 |
@@ -621,7 +617,7 @@ llm:
 >
 > **판정 순서와 사유**: 한 표가 여러 종류에 맞아도 처음 맞은 사유 하나만 기록합니다. 순서는 `nested_table` → `single_value_table` → `duplicate_table` → `self_describing_table` → `long_text_table` 입니다. 종류는 모두 OR 이라 순서는 로그에 남는 사유 이름만 바꾸고 보내지는 표 집합은 바꾸지 않습니다. 따라서 로그의 사유별 개수는 종류별로 맞는 표의 수가 아니라 먼저 맞은 사유별 수입니다(모니모 상품설명서에서 `duplicate_table` 과 `long_text_table` 을 함께 켜면 긴 문장 표의 사본은 `duplicate_table` 로 셉니다).
 >
-> **병합 규칙**: 프로세서 공통 설정 < 등록 블록 < 문서유형 YAML 순서로 키 단위로 덮어씁니다. `skip: false` 는 병합 전에 모든 종류(`long_text_table` 포함)를 끈 상태로 펼쳐지므로, 공통 설정에 `skip: false` 를 두고 문서유형 YAML 에서 `skip.duplicate_table: true` 처럼 한 종류만 켜면 나머지는 꺼진 채로 남습니다. 반대로 문서유형의 `skip: false` 는 공통 설정에서 켠 종류까지 모두 끕니다. 앞으로 종류가 추가되어도 `skip: false` 는 그 종류까지 함께 끕니다. `skip: true` 는 지원하지 않습니다. 경고가 남고 그 계층에는 `skip` 이 없는 것으로 취급하므로 아래 계층 값이나 기본값(`single_value_table`·`nested_table` 만 켬)이 쓰입니다. 같은 블록의 `overflow_policy: skip`(표 설명 전체 건너뜀)과는 다른 설정입니다.
+> **병합 규칙**: 프로세서 공통 설정 < 문서유형 YAML 순서로 키 단위로 덮어씁니다. `skip: false` 는 병합 전에 모든 종류(`long_text_table` 포함)를 끈 상태로 펼쳐지므로, 공통 설정에 `skip: false` 를 두고 문서유형 YAML 에서 `skip.duplicate_table: true` 처럼 한 종류만 켜면 나머지는 꺼진 채로 남습니다. 반대로 문서유형의 `skip: false` 는 공통 설정에서 켠 종류까지 모두 끕니다. 앞으로 종류가 추가되어도 `skip: false` 는 그 종류까지 함께 끕니다. `skip: true` 는 지원하지 않습니다. 경고가 남고 그 계층에는 `skip` 이 없는 것으로 취급하므로 아래 계층 값이나 기본값(`single_value_table`·`nested_table` 만 켬)이 쓰입니다. 같은 블록의 `overflow_policy: skip`(표 설명 전체 건너뜀)과는 다른 설정입니다.
 >
 > 어느 표가 빠졌는지 확인하려면 `skip: false` 로 모든 생략을 끄고 다시 실행해 비교합니다.
 >
@@ -733,12 +729,13 @@ metadata:
 
 #### 커스텀 필드 enricher
 
-`custom_fields` 항목은 문서 단위 커스텀 메타데이터를 추출하는 enricher로, 여러 개를 지정할 수 있습니다. 각 항목은 독립적으로 LLM을 1회 호출하며, 추출 결과는 enrichment 컨텍스트의 `metadata`에 병합됩니다.
+`custom_fields` 는 문서유형(doc_type)별 커스텀 메타데이터를 추출하는 enricher입니다. 규칙은 프로세서 설정과 같은 폴더의 `custom_field_<doc_type>.yaml`(규칙 파일)에 둡니다.
 
-- **인라인 옵션:** `url`, `api_key`, `model`, `system_prompt_file`/`user_prompt_file`(또는 inline `system_prompt`/`user_prompt`), `output_fields`, `parser`, `pages`, `max_tokens`, `temperature`, `timeout`를 항목에 직접 지정합니다. `system_prompt`(파일·inline 모두) 미지정 시 built-in default system prompt 가 사용됩니다.
-- **외부 config:** `config_file: "이름.yaml"`로 분리할 수 있습니다. 상대 경로는 config 파일과 동일한 디렉터리(resource_path) 기준으로 해석됩니다. 외부 파일에도 `system_prompt_file`/`user_prompt_file`(또는 `system_prompt`/`user_prompt`, `prompt.system`/`prompt.user`)/`url`/`model`/`output_fields`/`parser`/`pages` 등을 둘 수 있으며, 항목에 직접 지정한 값이 외부 config보다 우선합니다. `*_file` 경로는 외부 config 파일이 위치한 디렉터리 기준으로 해석됩니다.
+- **등록:** 규칙 파일 최상위의 `doc_type: <이름>`(이름 목록도 가능) 한 줄이 등록입니다. 파일을 지우면 등록이 빠지고, 켜고 끄는 키는 없습니다(`doc-types add`·`remove` 가 이 방식으로 등록·삭제합니다). 프로세서 설정의 `enrichment` 에 `- custom_fields:` 항목을 적으면 기동이 실패합니다. 최상위 `doc_type:` 이 없는 규칙 파일은 쓰이지 않습니다(설정 점검기가 경고).
+- **같은 doc_type 의 규칙 파일 여럿:** 모두 적용됩니다. 원천 하나에 컬럼 구성이 다른 표나 성격이 다른 JSON 배열이 여럿일 때 규칙 파일마다 `require.fields`·`records_at` 에 맞는 부분만 처리합니다.
+- **등록 범위:** 등록은 폴더 단위라, 프로세서 설정 여럿이 한 폴더를 함께 쓰는 `resource/` 에서는 그 폴더를 읽는 모든 프로세서에 등록됩니다.
+- **extractor:** 규칙 파일의 `source.kind` 에서 정해집니다. `*_file` 상대 경로는 규칙 파일이 있는 폴더 기준으로 해석됩니다.
 - `parser.type`은 `json`(기본값) 또는 `python`(외부 파일 위임)을 지원합니다.
-- **규칙 파일에 적는 등록:** 규칙 파일 `custom_field_<doc_type>.yaml` 최상위에 `doc_type: <이름>` 을 적으면 그 파일이 스스로 등록됩니다. 프로세서 설정에 `- custom_fields:` 등록 블록을 더하지 않아도 됩니다(`doc-types add` 가 이 방식으로 등록합니다). 켜고 끄는 키는 없고, 파일이 설정 폴더에 있으면 등록입니다. 같은 doc_type 이 등록 블록(꺼진 블록 포함)이나 다른 규칙 파일에도 있으면 기동 오류입니다. 등록은 폴더 단위라, 프로세서 설정 여럿이 한 폴더를 함께 쓰는 `resource/` 에서는 그 폴더를 읽는 모든 프로세서에 등록됩니다.
 
 **입력 포맷별 전처리 블록** — LLM 호출 설정과 별개로, `config_file` 의 `source.pre` 아래에 입력 포맷 전처리를 선언합니다. 이 블록들은 enricher 생성자로 넘어가지 않고 파서가 소비합니다.
 
@@ -749,9 +746,9 @@ metadata:
 | `source.pre.html` | `.html` 입력 | 마커 heading 승격 |
 | `source.pre.delimited` | 구분자 텍스트 | 원천을 레코드 목록으로 바꾼다(`kind: records` 전용). 입력 확장자와 무관하게(.dtms/.md/.html/.txt 등 텍스트면) 확장자 라우팅보다 먼저 이 경로를 탄다 |
 
-`markdown`·`html` 은 등록 블록에 같은 이름을 적어 문서유형별로 덮어쓸 수 있고, `false` 를 주면 명시적 비활성입니다. `marker_headings` 는 md 와 html 이 판정 규칙을 공유하므로 `source.pre` 바로 아래 한 번만 적으면 둘 다 걸립니다.
+`markdown`·`html` 은 규칙 파일마다 적으므로 문서유형별로 다르게 둘 수 있고, `false` 를 주면 명시적 비활성입니다. `marker_headings` 는 md 와 html 이 판정 규칙을 공유하므로 `source.pre` 바로 아래 한 번만 적으면 둘 다 걸립니다.
 
-> `json:` 을 **등록 블록에 적던 옛 표기는 받지 않습니다.** `config_file` 의 `source.pre.json` 으로 옮기고, 안쪽 키도 `text_fields` → `body_from`, `missing_policy` → `on_missing` 으로 바뀌었습니다. 등록 블록은 기동 시 키 검증을 받지 않아 그대로 두면 오류가 아니라 조용히 무시되므로(본문이 캐치올로 빠져 표·heading 구조가 소실됩니다) 파서 기동과 배포 전 점검 양쪽에서 막습니다.
+> `json` 전처리는 규칙 파일의 `source.pre.json` 에 적습니다. 안쪽 키는 `body_from`·`on_missing` 입니다.
 
 ```yaml
 # config_file 안
@@ -1185,7 +1182,7 @@ source:
 > 이미지 설명 문맥 추출(`enrichment.image_description.*`)은 현재 파싱 설정(`activities/parse/config.yaml`) 값으로 제어합니다.
 
 > LLM 호출 파일 캐시·실패 정책(`error_policy`)·요청 deadline(`request_deadline`)은 모든 형식 공통으로
-> `params` 로 opt-in 할 수 있습니다 — [9. LLM 호출 파일 캐시 / 실패 정책 / 요청 deadline (#329)](#9-llm-호출-파일-캐시--실패-정책--요청-deadline-329) 절 참고.
+> `params` 로 opt-in 할 수 있습니다. 사이트가 상시로 LLM 호출 실패에서 중단하려면 설정 `defaults.llm_call_failure: fail` 을 씁니다 — [9. LLM 호출 파일 캐시 / 실패 정책 / 요청 deadline (#329)](#9-llm-호출-파일-캐시--실패-정책--요청-deadline-329) 절 참고.
 
 ---
 
@@ -1470,11 +1467,8 @@ fields:
 > `source.pre.json.body_from` 으로 그 값을 지목하면 됩니다. 선택자는 **파싱 전 원문**에
 > 걸리므로, docling 이 지워 버리는 class·속성·`alt` 를 모두 쓸 수 있습니다.
 
-> 등록 블록(`activities/parse/config.yaml`)의 `extractor` 는 **적지 않아도 됩니다.**
-> 생략하면 설정 파일의 `source.kind` 에서 정해집니다(문서형은 `python:` 블록이 있으면
-> `python`, 없으면 `llm`. `kind: html` 이면 `html_select`). 같은 정보를 두 파일에 적으면 어긋날 수 있고, 어긋나면 "이
-> extractor 가 읽지 않는 키" 라는 메시지로 기동이 실패합니다 — 설정에 그 키를 적은
-> 적이 없는데도 그렇습니다. 적어 둔 값이 있으면 그 값이 그대로 쓰입니다.
+> `extractor` 는 적지 않습니다. 규칙 파일의 `source.kind` 에서 정해집니다(문서형은 `python:` 블록이 있으면
+> `python`, 없으면 `llm`. `kind: html` 이면 `html_select`).
 
 ### 지원 매트릭스
 
@@ -1490,12 +1484,21 @@ fields:
 | 상수 | `const` (`constants`) | ✔ | ✔ | ✔ | ✔ |
 | 기본값(빈 값만) | `default` (`defaults`) | ✔ | ✔ | ✔ | ✔ |
 | 값 접기 | `values` (`value_map`) | ✔ | ✔ | ✔ | ✔ |
-| 변환(10종 체이닝) | `transform` (`transforms`) | ✔ | ✔ | ⚠ 표 뭉갬 | ⚠ 표 뭉갬 |
+| 목록 값 줄이기 | `keep` | ✔ | ✔ | ✗ | ✗ |
+| 변환(11종 체이닝) | `transform` (`transforms`) | ✔ | ✔ | ⚠ 표 뭉갬 | ⚠ 표 뭉갬 |
 | 필드 결합 | `template` (**`derive`**) | ✔ | ✔ | ✔ | ✔ |
 | JSON 한 칸에 묶기 | `pack` | ✔ | ✔ | ✔ | ✔ |
 | 청크 메타에서 빼기 | `meta: false` (`meta_include`) | ✔ | ✔ | ✔ | ✔ |
 
-적용 순서는 kind 공통입니다: `default`(빈 값만) → `const`(덮어씀) → `values` → `transform` → `template` → `pack`
+적용 순서는 kind 공통입니다: `default`(빈 값만) → `const`(덮어씀) → `values` → `keep` → `transform` → `template` → `pack`
+
+**목록 값 줄이기 (`keep`).** `keep: [S000000293, S000025345]` 처럼 남길 값을 적으면 그 필드의 값에서
+적은 값만 원천 순서대로 남깁니다. 단일 값도 원소 1개짜리 목록으로 보고 목록으로 적재합니다. 비교는
+`values` 와 같이 대소문자·공백을 무시하며, 남는 값은 설정에 적은 표기입니다. 남은 값이 없으면 그
+레코드는 적재하지 않고 `filter` 와 같이 제외 건수로 셉니다. 상품을 조건으로 고를 때는 `filter`,
+목록 값을 줄일 때는 `keep` 을 씁니다. 파일의 모든 레코드가 `filter`·`keep` 으로 빠지면 오류가 아니라
+빈 결과와 경고 로그로 끝납니다. `keep` 을 비워 두면(`keep: []`) 값을 줄이지 않고 전부 적재합니다.
+`keep`·`filter`·`require.fields` 는 LLM 호출 전에 적용되므로 `llm` 의 `out` 필드에는 쓸 수 없습니다(기동 실패).
 
 **파일명에서 값 가져오기 (`alias: [$file]`).** 원천 본문에 식별자가 없고 파일명에만 있을 때
 예약어 `$file` 을 `alias` 의 **유일한 항목**으로 적습니다. 파일명은 원천값과 같은 자리에 들어가므로
@@ -1623,13 +1626,14 @@ rows·records 의 `body.fields`·`body.repeat` 값이 JSON·HTML 이면 본문�
 > **청크 텍스트 정제(`chunking.text_cleanup`)는 doc_type 별 설정이 아니라 프로세서 config** 입니다.
 > 파싱 설정(`activities/parse/config.yaml`)에는 없습니다 — 파서와 청커를 나눠 배포했다면 **청커 쪽 yaml** 에 적습니다.
 
-### `transform` 10종 — 체이닝됩니다
+### `transform` 11종 — 체이닝됩니다
 
 | 이름 | 인자 | 하는 일 |
 |---|---|---|
 | `date_int` (옛 이름 `date_int_flex`) | `on_error` | 날짜 텍스트 → `YYYYMMDD` 정수. 2자리 연도(`26.07.01`)·구분자 없는 `20260713`·`260701` 도 받는다. 날짜로 읽지 못하면 `on_error`(기본 `0`), 빈 값은 항상 `0` |
 | `normalize` (옛 이름 `text_norm`) | — | NFKC + 양끝 공백 제거 + 연속 공백 축약 + casefold (중복 판정용). 영문은 소문자로 바뀌고, 단어 사이 공백은 한 칸으로 줄일 뿐 없애지 않는다 |
 | `percent` | — | `"분자/분모"` → 백분율 정수(내림). `template: "{{DISCOUNT_AMT}}/{{PRICE_AMT}}"` 로 결합한 값에 건다(`"10600/25000"` → `42`). 형식이 맞지 않거나 분모가 0 이면 `null`, 빈 값은 그대로 |
+| `unique` | — | 목록에서 같은 값을 지운다. 처음 나온 순서를 유지하고 대소문자·공백은 맞추지 않는다(`["A", "B", "A"]` → `["A", "B"]`). 목록이 아니면 그대로 |
 | `regex_sub` | `pattern`, `repl` | 정규식 치환 (`"18,000원"` → `"18000"`) |
 | `regex_extract` | `pattern`, `group`, `on_error` | 정규식 오려내기. 미매칭 시 `on_error`(기본 `None`), 빈 값은 그대로. `group` 이 패턴에 없으면 기동 실패 |
 | `hash` | `length`, `prefix` | SHA-1 16진 코드화(기본 16자리). 같은 값이면 같은 코드 |
@@ -2042,6 +2046,8 @@ enrichment 실패를 응답으로 돌려주는 `error_policy` 와 행잉을 막�
   요청 종료 시 `[llm_cache] hit=.. miss=..` 요약이 남습니다.
 - **`error_policy`**: `lenient`(기본)은 enrichment 실패를 삼키고 `code:0`(기존 동작). `strict` 는
   실패 시 `code:1` + envelope 에 `stage`(실패 단계)·`error_kind`(`transient`/`permanent`/`timeout`)를 실어 줍니다.
+  LLM 호출 실패에 대해서는 설정 `defaults.llm_call_failure: fail` 과 범위가 같습니다(표 설명·레코드형 LLM 생성 필드·
+  PPT 페이지 설명·민감정보 분류 포함). 설정이 `fail` 이면 요청 `lenient` 로 해제할 수 없습니다.
   단, **TOC/문서 품질검사(base enrichment)의 LLM 실패는 정책과 무관하게 하드페일**(`stage="enrichment"`, 기존 동작).
 - **`/chunker`** 는 파싱 결과를 입력받아 청킹만 하므로 LLM 호출이 없어 캐시는 실질 no-op 이며,
   `interim_ref`(=`"<workflow_id>/<run_id>"`)로 스코프만 전달합니다. 즉 캐시가 실제로 동작하는 단계는 **파싱(`/parser`)** 입니다.

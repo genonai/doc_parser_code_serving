@@ -10,6 +10,8 @@
 1/40 로 잘렸다. 그래서 아래 단정은 **본문 내용 자체**를 원본과 대조한다.
 """
 
+from pathlib import Path
+
 import pytest
 
 from genon.preprocessor.processing.converters.delimited_text import (
@@ -114,6 +116,25 @@ def test_인용되지_않은_본문도_받는다(tmp_path):
 
     assert len(records) == 1
     assert records[0]["내용"] == "평문 본문"
+
+
+def test_본문_따옴표를_그대로_둔_원천도_레코드가_잘리지_않는다():
+    """본문 안 따옴표를 `""` 로 적지 않은 원천(#782).
+
+    샘플은 운영 원천 캡쳐를 옮긴 것이다. 1건째 본문 169줄 중 128·129줄에 인용부호가 하나씩
+    있어, 따옴표 개수로 경계를 정하면 128줄에서 끝나고 118줄에서 연 표가 닫히지 않았다.
+    기대 값은 리더를 거치지 않고 파일 줄 배치(1건째 1~169줄, 2건째 170줄~)에서 만든다.
+    """
+    sample = (Path(__file__).resolve().parents[2]
+              / "sample_files" / "monimo" / "monimo_cs_ssf_raw_quote_sample.dtms")
+    lines = sample.read_text(encoding="utf-8").rstrip("\n").split("\n")
+
+    def expected(block):
+        head = block[0].split("|@|", 4)
+        body = "\n".join([head[4], *block[1:]])
+        return dict(zip(COLUMNS, [*head[:4], body[1:-1]]))
+
+    assert read_records(str(sample), SPEC) == [expected(lines[:169]), expected(lines[169:])]
 
 
 def test_헤더_행은_설정으로만_건너뛴다(tmp_path):

@@ -1,6 +1,7 @@
 # cs_slf(삼성생명 고객센터 안내) custom_fields
 
 schema: v2
+doc_type: cs_slf
 source:
   kind: records
   records_at: faq_list
@@ -31,10 +32,7 @@ fields:
     default: null
   SRC_LAST_MOD_DT:
     alias: [게시일자]
-    default: null
     transform: date_int
-require:
-  fields: [GROUP_C]
 body:
   fields: [CS_CTGR_L1, CUSTOM_TITLE, CONTENT]
   labels:

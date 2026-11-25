@@ -36,6 +36,7 @@ from docling_core.types.doc import (
 from docling_core.types.doc.document import CodeItem, ContentLayer, LevelNumber, ListItem
 from docling_core.types.doc.labels import DocItemLabel
 
+from genon.preprocessor.processing.chunking import char_split as cs
 from genon.preprocessor.processing.chunking import header_path as hp
 from genon.preprocessor.processing.chunking import table_html as th
 from genon.preprocessor.processing.chunking.formula_text import (
@@ -141,8 +142,11 @@ class SmartChunkerBase(BaseChunker):
     merge_peers: bool = True
     # 토큰 수 계산 방식. "char"(default)=문자 수 기준 | "huggingface"=HF 토크나이저 기준
     tokenizer_type: str = "char"
-    # 청킹 모드. "split_only"(기본)=chunk_size 초과 청크만 분할(구조 보존) | "resize_all"=모든 청크를 chunk_size 에 맞게 병합/분할
-    chunk_mode: str = "split_only"
+    # 청킹 방식. "section"(기본)=chunk_size 초과 섹션만 분할(구조 보존) | "section_merge"=섹션을 chunk_size 에 맞게
+    # 병합/분할 | "character"=섹션을 무시하고 글자 수로 분할(_chunk_character)
+    chunk_mode: str = "section"
+    # chunk_mode=character 에서 이웃 chunk 가 겹치는 글자 수. 0 이면 겹치지 않는다.
+    chunk_overlap: int = 0
     # 청크 텍스트 선두 "HEADER: <섹션 경로>" 라인 부착 여부(기본 on). compose_vectors 의 실제 부착 지점과
     # 이 청커의 크기 산정(_size)이 같은 값을 봐야 청크 경계가 산출 텍스트와 일치한다.
     include_chunk_header: bool = True
@@ -174,6 +178,8 @@ class SmartChunkerBase(BaseChunker):
             _log.warning(cp.unknown_tokenizer_type_message(mode))
             mode = "char"
         self.tokenizer_type = mode
+        # 청커를 직접 생성할 때도 옛 이름(split_only·resize_all)·0/1 을 새 이름으로 맞춘다.
+        self.chunk_mode = cp.resolve_chunk_mode({}, self.chunk_mode, allow_character=True)
         if mode == "char":
             # 문자 수 기반: HF 토크나이저 로드 불필요 (외부 모델 의존 제거)
             self._tokenizer = None
@@ -934,7 +940,7 @@ class SmartChunkerBase(BaseChunker):
                 paths.append(path)
 
         # 다른 경로의 진부분 접두인 경로는 버린다: ('A',) + ('A','B') → ('A','B') 하나.
-        # (실측 card01 split_only 94건이 이 형태 — 접으면 표기가 짧아지고 의미는 같다)
+        # (실측 card01 section 94건이 이 형태 — 접으면 표기가 짧아지고 의미는 같다)
         return hp.collapse_paths(
             [self.CHUNK_HEADER_SEP.join(p) for p in paths], self.CHUNK_HEADER_SEP) or None
 
@@ -1330,10 +1336,10 @@ class SmartChunkerBase(BaseChunker):
 
         # ================================================================
         # 2.5단계: 너무 긴 청크는 분할 (인덱스 꼬임 방지를 위해 새 리스트 사용)
-        #   resize_all 전용. split_only 는 구조 그룹핑(4단계) 후 5.5단계에서 분할한다
+        #   section_merge 전용. section 은 구조 그룹핑(4단계) 후 5.5단계에서 분할한다
         #   (여기서 분할하면 같은 섹션 조각들이 4단계에서 다시 병합되어 무의미).
         # ================================================================
-        if self.max_tokens > 0 and self.chunk_mode == "resize_all":
+        if self.max_tokens > 0 and self.chunk_mode == "section_merge":
             final_sections = []  # 결과를 담을 새 리스트
             for text, items, h_infos, h_short in sections_with_text:
                 # 크기 판정·분할 예산 모두 헤더 라인 몫을 반영해야 최종 청크가 한도를 지킨다
@@ -1463,19 +1469,19 @@ class SmartChunkerBase(BaseChunker):
             section_level = get_header_level(header_infos, first=True)
             merged_level = get_header_level(merged_header_infos, first=False)
 
-            # split_only: base 섹션 granularity 유지 — 구조 그룹핑 병합 없이 섹션마다 분리(장 단위 병합 방지).
+            # section: base 섹션 granularity 유지 — 구조 그룹핑 병합 없이 섹션마다 분리(장 단위 병합 방지).
             #   (1·3단계로 만든 섹션을 그대로 두고, 초과분만 5.5단계에서 분할)
-            if self.chunk_mode == "split_only" and len(merged_texts) > 0:
+            if self.chunk_mode == "section" and len(merged_texts) > 0:
                 b_new_chunk = True
             # 표 격리: 표 섹션은 앞 그룹에 붙지 않고, 표를 담은 그룹 뒤에도 새 그룹을 연다.
-            # (split_only 는 위에서 이미 걸리므로 실질적으로 resize_all 경로의 방어다.)
+            # (section 은 위에서 이미 걸리므로 실질적으로 section_merge 경로의 방어다.)
             elif table_as_chunk and len(merged_texts) > 0 and (
                     self._has_table(items) or self._has_table(merged_items)):
                 b_new_chunk = True
-            # 토큰 수 초과 시 새로운 청크 생성 (resize_all 전용)
-            elif self.chunk_mode == "resize_all" and test_tokens > self.max_tokens and len(merged_texts) > 0:
+            # 토큰 수 초과 시 새로운 청크 생성 (section_merge 전용)
+            elif self.chunk_mode == "section_merge" and test_tokens > self.max_tokens and len(merged_texts) > 0:
                 b_new_chunk = True
-            # 현재 섹션헤더 레벨이 더 높으면 새로운 청크 생성 (resize_all 구조 경계)
+            # 현재 섹션헤더 레벨이 더 높으면 새로운 청크 생성 (section_merge 구조 경계)
             elif 0 <= section_level < merged_level:
                 b_new_chunk = True
             #----------------------------------
@@ -1511,7 +1517,7 @@ class SmartChunkerBase(BaseChunker):
             # char 모드면 문자 수, huggingface 모드면 토큰 수로 산정 (max_tokens 단위와 일치)
             return self._count_tokens(header_line + text)
 
-        if self.max_tokens > 0 and groups and self.chunk_mode == "resize_all":
+        if self.max_tokens > 0 and groups and self.chunk_mode == "section_merge":
             def _merge(a, b):
                 return {
                     "texts": a["texts"] + b["texts"],
@@ -1535,10 +1541,10 @@ class SmartChunkerBase(BaseChunker):
             groups = merged_groups
 
         # ================================================================
-        # 5.5단계: split_only 전용 — chunk_size 초과 그룹만 토큰 기준 균등 분할
+        # 5.5단계: section 전용 — chunk_size 초과 그룹만 토큰 기준 균등 분할
         #   (구조 기반 그룹은 유지, 작은 그룹은 병합하지 않고 그대로 둔다)
         # ================================================================
-        if self.max_tokens > 0 and groups and self.chunk_mode == "split_only":
+        if self.max_tokens > 0 and groups and self.chunk_mode == "section":
             new_groups = []
             for g in groups:
                 if _size(g) <= self.max_tokens:
@@ -1628,10 +1634,49 @@ class SmartChunkerBase(BaseChunker):
 
         doc_chunk = doc_chunks[0]  # preprocess는 하나의 청크만 반환
 
+        if self.chunk_mode == "character":
+            return iter(self._chunk_character(doc_chunk, dl_doc, **kwargs))
+
         final_chunks = self._split_document_by_tokens(doc_chunk, dl_doc, **kwargs)
         final_chunks = self._merge_heading_only_chunks(final_chunks)
 
         return iter(final_chunks)
+
+    def _chunk_character(self, doc_chunk: DocChunk, dl_doc: DoclingDocument, **kwargs) -> list[DocChunk]:
+        """섹션을 무시하고 항목 텍스트를 읽기 순서대로 chunk_size 글자까지 채워 자른다.
+
+        HEADER 줄은 붙이지 않는다(headings=None). 표 단독 chunk·짧은 chunk 병합·제목만 있는
+        chunk 병합은 쓰지 않는다. 항목 텍스트는 다른 방식과 같은 함수로 만들므로 표 직렬화와
+        표·그림 설명, 표기형태 기록이 그대로 따라온다. 분할 계산은 char_split 이 한다.
+        """
+        items = doc_chunk.meta.doc_items
+        texts = [self._generate_text_from_items_with_headers([item], [{}], dl_doc, **kwargs)
+                 for item in items]
+        size = self.max_tokens
+        if size > 0 and self.chunk_prefix_text:
+            # 문서 접두는 compose_vectors 가 chunk 마다 붙이므로 그 길이만큼 미리 뺀다.
+            reduced = size - len(self.chunk_prefix_text)
+            if reduced > 0:
+                size = reduced
+            else:
+                _log.warning(f"chunk 접두 길이({len(self.chunk_prefix_text)}) 가 chunk_size({size}) 이상: "
+                             f"접두 길이를 빼지 않고 chunk_size 그대로 사용")
+        spans = cs.split_spans(texts, size, self.chunk_overlap, self.delim)
+        table_indexes = {i for i, item in enumerate(items) if isinstance(item, TableItem)}
+        for index, count in cs.table_piece_counts([sp.items for sp in spans], table_indexes).items():
+            self._record_table_split(items[index], count)
+        return [
+            DocChunk(
+                text=sp.text,
+                meta=DocMeta(
+                    doc_items=[items[i] for i in sp.items],
+                    headings=None,
+                    captions=None,
+                    origin=doc_chunk.meta.origin,
+                ),
+            )
+            for sp in spans
+        ]
 
     def _merge_heading_only_chunks(self, chunks: list[DocChunk]) -> list[DocChunk]:
         """본문이 없고 제목만 있는 청크를 인접 청크로 병합한다.

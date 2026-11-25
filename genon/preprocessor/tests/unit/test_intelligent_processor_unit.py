@@ -265,7 +265,7 @@ def test_metadata_config_parses_field_transforms():
 
 
 # ----------------------------------------------------------------------
-# PPT 페이지 기반 청킹 — resize_all 병합 시 섹션 경로(HEADER) 유지.
+# PPT 페이지 기반 청킹 — section_merge 병합 시 섹션 경로(HEADER) 유지.
 #
 # 회귀 배경: 페이지 청크에는 headings 를 채우는데 연속 페이지 greedy 병합이 그걸
 # headings=None 으로 덮어써, 병합된 PPT 청크에만 HEADER 가 붙지 않았다. 병합 크기 판정에도
@@ -275,7 +275,7 @@ def test_metadata_config_parses_field_transforms():
 @pytest.mark.unit
 @pytest.mark.parametrize("module_name", ["intelligent_processor", "convert_processor"])
 def test_ppt_page_merge_keeps_header_paths(module_name):
-    """resize_all 로 페이지를 병합해도 섹션 경로가 살아있고 한도를 지킨다."""
+    """section_merge 로 페이지를 병합해도 섹션 경로가 살아있고 한도를 지킨다."""
     mod = pytest.importorskip(f"facade.{module_name}")
     from docling_core.types import DoclingDocument
     from docling_core.types.doc import BoundingBox, DocItemLabel, ProvenanceItem
@@ -293,7 +293,7 @@ def test_ppt_page_merge_keeps_header_paths(module_name):
     # __init__(config/prompt/네트워크) 우회 — split_documents_by_page 가 쓰는 속성만 채운다.
     proc = object.__new__(mod.DocumentProcessor)
     proc._chunk_size = 10000
-    proc._chunk_mode = "resize_all"
+    proc._chunk_mode = "section_merge"
     # tokenizer 필드는 char 모드에서도 pydantic 검증을 통과해야 한다(None 불가).
     proc._tokenizer = mod.GenosSmartChunker.model_fields["tokenizer"].default
     proc._tokenizer_type = "char"
@@ -302,10 +302,10 @@ def test_ppt_page_merge_keeps_header_paths(module_name):
     proc._compact_tables = True
     proc.page_chunk_counts = defaultdict(int)
 
-    chunks = proc.split_documents_by_page(doc, chunk_size=10000, chunk_mode="resize_all")
+    chunks = proc.split_documents_by_page(doc, chunk_size=10000, chunk_mode="section_merge")
 
     assert chunks, "페이지 청크가 생성되어야 한다"
-    assert len(chunks) < 3, "resize_all 이면 연속 페이지가 병합되어야 한다"
+    assert len(chunks) < 3, "section_merge 이면 연속 페이지가 병합되어야 한다"
     for ch in chunks:
         assert ch.meta.headings, f"병합 청크에 섹션 경로가 없다: {ch.text[:60]!r}"
         line = mod._build_header_line(ch.meta.headings, True)

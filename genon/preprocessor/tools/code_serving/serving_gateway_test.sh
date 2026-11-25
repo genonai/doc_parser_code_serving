@@ -33,10 +33,6 @@ python serving_gateway_test.py --mode chunker --doc-json result_serving_gateway_
 # GENOS_AUTH_KEY=<RUN_KEY> python serving_gateway_test.py --mode run --file-path "/app/src/service/genon/preprocessor/sample_files/생명FAQ_260712.xlsx" \
 #   --doc-type faq --out result_serving_gateway_test/faq_run.json --serving-id <RUN_SERVING_ID>
 
-# 카드 HTML(flatten 후): 모든 청크에 doc_type=card + 카드 12필드.
-# GENOS_AUTH_KEY=<RUN_KEY> python serving_gateway_test.py --mode run --file-path "/app/src/service/genon/preprocessor/sample_files/card.flat.html" \
-#   --doc-type card --out result_serving_gateway_test/card_run.json --serving-id <RUN_SERVING_ID>
-
 
 # ── LLM 캐시 테스트 ──────────────────────────────────────────────────────
 # 캐시는 별도 모드가 아니라 parser 에 --param 으로 opt-in. 같은 스코프(workflow_id/run_id/interim_root)로

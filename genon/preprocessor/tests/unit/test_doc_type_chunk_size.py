@@ -16,7 +16,7 @@ LLM 없이는 파싱이 끝나지 않는데, LLM 결과는 문서 전역 metadat
 cs_hpp 는 2026-09 사이트 설정 개편으로 문서 단위 llm(html)에서 **JSON 레코드 매핑**으로
 바뀌어(custom_field_cs_hpp.yaml: `kind: records`) 행 경로에 들어왔다. 그래서 docling 경로
 쪽 단정은 doc_type 에 묶이지 않는 형태로 둔다 — 대형 표 분할은 custom_fields 가 붙지 않는
-doc_type 으로, 반복 접두는 문서형 doc_type(card)에 kwargs 를 얹어서 본다.
+doc_type 으로, 반복 접두는 문서형 doc_type(테스트가 만든 규칙 파일)에 kwargs 를 얹어서 본다.
 
 monimo_news 도 행 경로였으나 원천이 레코드 배열에서 HTML 문서 한 건으로 바뀌면서
 `kind: html` 설정이 됐다(custom_field_monimo_news.yaml). 행 경로 계약은 cs_sss 가 덮고,
@@ -31,6 +31,7 @@ chunk_size 는 kwargs 로 명시한다(kwargs > yaml). 설정값이 바뀌어도
 
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -44,7 +45,7 @@ from genon.preprocessor.processing.core.chunker import _clamp_chunk_size
 _SAMPLES = Path(__file__).resolve().parents[2] / "sample_files" / "monimo"
 
 CHUNK_SIZE = 1000
-CHUNK_MODE = "split_only"
+CHUNK_MODE = "section"
 
 # 새 cs_hpp 원천(hpp_rag_adcc_*.json)의 레코드 두 건. 값은 샘플 픽스처와 같아야 한다.
 _CS_HPP_L1 = "이용안내"
@@ -76,13 +77,22 @@ def _chunk_header(text: str) -> str:
 
 
 # 반복 접두 검증용. 문서형(extractor=llm) doc_type 이 만드는 문서 전역 metadata 를
-# 흉내낸다 — 적지 않은 output_fields 는 None 으로 채워지므로 접두에 쓸 값만 준다.
-_CARD_PREFIX_FIELD = "product_name"
-_CARD_PRODUCT_NAME = "테스트 카드 상품"
-_CARD_LLM_STUB = json.dumps(
-    {"product_name": _CARD_PRODUCT_NAME, "product_name_norm": _CARD_PRODUCT_NAME},
-    ensure_ascii=False,
-)
+# 흉내낸다. 표준 설정에는 문서형 doc_type 이 없으므로 테스트가 규칙 파일을 만든다.
+_DOC_PREFIX_FIELD = "product_name"
+_DOC_PRODUCT_NAME = "테스트 상품"
+_DOC_LLM_STUB = json.dumps({"product_name": _DOC_PRODUCT_NAME}, ensure_ascii=False)
+_DOC_RULE = """\
+schema: v2
+doc_type: doc_llm
+source:
+  kind: document
+llm:
+- out: [product_name]
+  endpoint:
+    model_preset: default
+  prompt:
+    user: '{{raw_text}}'
+"""
 
 
 def _parse_and_chunk(source: Path, doc_type: str, llm_stub: str | None = None, *,
@@ -111,7 +121,10 @@ def _parse_and_chunk(source: Path, doc_type: str, llm_stub: str | None = None, *
                     enricher._call_llm = AsyncMock(return_value=llm_stub)
                     stubbed += 1
             assert stubbed, f"{doc_type} custom_fields enricher 를 찾지 못했습니다"
-        payload = await parser(request, str(source), doc_type=doc_type, log_level=3)
+        # 표 설명은 끈다 — 모니모 preset 주소가 자리표시값(<…>)이라 호출이 실패하고, 모니모 설정
+        # defaults.llm_call_failure: fail 이 그 실패로 parse 를 중단한다. 이 파일은 청킹만 본다.
+        payload = await parser(request, str(source), doc_type=doc_type, log_level=3,
+                               table_text_desc=0)
         chunk_kwargs = {"chunk_size": chunk_size, "chunk_mode": chunk_mode}
         if include_chunk_header is not None:
             chunk_kwargs["include_chunk_header"] = include_chunk_header
@@ -226,7 +239,7 @@ def test_cs_hpp_chunks_respect_chunk_size():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("chunk_mode", ["split_only", "resize_all"])
+@pytest.mark.parametrize("chunk_mode", ["section", "section_merge"])
 def test_large_html_table_is_split_by_complete_rows(chunk_mode):
     """1000자 초과 단일 HTML 표는 태그/행 중간이 아니라 완전한 table 조각으로 나뉜다.
 
@@ -272,7 +285,7 @@ def test_large_html_table_is_split_by_complete_rows(chunk_mode):
 
 
 @pytest.mark.unit
-def test_chunk_prefix_fields_repeat_on_every_chunk_within_chunk_size():
+def test_chunk_prefix_fields_repeat_on_every_chunk_within_chunk_size(tmp_path):
     """chunk_prefix_fields — 지정 필드가 모든 청크 선두에 반복되고 상한은 그대로 지켜진다.
 
     청커가 접두 몫을 크기 산정에서 예약하지 않으면 본문이 chunk_size 를 꽉 채운 뒤 접두가
@@ -280,21 +293,25 @@ def test_chunk_prefix_fields_repeat_on_every_chunk_within_chunk_size():
 
     접두는 **docling 경로의 레버**다 — 행 경로는 매퍼가 접두까지 포함한 본문을 만들어
     내려보내므로 kwargs 가 닿지 않는다. 그래서 문서 단위 metadata 를 만드는
-    doc_type(card, extractor=llm)에 kwargs 를 얹어 본다. 설정 자리는 custom_field yaml
+    doc_type(extractor=llm)에 kwargs 를 얹어 본다. 설정 자리는 custom_field yaml
     이지만 kwargs 로 덮어 doc_type 하나에 묶이지 않게 한다(두 경로가 같은 resolver 를 탄다).
     """
     cp = pytest.importorskip("genon.preprocessor.facade.chunking_processor")
     source = _require("monimo_cs_hpp_marker_sections_sample.html")
+    config_dir = tmp_path / "parse"
+    shutil.copytree(PREPROCESSOR_DIR / "activities" / "parse", config_dir,
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    (config_dir / "custom_field_doc_llm.yaml").write_text(_DOC_RULE, encoding="utf-8")
     rows = _parse_and_chunk(
-        source, "card", llm_stub=_CARD_LLM_STUB, include_chunk_header=True,
-        extra_kwargs={"chunk_prefix_fields": _CARD_PREFIX_FIELD},
-        config_dir="activities/parse",  # card 는 표준 설정에만 등록되어 있다
+        source, "doc_llm", llm_stub=_DOC_LLM_STUB, include_chunk_header=True,
+        extra_kwargs={"chunk_prefix_fields": _DOC_PREFIX_FIELD},
+        config_dir=str(config_dir),
     )
 
     assert len(rows) > 1
     # 선두 조립 순서 계약: HEADER → 반복 접두 → 본문(#552).
     assert all(r["text"].splitlines()[0].startswith("HEADER: ") for r in rows)
-    assert all(r["text"].splitlines()[1] == _CARD_PRODUCT_NAME for r in rows), \
+    assert all(r["text"].splitlines()[1] == _DOC_PRODUCT_NAME for r in rows), \
         "모든 청크에 반복돼야 합니다"
 
     effective = _clamp_chunk_size(CHUNK_SIZE)

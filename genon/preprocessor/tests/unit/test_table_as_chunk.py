@@ -60,7 +60,7 @@ def test_table_gets_its_own_chunk(module_name):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _text_table_text_doc()
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char")
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char")
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
     table_texts = [t for t in texts if TABLE_MARKER in t]
@@ -78,7 +78,7 @@ def test_body_between_tables_still_respects_chunk_size(module_name):
     doc = _text_table_text_doc(body_repeat=12)
     max_tokens = 500
     chunker = module.GenosSmartChunker(
-        max_tokens=max_tokens, chunk_mode="split_only", tokenizer_type="char",
+        max_tokens=max_tokens, chunk_mode="section", tokenizer_type="char",
         include_chunk_header=False)
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
@@ -95,7 +95,7 @@ def test_table_as_chunk_off_restores_merging(module_name):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _text_table_text_doc()
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char",
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char",
         table_as_chunk=False)
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
@@ -111,7 +111,7 @@ def test_kwargs_override_beats_field(module_name):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _text_table_text_doc()
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char",
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char",
         table_as_chunk=True)
     texts = [chunk.text for chunk in
              chunker.chunk(dl_doc=doc, export_to_html=1, table_as_chunk=False)]
@@ -123,18 +123,18 @@ def test_kwargs_override_beats_field(module_name):
 
 @pytest.mark.unit
 @pytest.mark.parametrize("module_name", _CHUNKER_MODULES)
-def test_resize_all_does_not_merge_table_groups(module_name):
-    """resize_all 의 greedy 병합도 표 경계를 넘지 않는다."""
+def test_section_merge_does_not_merge_table_groups(module_name):
+    """section_merge 의 greedy 병합도 표 경계를 넘지 않는다."""
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _text_table_text_doc()
     # 문서 전체가 한 청크에 들어가고도 남는 예산이라, 격리가 없으면 반드시 병합된다.
     chunker = module.GenosSmartChunker(
-        max_tokens=100000, chunk_mode="resize_all", tokenizer_type="char")
+        max_tokens=100000, chunk_mode="section_merge", tokenizer_type="char")
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
     table_texts = [t for t in texts if TABLE_MARKER in t]
     assert len(table_texts) == 1
-    assert BODY_MARKER not in table_texts[0], "resize_all 이 표를 본문과 병합했다"
+    assert BODY_MARKER not in table_texts[0], "section_merge 이 표를 본문과 병합했다"
 
 
 def _sheet_doc():
@@ -176,7 +176,7 @@ def test_sheet_tables_stay_one_chunk_each(module_name):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _sheet_doc()
     chunker = module.GenosSmartChunker(
-        max_tokens=100000, chunk_mode="resize_all", tokenizer_type="char")
+        max_tokens=100000, chunk_mode="section_merge", tokenizer_type="char")
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
     for sheet in ("1분기", "2분기"):
@@ -202,7 +202,7 @@ def test_short_title_above_table_stays_with_it(module_name):
     doc.add_text(label=core.DocItemLabel.TEXT, text=title)
     doc.add_table(data=doc.tables[0].data)
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char",
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char",
         include_chunk_header=False)
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 

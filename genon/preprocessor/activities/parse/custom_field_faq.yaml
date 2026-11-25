@@ -1,9 +1,9 @@
 # faq(자주 묻는 질문) custom_fields
 
 schema: v2
+doc_type: faq
 source:
   kind: records
-  on_missing: error
   records_at: faqMenuList
 fields:
   BIZ_ID:

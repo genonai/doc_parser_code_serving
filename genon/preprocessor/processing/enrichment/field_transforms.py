@@ -229,6 +229,28 @@ def transform_percent(value: Any) -> Any:
     return int((numerator * 100 / denominator).to_integral_value(rounding=ROUND_FLOOR))
 
 
+def transform_unique(value: Any) -> Any:
+    """unique 변환기: 리스트에서 같은 값을 지우고 처음 나온 순서를 유지한다.
+
+    원천 배열에 같은 키워드가 반복되어 들어오는 경우(브랜드명 등) 검색 본문과 메타에 같은
+    값이 겹치지 않게 한다. 리스트가 아니면 그대로 돌려준다. 비교는 값 그대로 하며 대소문자나
+    공백을 맞추지 않는다. dict 처럼 해시할 수 없는 원소는 JSON 문자열로 비교한다.
+    """
+    if not isinstance(value, list):
+        return value
+    seen: set = set()
+    out = []
+    for item in value:
+        key = item if isinstance(item, (str, int, float, bool, type(None))) else json.dumps(
+            item, ensure_ascii=False, sort_keys=True, default=str
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 # ── 원천 값 → 사람이 읽는 평문 (`to_text` 변환기용) ──────────────
 # 원천이 같은 컬럼에 JSON·HTML·평문을 섞어 보낸다(모니모 AI차트뷰 detail_desc). 정해진
 # 스키마가 없으므로 **종류를 자동 판별해 하나의 마크다운으로 수렴**시킨다. 설정은 없다.
@@ -526,6 +548,7 @@ VALUE_TRANSFORMS: dict[str, Callable[[Any], Any]] = {
     "normalize": transform_normalize,
     "text_norm": transform_normalize,      # 옛 이름(별칭)
     "percent": transform_percent,
+    "unique": transform_unique,
 }
 
 

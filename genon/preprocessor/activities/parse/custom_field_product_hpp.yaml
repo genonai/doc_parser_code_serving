@@ -1,6 +1,7 @@
 # product_hpp(삼성카드 상품 안내) custom_fields
 
 schema: v2
+doc_type: product_hpp
 source:
   kind: sections
   sections:
@@ -54,8 +55,6 @@ body:
 llm:
 - out: [FEE]
   in: [feeUrl]
-  parser:
-    type: json
   endpoint:
     model_preset: default
   params:

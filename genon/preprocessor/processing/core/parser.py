@@ -48,6 +48,14 @@ from docling_core.types.doc import (
 
 from genon.preprocessor.processing.enrichment import file_source, html_select
 from genon.preprocessor.processing.enrichment.custom_fields_enricher import normalize_doc_type
+from genon.preprocessor.processing.enrichment.llm_response import (
+    FirstFailure,
+    aborts_on_llm_failure,
+    is_llm_call_failure,
+    llm_call_failure_configured,
+    llm_failure_aborts,
+    with_llm_call_failure,
+)
 from genon.preprocessor.processing.converters import delimited_text as dt
 from genon.preprocessor.processing.converters.plain_text import text_to_html
 from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
@@ -57,6 +65,7 @@ from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
     repack_records,
 )
 from genon.preprocessor.processing.enrichment.json_records import (
+    AllRecordsFilteredOut,
     build_json_records_mappers,
 )
 from genon.preprocessor.processing.enrichment.json_semantic import (
@@ -101,15 +110,26 @@ def _handle_stage_error(exc: Exception, stage: str) -> None:
 
     - lenient(기본): 기존처럼 warning 후 계속(soft-fail, 하위호환).
     - strict: stage/error_type 를 실어 GenosServiceException 으로 재-raise(Temporal 경로).
-    error_policy 는 요청 스코프 CacheContext 에서 읽는다(단일 소스).
+    - parse 설정 `defaults.llm_call_failure: fail`: LLM 호출 실패면 strict 와 같이 재-raise 한다.
+      설정 충돌 같은 그 밖의 예외와 LLM 을 쓰지 않는 doc_type_stamp 에는 적용하지 않는다.
+    정책은 요청 스코프 CacheContext 에서 읽는다(단일 소스).
     """
     error_type = _classify_error(exc)
-    if _cache_current_context().error_policy == "strict":
+    by_config = (stage != "doc_type_stamp" and llm_call_failure_configured()
+                 and is_llm_call_failure(exc))
+    by_request = _cache_current_context().error_policy == "strict"
+    if by_config or by_request:
         # 원인 원문은 길 수 있어 맨 끝에 둔다 — 콘솔(220자)·GenOS(약 500자)에서 앞의 안내가 먼저 보인다.
+        if by_config:
+            also = ", 요청의 error_policy=strict 도 제거 필요" if by_request else ""
+            message = (f"enrichment {stage} LLM 호출 실패로 parse 중단(defaults.llm_call_failure=fail): {exc}\n"
+                       f"LLM 호출이 실패해도 계속하려면 이 activity 의 config.yaml 의 "
+                       f"defaults.llm_call_failure 를 warn 으로 변경 필요{also}")
+        else:
+            message = (f"enrichment {stage} 단계 실패로 파싱 중단(error_policy=strict): {exc}\n"
+                       "요청에서 error_policy 를 빼면 이 단계만 건너뛰고 계속함")
         raise GenosServiceException(
-            "1",
-            f"enrichment {stage} 단계 실패로 파싱 중단(error_policy=strict): {exc}\n"
-            "요청에서 error_policy 를 빼면 이 단계만 건너뛰고 계속함",
+            "1", message,
             stage=stage, error_type=error_type,
             reason_code=reason_of(exc) or _llm_reason(exc, error_type),
         ) from exc
@@ -202,8 +222,11 @@ def _llm_reason(exc: Exception, error_type: str):
             status = getattr(getattr(item, "response", None), "status_code", None)
         if isinstance(status, int):
             return "PARSE_S001"   # 4xx: 인증·권한·요청 거부
-    if any("LLMResponseError" in type(item).__name__ for item in chain):
-        return "PARSE_S201"       # 응답 형식 이상(송신기가 LLMApiError 로 포장한 경우 포함)
+    # 응답 형식 이상 — chat completion 형식 아님(송신기가 LLMApiError 로 포장한 경우 포함),
+    # 응답 본문이 JSON 아님(JSONDecodeError), VLM 응답 형식 아님(ValidationError).
+    if any(name in type(item).__name__ for item in chain
+           for name in ("LLMResponseError", "JSONDecodeError", "ValidationError")):
+        return "PARSE_S201"
     return None                   # 진입점이 미분류 코드를 싣는다
 
 
@@ -252,6 +275,13 @@ def _head(items, limit: int = 3, sep: str = ", ") -> str:
     return sep.join(items[:limit]) + (f" 외 {rest}개" if rest > 0 else "")
 
 
+def _mark_filtered_out(merged: dict, filtered_out: list, n_mappers: int) -> dict:
+    """모든 매퍼의 레코드가 filter·keep 에서 빠진 빈 결과면 청커가 0건 실패로 보지 않게 표시한다."""
+    if filtered_out and len(filtered_out) == n_mappers:
+        merged.setdefault("metadata", {})[jb.RECORDS_FILTERED_OUT_KEY] = sum(filtered_out)
+    return merged
+
+
 def _config_error(message: str) -> "GenosServiceException":
     """기동 시 설정 오류용 예외 팩토리. 공용 모듈이 이 처리기의 예외 클래스를 쓰게 하는 통로다."""
     return GenosServiceException("1", message, stage="custom_fields", error_type="permanent")
@@ -297,6 +327,17 @@ for _n in ("fontTools", "fontTools.ttLib", "fontTools.ttLib.ttFont"):
 # PDF 변환 대상 확장자
 # edit_input 를 **데이터 형태**로 받는 확장자. 나머지는 파일 경로로 받는다(#363 08-3).
 _DATA_HOOK_EXTS = {".json", ".md", ".html", ".htm", ".csv", ".xlsx", ".xlsm"}
+
+# 줄 단위 JSON. 설정의 확장자 별칭과 무관하게 .json 경로로 처리하되 사본을 만들지 않는다.
+# 원본 경로가 그대로 남아 _load_json_payload 가 이 확장자로 줄 단위 읽기를 판정한다.
+_JSONL_EXT = ".jsonl"
+
+
+def _effective_ext(raw_ext: str, aliases) -> str:
+    """처리 경로를 정하는 확장자. .jsonl 은 .json, 그 밖은 확장자 별칭을 반영한다."""
+    if raw_ext == _JSONL_EXT:
+        return ".json"
+    return _resolve_ext(raw_ext, aliases)
 
 CONVERTIBLE_EXTENSIONS = ['.hwp', '.txt', '.json', '.md', '.ppt', '.pptx', '.docx']
 
@@ -644,9 +685,9 @@ class ParserCore:
         return out, out is not data
 
     def resolve_ext(self, file_path: str) -> str:
-        """확장자 별칭(formats.extension_aliases)이 반영된 확장자."""
+        """처리 경로를 정하는 확장자(.jsonl 은 .json, 그 밖은 formats.extension_aliases 반영)."""
         raw = os.path.splitext(file_path)[-1].lower()
-        return _resolve_ext(raw, getattr(self, "_ext_aliases", {}))
+        return _effective_ext(raw, getattr(self, "_ext_aliases", {}))
 
     @staticmethod
     def resolve_doc_type(**kwargs):
@@ -685,6 +726,10 @@ class ParserCore:
         self._unknown_doc_type = _guard(
             "defaults.unknown_doc_type", pcfg.resolve_unknown_doc_type_policy,
             defaults_cfg.get("unknown_doc_type"))
+        # LLM 호출 실패 시 처리(warn | fail). fail 이면 요청 컨텍스트에 실어 첫 실패에서 중단한다.
+        self._llm_call_failure = _guard(
+            "defaults.llm_call_failure", pcfg.resolve_llm_call_failure_policy,
+            defaults_cfg.get("llm_call_failure"))
 
         self._hwp = HwpDocumentLoader()
         self._docx = DocxDocumentLoader()
@@ -1258,7 +1303,8 @@ class ParserCore:
         문서 모드 `_parse_json`)가 모두 이 한 곳으로 들어온다. 설정으로 안 되는 원천
         구조(동명 키 충돌·동적 키·조건부 선택 등)는 공용 모듈이 아니라 여기서
         payload 모양을 바꿔 푼다. 줄 단위 JSON(JSONL)은 훅이 처리하지 않으면 줄마다 읽어
-        list 로 돌려준다.
+        list 로 돌려준다. 확장자가 `.jsonl` 이면 파일 전체를 JSON 하나로 읽지 않고 처음부터
+        이 경로로 간다 — 한 줄짜리도 1건짜리 list 가 된다.
 
         **반드시 doc_type 으로 게이팅한다.** 게이팅 없이 정규화를 넣으면 모든 JSON
         doc_type 의 산출이 바뀐다. 읽히지 않던 입력만 살리는 폴백(위 JSONL)은 예외다. 예:
@@ -1274,34 +1320,38 @@ class ParserCore:
                 "1", f"JSON 파일 읽기 실패: {os.path.basename(file_path)} ({exc})",
                 error_type=kind, reason_code=code,
             ) from exc
-        try:
-            # strict=False: 문자열 안의 날 제어문자(줄바꿈·탭·CR)를 허용한다.
-            # CMS 가 뽑아낸 HTML 본문을 escape 없이 JSON 문자열에 담아 보내는 원천이 있다
-            # (실측: 카드 상품 원천의 htmlList[0].feeUrl). 구조 오류는 그대로 거부되므로
-            # 지금 읽히는 문서의 산출은 바뀌지 않고, 지금 실패하는 입력만 읽히게 된다.
-            payload = json.JSONDecoder(strict=False).decode(text)
-        except ValueError as exc:
-            # 깨진 JSON 은 훅에 원문 str 을 넘겨 구제 기회를 준다(JSONL 등).
-            # 훅이 없거나 손대지 않으면 종전대로 입력 오류로 끝난다.
-            payload, changed = await self._hook_edit_input(
-                ".json", {**kwargs, "doc_type": doc_type}, text)
-            if not changed:
-                # 훅이 처리하지 않은 줄 단위 JSON(JSONL)은 한 줄에 값 하나로 읽어 list 로 돌려준다.
-                # 비어 있지 않은 줄이 모두 JSON 으로 읽혀야 하고, 아니면 종전대로 입력 오류다.
-                lines = [line for line in text.splitlines() if line.strip()]
-                if lines:
-                    try:
-                        return [json.JSONDecoder(strict=False).decode(line) for line in lines]
-                    except ValueError:
-                        pass
-                raise GenosServiceException(
-                    "1", f"JSON 파일 읽기 실패: {os.path.basename(file_path)} ({exc})",
-                    error_type="permanent", reason_code="PARSE_D010",
-                ) from exc
+        # strict=False: 문자열 안의 날 제어문자(줄바꿈·탭·CR)를 허용한다.
+        # CMS 가 뽑아낸 HTML 본문을 escape 없이 JSON 문자열에 담아 보내는 원천이 있다
+        # (실측: 카드 상품 원천의 htmlList[0].feeUrl). 구조 오류는 그대로 거부되므로
+        # 지금 읽히는 문서의 산출은 바뀌지 않고, 지금 실패하는 입력만 읽히게 된다.
+        decode = json.JSONDecoder(strict=False).decode
+        error: ValueError | None = None
+        if os.path.splitext(file_path)[-1].lower() != _JSONL_EXT:
+            try:
+                payload = decode(text)
+            except ValueError as exc:
+                error = exc
+            else:
+                payload, _ = await self._hook_edit_input(
+                    ".json", {**kwargs, "doc_type": doc_type}, payload)
+                return payload
+        # 깨진 JSON 과 .jsonl 은 훅에 원문 str 을 넘겨 구제 기회를 준다.
+        payload, changed = await self._hook_edit_input(
+            ".json", {**kwargs, "doc_type": doc_type}, text)
+        if changed:
             return payload
-        payload, _ = await self._hook_edit_input(
-            ".json", {**kwargs, "doc_type": doc_type}, payload)
-        return payload
+        # 훅이 처리하지 않은 줄 단위 JSON(JSONL)은 한 줄에 값 하나로 읽어 list 로 돌려준다.
+        # 비어 있지 않은 줄이 모두 JSON 으로 읽혀야 하고, 아니면 입력 오류다.
+        lines = [line for line in text.splitlines() if line.strip()]
+        if lines:
+            try:
+                return [decode(line) for line in lines]
+            except ValueError as exc:
+                error = error or exc
+        raise GenosServiceException(
+            "1", f"JSON 파일 읽기 실패: {os.path.basename(file_path)} ({error or '내용 없음'})",
+            error_type="permanent", reason_code="PARSE_D010",
+        ) from error
 
     def _llm_field_enricher(self, spec, mapper):
         """llm_fields 항목용 CustomFieldsEnricher(항목당 1개, 생성 후 캐시).
@@ -1362,16 +1412,26 @@ class ParserCore:
                 continue
 
             semaphore = asyncio.Semaphore(spec.concurrency)
+            # 중단 모드면 첫 LLM 호출 실패 뒤 남은 레코드는 호출하지 않고 문서 처리를 중단한다(on_error 미적용).
+            stop = FirstFailure()
 
             async def _extract(record_fields: dict) -> dict:
                 async with semaphore:
-                    return await enricher.extract_fields_from_text(
-                        spec.build_input_text(record_fields)
-                    )
+                    if stop.stopped():
+                        return {}
+                    try:
+                        return await enricher.extract_fields_from_text(
+                            spec.build_input_text(record_fields)
+                        )
+                    except Exception as exc:
+                        stop.record(exc)
+                        raise
 
             results = await asyncio.gather(
                 *(_extract(fields) for fields in fields_list), return_exceptions=True
             )
+            if stop.error is not None:
+                _handle_stage_error(stop.error, "custom_fields")
 
             kept: list = []
             failed = 0
@@ -1430,6 +1490,8 @@ class ParserCore:
                     spec.build_input_text(document_fields)
                 )
             except Exception as exc:
+                if aborts_on_llm_failure(exc):
+                    _handle_stage_error(exc, "custom_fields")
                 _log.warning(
                     f"[llm_fields] {spec.label}: 문서 단위 LLM 필드 추출 실패, "
                     f"{_head(spec.output_fields)} 는 null 로 둠")
@@ -1484,6 +1546,7 @@ class ParserCore:
         doc_type = kwargs.get("doc_type")
         payload = await self._records_payload(file_path, mappers, doc_type, **kwargs)
         results = []
+        filtered_out = []
         for mapper in mappers:
             # 파일명 원천(`alias: [$file]`)은 json_mapping 만 받는다. json_semantic 매퍼도 이
             # 목록에 섞이므로 선언한 매퍼에만 넘긴다.
@@ -1500,6 +1563,9 @@ class ParserCore:
                     compact_tables=bool(getattr(self, "_compact_tables", True)),
                     **file_kwargs,
                 )
+            except AllRecordsFilteredOut as exc:
+                filtered_out.append(exc.filtered)
+                fields_list = []
             except ValueError as exc:
                 raise GenosServiceException(
                     "1", str(exc), stage="custom_fields", error_type="permanent",
@@ -1518,7 +1584,7 @@ class ParserCore:
                 table_format=getattr(self, "_table_format", "html"),
                 compact_tables=bool(getattr(self, "_compact_tables", True)),
             ))
-        return merge_parse_formats(results)
+        return _mark_filtered_out(merge_parse_formats(results), filtered_out, len(mappers))
 
     async def _parse_tabular_records(
         self, file_path: str, mappers: list, runtime_doc_type: Any,
@@ -1552,6 +1618,7 @@ class ParserCore:
         # 표 단위로 맡았는지 본다. 건수 총합만 세면 매퍼 A 가 시트1을 맡은 순간 시트2가
         # 아무에게도 안 맡겨져도 "맡았다"가 되어, 표 하나가 통째로 조용히 사라진다.
         claimed_pages: set = set()
+        filtered_out: list = []
         for mapper in mappers:
             try:
                 fields_list = mapper.build_fields(
@@ -1559,6 +1626,9 @@ class ParserCore:
                     table_format=getattr(self, "_table_format", "html"),
                     compact_tables=bool(getattr(self, "_compact_tables", True)),
                 )
+            except AllRecordsFilteredOut as exc:
+                filtered_out.append(exc.filtered)
+                fields_list = []
             except (FileNotFoundError, TypeError, ValueError) as exc:
                 raise GenosServiceException(
                     "1", str(exc), stage="custom_fields", error_type="permanent",
@@ -1589,7 +1659,7 @@ class ParserCore:
                     "시트 머리글(컬럼 이름)과 맞는지 확인 필요"
                 )
         return page_check.attach(
-            merge_parse_formats(results),
+            _mark_filtered_out(merge_parse_formats(results), filtered_out, len(mappers)),
             page_check.check_sheets(file_path, os.path.splitext(file_path)[1].lower(), data_dict,
                                     only_sheets),
             os.path.basename(file_path), request)
@@ -1667,7 +1737,13 @@ class ParserCore:
         # 페이지별 native text 수집 → 프롬프트({{page_text}})에 반영해 페이지 설명 요청
         page_texts = collect_page_texts(document)
         with prof.stage("page_desc"):
-            page_descs = describe_pages(document, self._page_desc_options, page_texts=page_texts)
+            try:
+                page_descs = describe_pages(document, self._page_desc_options, page_texts=page_texts)
+            except Exception as exc:
+                # 중단 모드의 LLM 호출 실패는 사유 코드를 붙여 올린다. 그 밖의 예외는 그대로 올린다.
+                if aborts_on_llm_failure(exc):
+                    _handle_stage_error(exc, "page_description")
+                raise
         described = 0
         for page_no in sorted(page_descs.keys()):
             desc = page_descs[page_no].strip()
@@ -1711,7 +1787,7 @@ class ParserCore:
         try:
             described = await enricher.describe_texts(contents, **kwargs)
         except Exception as exc:
-            skip_table_stage(exc, "table_text_description")
+            skip_table_stage(exc, "table_text_description", handle_error=_handle_stage_error)
             return result
         for element, content in zip(elements, described):
             element["content"] = content
@@ -1751,7 +1827,7 @@ class ParserCore:
                 document = await self._intel.enrich_custom_fields(document, **kwargs)
         except Exception as exc:
             _handle_stage_error(exc, "custom_fields")
-        # doc_type 스탬프(예: card): 요청 kwargs 로 doc_type 이 오면 문서 메타에 저장 → compose_vectors 가
+        # doc_type 스탬프(예: product_slf): 요청 kwargs 로 doc_type 이 오면 문서 메타에 저장 → compose_vectors 가
         # 모든 청크에 broadcast + result["metadata"] 에도 노출. (faq 는 tabular 경로에서 별도 처리)
         doc_type = normalize_doc_type(kwargs.get("doc_type"))
         if doc_type:
@@ -1829,10 +1905,17 @@ class ParserCore:
         # 민감정보 분류(#315): guardrail_call(0/1) 이면 문서 전체 1회 분류 → sensitive_infos 를 응답에 부착.
         # chunking 이 이 값을 받아 청크별 quote 매칭·라벨·마스킹을 수행한다(#315 parser→chunking 구조).
         if gr.call_enabled(kwargs) and self._gr_cfg.configured:
-            infos = gr.classify_document(
-                gr.doc_text(doc), self._gr_cfg.url, self._gr_cfg.workflow_id,
-                self._gr_cfg.api_key, self._gr_cfg.timeout,
-            )
+            text = gr.doc_text(doc)
+            try:
+                infos = gr.classify_document(
+                    text, self._gr_cfg.url, self._gr_cfg.workflow_id,
+                    self._gr_cfg.api_key, self._gr_cfg.timeout,
+                    raise_on_error=llm_failure_aborts(),
+                )
+            except Exception as exc:
+                # raise_on_error 일 때(중단 모드)만 여기로 온다. 사유 코드를 붙여 올린다.
+                _handle_stage_error(exc, "guardrail")
+                raise
             if infos:
                 resp["sensitive_infos"] = infos
         elif gr.call_enabled(kwargs):
@@ -2310,9 +2393,12 @@ class ParserCore:
         # 요청마다 바꾸면 동시에 도는 다른 요청의 로그까지 바뀐다(#481 F-C). 요청 log_level 은 무시한다.
         raw_ext = os.path.splitext(file_path)[-1].lower()
         # __init__ 을 우회해 만든 인스턴스(단위 테스트)도 견디도록 getattr 로 읽는다.
-        ext = _resolve_ext(raw_ext, getattr(self, "_ext_aliases", {}))
+        ext = _effective_ext(raw_ext, getattr(self, "_ext_aliases", {}))
         doc_type = self.resolve_doc_type(**kwargs)
-        alias = f"{raw_ext} → {ext}(확장자 별칭)" if ext != raw_ext else ext
+        if raw_ext == _JSONL_EXT:
+            alias = f"{raw_ext}(줄 단위 JSON)"
+        else:
+            alias = f"{raw_ext} → {ext}(확장자 별칭)" if ext != raw_ext else ext
         _log.info(
             f"parsing 시작: {os.path.basename(file_path)} (확장자={alias or '없음'}, "
             f"doc_type={doc_type or '-'}, 설정={self._config_label or '-'})")
@@ -2341,7 +2427,9 @@ class ParserCore:
 
         # #329: LLM 캐시 / error_policy 컨텍스트를 요청 스코프로 설정(/parse 는 body 의
         # workflow_id/run_id 로 스코프 유도). ThreadPool 워커엔 in_current_context 로 전파.
-        cache_token = _set_cache_context(_resolve_cache_context(job.params))
+        # LLM 호출 실패 중단 판정(설정 defaults.llm_call_failure=fail 또는 요청 strict)을 함께 싣는다.
+        cache_token = _set_cache_context(with_llm_call_failure(
+            _resolve_cache_context(job.params), getattr(self, "_llm_call_failure", "warn")))
         # 변환 PDF 정책(요청 스코프). 프로세서는 싱글턴이라 요청마다 새로 만든다.
         # kwargs 가 yaml 을 덮어쓴다: keep_pdf(0/1) / pdf_dir(경로).
         pdf_policy = getattr(self, "_pdf_output", pa.PdfArtifactOptions()).for_request(
@@ -2380,7 +2468,7 @@ class ParserCore:
                         error_type="permanent", reason_code="PARSE_D014",
                     )
 
-            if ext != raw_ext:
+            if ext != raw_ext and raw_ext != _JSONL_EXT:
                 # docling 은 파일명 확장자로 포맷을 판정하므로 이름을 바꾼 사본을 넘긴다.
                 # 원본 경로는 artifacts_source 로 남겨 media_files 경로를 원본 기준으로 유지한다.
                 try:

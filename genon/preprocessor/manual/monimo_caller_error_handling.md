@@ -123,18 +123,22 @@ def judge(http_status: int | None, body: dict | None) -> str:
 | 일부 청크가 품질 검증에 걸림 | `chunk_validation.count`·`reasons`·`items` | 모니모 설정(`action: drop`)은 걸린 청크를 `data` 에서 빼고 돌려줍니다. 제외 건수를 적재 이력에 남깁니다 |
 | 파서가 넘긴 메타가 청크에 실리지 않음 | `chunk_validation.missing_fields` | 청크는 그대로 적재됩니다. 반복되면 전처리 운영자에게 알립니다 |
 | 청크가 글자 수 상한을 넘음 | `chunk_validation.max_length` | 청크는 그대로 적재됩니다. 모니모 설정은 상한(`max_chars`)을 넣지 않아 현재는 나오지 않습니다 |
-| LLM 보강 실패(문서 요약, 표 설명, custom_fields LLM 추출 등) | 기본 정책(`error_policy: lenient`)에서는 성공 응답이며, 값이나 설명이 비거나 일부만 남을 수 있습니다. **응답에 따로 표시되지 않고** 로그에만 남습니다 | 적재에 꼭 필요한 필드는 호출부에서 값이 있는지 검사합니다. 실패 응답으로 받는 방법은 바로 아래에 있습니다 |
+| LLM 응답이 비었거나 내용이 형식에 맞지 않음(JSON 깨짐 등) | 성공 응답이며, 값이나 설명이 비거나 일부만 남을 수 있습니다. **응답에 따로 표시되지 않고** 로그에만 남습니다 | 적재에 꼭 필요한 필드는 호출부에서 값이 있는지 검사합니다. LLM 호출 자체의 실패는 실패 응답으로 옵니다(바로 아래) |
 
-### 보강 실패를 실패 응답으로 받으려면
+### LLM 호출 실패는 실패 응답입니다
 
-요청 `params` 에 `error_policy: strict` 를 넣으면 문서 요약·custom_fields 등 보강 단계의 상위 오류가 `stage`·`error_kind`·`reason_code`
-를 실은 실패 응답으로 옵니다. 다만 아래는 strict 에서도 실패 응답이 되지 않습니다.
+모니모 parse 설정은 `defaults.llm_call_failure: fail` 입니다. parse 단계의 LLM·VLM 호출(문서 요약, 그림·PPT 페이지 설명,
+표 설명, custom_fields LLM 추출, `rows`·`records`·`sections` 문서유형의 LLM 생성 필드, 민감정보 분류)이 실패하면 첫 실패에서
+문서 처리를 멈추고 `stage`·`error_kind`·`reason_code` 를 실은 실패 응답을 돌려줍니다. 요청 `params` 의 `error_policy` 로
+이 동작을 끌 수 없습니다.
 
-- 표 설명 생성 실패: 경고를 남기고 건너뜁니다.
-- `rows`·`records` 문서유형의 건별 LLM 생성 필드: 설정의 `on_error` 정책을 따릅니다.
-- `sections` 문서유형의 문서 단위 LLM 생성 필드: 호출이 실패하면 그 필드를 null 로 두고 섹션 처리를 계속합니다.
-- custom_fields 문서형 추출기(`llm`·`python`·`html_select`) 내부에서 처리한 실패: 추출값은 비어 있을 수 있으나
-  기본값·상수·front matter 처럼 LLM 과 무관한 값은 채워진 채 진행합니다.
+- 실패로 보는 것: HTTP 오류, 연결 오류, 시간 초과·요청 deadline 초과, 응답 형식 이상(chat completion 형식 아님),
+  설정이 선언한 입력 길이 초과(`PARSE_P001`). 사유 코드는 `PARSE_S001`(4xx)·`S101`(연결 오류·429·5xx)·`S102`(시간 초과)·
+  `S201`(응답 형식 이상)·`P001` 입니다.
+- 실패로 보지 않는 것: 빈 응답, 모델 출력 내용 이상(JSON 깨짐·필요한 태그 없음). 위 표처럼 성공 응답으로 옵니다.
+- `S101`·`S102` 는 일시 장애로 분류되어 parse activity 가 재시도된 뒤 실패합니다. `S001`·`S201`·`P001` 은 재시도 없이 실패합니다.
+  호출 안에서는 429·502·503·504·연결 오류만 1회 다시 부릅니다.
+- `rows`·`records` 문서유형의 `on_error`(null | skip_record)는 이 설정에서 적용되지 않습니다.
 
 ### 응답 예시
 
@@ -148,6 +152,10 @@ def judge(http_status: int | None, body: dict | None) -> str:
 `chunk_validation` 은 위 세 항목 중 하나라도 있을 때만 붙습니다. 필드 설명과 판정 기준은
 [chunking_processor.md 의 응답 요약](chunking_processor.md#응답-요약)에 있습니다. 모든 청크가 걸리면 성공이 아니라
 실패 응답(`CHUNK_D002`, `stage: chunk_validation`)입니다.
+
+`action` 은 그 문서 유형에 적용된 설정값입니다. 모니모는 menu·term·faq 등이 `drop`, 상품설명서 3종·monimo_news 가
+`fail` 입니다. `fail` 인데 성공 응답에 요약이 붙었다면 기록만 하는 검사(`foreign_script`)로만 걸린 경우이며,
+그 청크는 `data` 에 남아 있습니다. 걸린 청크가 실제로 빠졌는지는 `action` 이 아니라 `data` 의 청크 수로 판단합니다.
 
 ## 5. 시간 제한과 연결 끊김
 
@@ -167,7 +175,7 @@ def judge(http_status: int | None, body: dict | None) -> str:
 - 파서 응답이 `code: 0` 인지 먼저 확인합니다. 실패한 파서 응답을 청커에 넘기지 않습니다.
 - 파서 응답의 `data` 를 **변형하지 않고** 청커 요청의 `params.document` 에 그대로 넣고, `params.doc_type` 은 파서에 보낸 값과 같게 둡니다.
 - 파서 응답의 형태는 문서유형에 따라 두 가지입니다.
-  - 문서 경로(card, product_slf 등): 모니모 설정 `format: docling` 에 따라 본문이 `data.document` 에 실립니다.
+  - 문서 경로(product_slf, product_ssf 등): 모니모 설정 `format: docling` 에 따라 본문이 `data.document` 에 실립니다.
     이때 `data.elements` 는 정상 문서에서도 빈 목록이므로 **`elements` 가 비었다는 이유로 문서를 거르지 않습니다.**
   - 행·레코드 경로(menu, term, faq, cs_* 등): `format` 설정과 관계없이 `data.elements` 로 응답하며 `data.document` 는 없습니다.
     필수값을 채우지 못한 레코드는 건너뛰므로 파서가 성공하고도 `elements` 가 빈 목록일 수 있습니다. 이 응답을 청커에 넘기면
@@ -210,9 +218,8 @@ chunk_request = {"file_path": original_path,
 | 모든 문서유형 | — | `PARSE_D009` 빈 파일·지원하지 않는 형식·손상·암호화 파일, `PARSE_D014` 확장자와 실제 파일 형식 불일치, `PARSE_D015` 표 HTML 구조 손상, `PARSE_P002` 등록되지 않은 doc_type |
 
 - 등록되지 않은 `doc_type` 은 모니모 설정(`unknown_doc_type: fail`)에서 실패합니다. 오타를 먼저 확인합니다.
-- 목차·메타데이터 LLM 추출은 모니모 설정에서 꺼져 있지만, LLM 관련 사유 코드(`PARSE_P001`, `PARSE_S001`·`S101`·`S102`·`S201`)가
-  그때만 나오는 것은 아닙니다. 요청 `params` 로 이 기능을 켜거나 `error_policy: strict` 를 쓰면 다른 보강 단계의 LLM 실패도
-  실패 응답으로 올 수 있습니다([4장](#4-성공이지만-확인이-필요한-경우)).
+- LLM 관련 사유 코드(`PARSE_P001`, `PARSE_S001`·`S101`·`S102`·`S201`)는 모든 문서유형에서 나올 수 있습니다. 모니모 설정
+  `defaults.llm_call_failure: fail` 이 parse 단계의 LLM 호출 실패를 실패 응답으로 돌려주기 때문입니다([4장](#4-성공이지만-확인이-필요한-경우)).
 - 시스템 코드는 문서유형과 관계없이 나올 수 있습니다. `PARSE_S002`(변환 도구 누락), `PARSE_S003`·`CHUNK_S003`(파일 없음·권한),
   `PARSE_S103`·`CHUNK_S103`(파일 입출력 일시 장애), `COMMON_S102`(요청 시간 초과)입니다.
 - 청크 검증 실패(`CHUNK_D002` 모든 청크 불량, `CHUNK_P005` 판정 중 오류)는 품질 검증을 거치는 청크에 적용됩니다.

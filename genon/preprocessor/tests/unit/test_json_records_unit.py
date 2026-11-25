@@ -130,12 +130,69 @@ def test_extract_records_without_records_at_finds_array(tmp_path, payload, expec
         assert mapper.extract_records(payload) == expected
 
 
+@pytest.mark.parametrize("resource_dir", [SITE_MONIMO])
+def test_extract_records_single_record_object_is_one_record(resource_dir):
+    """레코드 하나만 담긴 object 는 그 안의 하위 배열이 아니라 object 1건이다(#806).
+
+    입력은 실물 sample_files/monimo/monimo_shopping_card_sample.json 의 첫 줄(상품 1건)이고
+    설정은 출고 custom_field_shopping_card.yaml(records_at 없음)이다. 상품 안의
+    categories·user_groups 배열보다 상품 자신의 필드가 더 많이 맞는다.
+    """
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    line = (root / "sample_files/monimo/monimo_shopping_card_sample.json").read_text(
+        encoding="utf-8").splitlines()[0]
+    mapper = JsonRecordsMapper(
+        config_file="custom_field_shopping_card.yaml",
+        resource_path=str(root / resource_dir),
+        doc_type="shopping_card",
+        extractor="json_mapping",
+    )
+    record = json.loads(line)
+    assert mapper.extract_records(record) == [record]
+
+
 def test_collect_records_returns_none_when_key_missing():
     assert collect_records({"other": []}, "eventList") is None
 
 
 def test_collect_records_accepts_single_dict_value():
     assert collect_records({"event": {"a": 1}}, "event") == [{"a": 1}]
+
+
+_NESTED_CONFIG = """
+schema: v2
+source:
+  kind: records
+  records_at: {key}
+fields:
+  TEXT:
+    alias: [text]
+  TITLE:
+    alias: [title]
+  NAME:
+    alias: [name]
+body:
+  fields: [TEXT, TITLE]
+"""
+_EVENT = {"title": "T", "text": "본문", "attachList": [{"name": "a.pdf"}]}
+_META_WRAP = {"title": "T", "name": "N", "fieldList": [{"text": "a", "title": "A"}]}
+
+
+@pytest.mark.parametrize("key, payload, expected", [
+    ("fieldList", {"fieldList": {"fieldList": [{"text": "hello"}, {"text": "world"}]}},
+     [{"text": "hello"}, {"text": "world"}]),                            # 동점이면 안쪽 배열
+    ("event", {"event": _EVENT}, [_EVENT]),                             # object 자신이 더 많이 맞음
+    ("fieldList", {"fieldList": _META_WRAP}, _META_WRAP["fieldList"]),  # object 는 바로 아래 값만 셈
+    ("event", {"event": {"a": 1}}, [{"a": 1}]),                         # 안쪽 배열 없음
+    ("event", {"event": {"list": [{"z": 1}]}}, [{"list": [{"z": 1}]}]),  # 모두 0점
+])
+def test_extract_records_records_at_object_picks_inner_array(tmp_path, key, payload, expected):
+    """records_at 값이 object 이면 그 안의 레코드 배열을 alias 점수로 고른다(#787)."""
+    mapper = write_mapper(tmp_path, _NESTED_CONFIG.format(key=key))
+    assert mapper.extract_records(payload) == expected
 
 
 # ── 필드 별칭 해석 ───────────────────────────────────────────────────────────

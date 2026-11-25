@@ -205,6 +205,30 @@ async def test_unaliased_unknown_extension_is_not_treated_as_markdown(parser_pro
     assert seen["artifacts_from"] == str(src)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_jsonl_routes_to_json_without_alias_copy(parser_processor, tmp_path: Path):
+    """.jsonl 은 별칭 설정이 없어도 route_json 으로 가고, 사본 없이 원본 경로를 넘긴다.
+
+    원본 확장자가 남아야 JSON 로더가 줄 단위 읽기를 판정한다(한 줄짜리도 list).
+    """
+    sample = Path(__file__).resolve().parents[2] / "sample_files/monimo/monimo_shopping_card_sample.json"
+    src = tmp_path / "sample.jsonl"
+    src.write_text(sample.read_text(encoding="utf-8").splitlines()[0] + "\n", encoding="utf-8")
+
+    dp = _stub_processor(parser_processor, {})
+    seen: dict = {}
+
+    async def _route_json(job):
+        seen.update(ext=job.ext, source=job.source)
+        return {"elements": []}
+
+    dp.route_json = _route_json
+    await dp(MagicMock(), str(src))
+
+    assert seen == {"ext": ".json", "source": str(src)}
+
+
 # ---------------------------------------------------------------------------
 # 3. 별칭이 없는 미지의 확장자 — 오프라인(unstructured 미설치) 내성
 # ---------------------------------------------------------------------------

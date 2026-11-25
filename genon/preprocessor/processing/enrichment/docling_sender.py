@@ -37,7 +37,11 @@ from docling.utils.llm_cache import remaining_timeout
 from docling.utils.thinking import strip_reasoning
 
 from genon.preprocessor.processing.common.model_params import resolve_headers
-from genon.preprocessor.processing.enrichment.llm_response import post_chat_completion_sync
+from genon.preprocessor.processing.enrichment.llm_response import (
+    llm_failure_aborts,
+    llm_failure_reason,
+    post_chat_completion_sync,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -83,8 +87,12 @@ def make_chat_sender(
             # 싣는다. isinstance 로 가리지 않는 이유는 이 저장소가 같은 모듈을 두 경로
             # (`processing.*` / `genon.preprocessor.processing.*`)로 import 하는 자리가 있어
             # 클래스 객체가 갈릴 수 있어서다 — 그러면 잡아야 할 예외를 조용히 놓친다.
-            # 상태 번호를 싣지 않는 예외(캐시 deadline 초과 등)는 그대로 올린다.
+            # 상태 번호를 싣지 않는 예외(요청 deadline 초과·응답 본문 JSON 아님)는 그대로 올린다 —
+            # docling 이 None 으로 받아 그 항목 없이 계속한다. LLM 호출 실패 중단 모드에서는
+            # LLMApiError 로 바꿔 올려 다른 호출 실패와 같이 parse 를 중단한다.
             if not hasattr(exc, "status_code"):
+                if llm_failure_aborts():
+                    raise LLMApiError(llm_failure_reason(exc)) from exc
                 raise
             raise LLMApiError(str(exc), status_code=getattr(exc, "status_code")) from exc
         return strip_reasoning(message)

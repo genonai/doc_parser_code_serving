@@ -65,7 +65,7 @@ Genos 코드서빙으로 배포된 **문서 전처리기(doc parser)** 의 설�
 
 | 하는 일 | 어디를 고치나 | 이 문서 |
 |---|---|---|
-| **새 문서 유형 추가** | `activities/parse/custom_field_<유형>.yaml` + 등록 블록 | 1장 |
+| **새 문서 유형 추가** | `activities/parse/custom_field_<유형>.yaml`(맨 위 `doc_type:` 한 줄이 등록) | 1장 |
 | 문서 유형별 옵션 조정 | 액티비티 처리기의 `CONFIG_BY_DOC_TYPE` | [2.3](#23-문서-유형마다-설정을-다르게--config_by_doc_type) |
 | 입력 데이터 구조 조정 | 액티비티 처리기의 훅 메소드 | [2.4](#24-설정만으로-입력-데이터-구조를-처리할-수-없는-경우--훅-메소드) |
 | 공통 동작 옵션 | `activities/parse/config.yaml` · `activities/chunk/config.yaml` | 5장 |
@@ -184,13 +184,13 @@ cd /app/src/service && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --wo
 템플릿에는 항목마다 `[필수]`/`[선택]` 표시와 뜻, 흔한 실수, 확인 명령이 주석으로 들어 있습니다.
 빈 파일에서 새로 쓰는 것보다 빠릅니다.
 
-| `kind` | 복사할 템플릿 (`resource/templates/`) | 제공 예시 (`activities/parse/`) |
-|---|---|---|
-| `rows` | `custom_field_TEMPLATE_rows.yaml` | — |
-| `records` | `custom_field_TEMPLATE_records.yaml` | — |
-| `sections` | `custom_field_TEMPLATE_sections.yaml` | — |
-| `document` | `custom_field_TEMPLATE_document.yaml` | `custom_field_card.yaml` |
-| `html` | `custom_field_TEMPLATE_html.yaml` | — |
+| `kind` | 복사할 템플릿 (`resource/templates/`) |
+|---|---|
+| `rows` | `custom_field_TEMPLATE_rows.yaml` |
+| `records` | `custom_field_TEMPLATE_records.yaml` |
+| `sections` | `custom_field_TEMPLATE_sections.yaml` |
+| `document` | `custom_field_TEMPLATE_document.yaml` |
+| `html` | `custom_field_TEMPLATE_html.yaml` |
 
 특정 고객사이트 전용 문서유형 설정은 공통 배포본의 `activities/parse/` 에 포함되지 않습니다.
 
@@ -253,8 +253,8 @@ alias 매핑 -> default(빈 값만) -> const(덮어씀) -> values -> transform -
           -> filter·require 선별 -> seq 번호 -> llm 필드 -> pack 묶기
 ```
 
-변환기는 인자 없이 쓰는 4종(`date_int` `normalize` `to_text` `percent`)과 인자를
-받는 6종(`regex_sub` `regex_extract` `hash` `to_int` `truncate` `to_json`), 합쳐서 10종입니다.
+변환기는 인자 없이 쓰는 5종(`date_int` `normalize` `to_text` `percent` `unique`)과 인자를
+받는 6종(`regex_sub` `regex_extract` `hash` `to_int` `truncate` `to_json`), 합쳐서 11종입니다.
 뒤 6종 중 `regex_sub`·`regex_extract`의 `pattern`과 `truncate`의 `length`는 **필수 인자**이며,
 빠지면 기동에 실패합니다. `date_int`는 인자 없이 쓰되, 날짜로 읽지 못한 값에 남길
 `on_error`(기본 `0`)를 선택 인자로 받습니다. `regex_extract`도 매칭되지 않은 값에 남길 `on_error`(기본
@@ -286,42 +286,43 @@ metadata 컬럼에만 있는 값은 필터 검색에만 걸리고 임베딩 검�
 > 짧은 식별 필드 1~2개로 제한하세요. `body.once`만 쓰면 **그 값으로 임베딩 검색을 할 때 첫 청크만** 걸립니다.
 > 값 자체는 모든 청크의 metadata에 실리므로 필터 검색은 전 청크에서 됩니다.
 
-### 1.5 ④ 프로세서 설정에 등록합니다
+### 1.5 ④ doc_type 을 등록합니다
+
+규칙 파일 맨 위(`schema: v2` 줄 아래)에 `doc_type` 한 줄을 적습니다. 이 한 줄이 등록이고, 프로세서
+설정(`config.yaml`)에는 아무것도 적지 않습니다. 전처리기 스튜디오의 doc_type 추가(`doc-types add`)도 이 방식으로 등록합니다.
 
 ```yaml
-# genon/preprocessor/activities/parse/config.yaml의 enrichment 목록 끝에
-enrichment:
-  # … 기존 항목 …
-  - custom_fields:
-      enable: true
-      doc_type: notice                          # 요청 params로 넘길 키
-      config_file: custom_field_notice.yaml     # 파일명만. 이 yaml과 같은 폴더 기준
+# genon/preprocessor/activities/parse/custom_field_notice.yaml
+schema: v2
+doc_type: notice                                # 요청 params로 넘길 키
+source:
+  kind: rows
 ```
 
-> `extractor`는 적지 않는 것이 기본입니다. 설정 파일의 `source.kind`가 정합니다. 굳이 적으면
-> 그 값과 일치해야 하고, 어긋나면 **설정에 적은 적도 없는 키 이름**으로 기동이 실패해 원인을
-> 짚기 어렵습니다.
+> `extractor`는 적지 않습니다. 설정 파일의 `source.kind`가 정합니다.
 
-등록 블록 대신 규칙 파일 최상위에 `doc_type: <유형>` 한 줄을 적어 등록할 수도 있습니다(`doc-types add`가 이 방식으로 등록합니다). 이 방식에는 `enable`이 없고, 같은 유형을 두 곳에 함께 등록하면 기동이 실패합니다.
-
-쓰지 않을 유형은 `enable: false`로 끕니다. 제공 설정은 `defaults.unknown_doc_type: fail`이므로 끈 유형이나 등록되지
-않은 `doc_type`을 요청하면 `PARSE_P002`로 요청이 실패합니다(`doc_type`을 적지 않은 등록 블록이 있으면 이 검사를
-하지 않습니다). 유형을 끌 때는 호출부도 함께 정리하세요. `warn`으로 바꾸면 경고만 남기고 기본 경로로 처리합니다.
+- 쓰지 않을 유형은 규칙 파일을 지웁니다(`doc-types remove`). 제공 설정은 `defaults.unknown_doc_type: fail`이므로
+  등록되지 않은 `doc_type`을 요청하면 `PARSE_P002`로 요청이 실패합니다. 유형을 뺄 때는 호출부도 함께 정리하세요.
+  `warn`으로 바꾸면 경고만 남기고 기본 경로로 처리합니다.
+- 유형 이름을 바꿀 때는 `doc-types rename --name <옛 이름> --to <새 이름> --activity <parse activity>`를 씁니다.
+  그 유형을 등록한 규칙 파일마다 `doc_type:` 값만 바꾸고, 파일 이름이 `custom_field_<옛 이름>.yaml`이면 새 이름으로 옮깁니다.
+  pipeline 의 매핑(`doc-type-mappings rename`)과 호출부의 `doc_type` 값은 따로 바꿔야 합니다.
+- `config.yaml`의 `enrichment`에 `- custom_fields:` 항목을 적으면 기동이 실패합니다.
+- 같은 doc_type 을 규칙 파일 여러 개가 등록하면 모두 적용됩니다(한 원천에 컬럼 구성이 다른 표가 여럿일 때).
 
 #### 다른 엔드포인트에도 필요하다면
 
-등록 블록을 복사하고, `custom_field_*.yaml`은 **등록한 config와 같은 폴더**에 둡니다. 파싱(`/parser`)
-설정은 자기 폴더(`activities/parse/`)의 사본만 읽고 폴더 밖 파일은 거부합니다. 나머지 엔드포인트의
-config는 `resource/`에 있으므로 그쪽에도 사본이 필요합니다.
+`custom_field_*.yaml`을 **그 엔드포인트 config 와 같은 폴더**에 복사합니다. 등록은 폴더 단위라 그 폴더를 읽는
+config 모두에 적용됩니다. 파싱(`/parser`) 설정은 자기 폴더(`activities/parse/`)의 파일만 읽습니다. 나머지
+엔드포인트의 config는 `resource/`에 있으므로 그쪽에도 사본이 필요합니다.
 
-| 엔드포인트 | 등록 블록을 추가할 config |
+| 엔드포인트 | 규칙 파일을 둘 폴더 |
 |---|---|
-| `/parser` | `activities/parse/config.yaml` |
-| `/preprocess`, `/preprocess_intelligent` | `intelligent_processor_config.yaml` |
-| `/preprocess_convert` | `convert_processor_config.yaml` |
-| `/chunker` | **수정 불필요** — 파서 결과를 그대로 승격합니다 |
+| `/parser` | `activities/parse/` |
+| `/preprocess`, `/preprocess_intelligent`, `/preprocess_convert` | `resource/` |
+| `/chunker` | **불필요** — 파서 결과를 그대로 승격합니다 |
 
-> 블록을 복사해도 경로에 따라 **동작하지 않는 것이 있습니다.** 적재용과 변환용은 엑셀을 동기
+> 규칙 파일을 복사해도 경로에 따라 **동작하지 않는 것이 있습니다.** 적재용과 변환용은 엑셀을 동기
 > 경로로 벡터까지 만들기 때문에 async LLM 호출을 끼워 넣을 자리가 없습니다.
 >
 > | 설정 | `/parser` | `/preprocess` · `/preprocess_convert` |
@@ -339,7 +340,7 @@ config는 `resource/`에 있으므로 그쪽에도 사본이 필요합니다.
 { "file_path": "/app/src/service/.../notice.xlsx", "params": { "doc_type": "notice" } }
 ```
 
-`/chunker`는 **수정할 것이 없습니다.** 파서 결과의 값을 그대로 이어받으므로 등록 블록도 필요 없습니다.
+`/chunker`는 **수정할 것이 없습니다.** 파서 결과의 값을 그대로 이어받으므로 규칙 파일도 필요 없습니다.
 
 ### 1.7 ⑥ 결과 값을 확인합니다
 
@@ -358,8 +359,8 @@ config는 `resource/`에 있으므로 그쪽에도 사본이 필요합니다.
 | `require` 미충족 | rows는 필수 컬럼을 찾지 못하면 요청이 실패하고(`PARSE_D001`), 컬럼은 있으나 값이 빈 행은 제외합니다. records는 해당 항목을 제외합니다. sections는 `source.on_missing: error`가 기본이므로 요청이 실패하며, `skip`이면 경고 후 섹션 0건을 반환합니다. **파서는 요소 0건으로 성공할 수 있습니다. 빈 결과를 청커에 전달하면 오류가 날 수 있으므로 별도로 검사합니다** |
 | `values`에 없는 값 | 원값 통과(fail-open), 경고만 |
 | 같은 이름 key가 얕은 곳과 깊은 곳에 모두 있음 | **얕은 쪽이 우선합니다.** 경고 없이 엉뚱한 값이 실립니다 |
-| 같은 이름의 레코드 배열이 여러 곳에 있음 | `records_at`은 최초 매칭 **1개**만 찾습니다. 나머지는 경고 없이 빠집니다 |
-| 보강 단계가 예외로 실패함 | **기본값 `lenient`에서는 경고만 남기고 성공 응답을 냅니다** (아래) |
+| 같은 이름의 레코드 배열이 여러 곳에 있음 | `records_at`은 최초 매칭 **1개**만 찾습니다. 나머지는 경고 없이 빠집니다. 찾은 값이 객체이면 그 안의 dict 배열과 객체 자체(바로 아래 값만 셈) 중 `alias`가 더 많이 맞는 쪽을 레코드로 씁니다(동점이면 안쪽 배열, 같은 이름의 다른 key는 합치지 않습니다) |
+| 보강 단계가 예외로 실패함 | **기본값(`error_policy: lenient`, `defaults.llm_call_failure: warn`)에서는 경고만 남기고 성공 응답을 냅니다** (아래) |
 
 #### 보강 실패는 기본적으로 요청을 실패시키지 않습니다
 
@@ -374,11 +375,17 @@ config는 `resource/`에 있으므로 그쪽에도 사본이 필요합니다.
 | `custom_fields` | 목표필드 추출 |
 | `doc_summary` · `image_description` | 문서 요약 · 이미지 설명 |
 | `metadata` · `doc_type_stamp` | 문서 메타데이터 · 문서 유형 기록 |
-| `table_description` | 표 설명 설정 충돌(텍스트 표 설명과 이미지 표 설명의 동시 활성화) |
+| `table_description` | 표 설명 설정 충돌(텍스트 표 설명과 이미지 표 설명의 동시 활성화)과 표 설명 LLM 호출 실패 |
+| `page_description` · `guardrail` | PPT 페이지 설명 · 민감정보 분류 (LLM 호출 실패만) |
+
+parse 설정 `defaults.llm_call_failure: fail` 이면 위 단계 중 LLM·VLM 호출 실패(HTTP·연결 오류, 시간 초과·요청 deadline 초과,
+응답 형식 이상, 설정이 선언한 입력 길이 초과)는 요청의 `error_policy` 와 관계없이 요청 실패가 됩니다. 요청 `strict` 도
+LLM 호출 실패에 대해서는 같은 범위로 중단하며, 요청 `lenient` 로 설정 `fail` 을 해제할 수는 없습니다. 이 설정은 LLM 을 쓰지
+않는 `doc_type_stamp` 에는 적용되지 않습니다. 빈 응답과 모델 출력 내용 이상(JSON 깨짐 등)은 두 경우 모두 중단하지 않습니다.
 
 > **검증할 때는 `error_policy: strict`와 결과값 검사를 함께 쓰세요.** 상위 오류 처리까지 전달된 예외는
-> `stage`가 포함된 요청 실패로 올라옵니다. 다만 목표필드 추출기의 LLM·Python·HTML 경로는 내부에서
-> 일부 예외를 잡고 경고만 남기므로, `strict`에서도 필드가 `null`인 채 정상 반환할 수 있습니다.
+> `stage`가 포함된 요청 실패로 올라옵니다. 다만 목표필드 추출기의 LLM·Python·HTML 경로는 LLM 호출 실패가
+> 아닌 예외(응답 해석 실패, 선택자 오류 등)를 내부에서 잡고 경고만 남기므로, `strict`에서도 필드가 `null`인 채 정상 반환할 수 있습니다.
 > 필수 필드의 값, 요소·청크 수, 경고 로그를 별도로 확인해야 합니다. 이 설정은 `workflow_id` 없이도
 > 적용됩니다.
 
@@ -439,7 +446,7 @@ else:                                               # document / html
 # 실행 위치: genon/preprocessor/tools/parse_chunk (`../../resource`는 genon/preprocessor/resource/, 설정은 그 옆 activities/ 입니다)
 # 변경으로 결과가 달라지면 안 되는 기존 문서를 지정합니다. 경로는 실제 샘플로 교체합니다.
 cat > my_cases.yaml <<'EOF'
-- {doc_type: card, path: /data/samples/card.pdf}
+- {doc_type: contract, path: /data/samples/계약서.pdf}
 EOF
 
 # 수정 전 실행. 기준선은 소스 갱신으로 덮어쓰지 않는 별도 디렉터리에 보관합니다.
@@ -457,8 +464,7 @@ python parse_chunk_golden.py --check --cases my_cases.yaml --golden ~/my_golden 
 
 | 증상 | 원인 |
 |---|---|
-| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` (`PARSE_P002`) | 등록이 없거나 `enable: false` 이거나 `doc_type` **값**의 문자열 불일치. `defaults.unknown_doc_type: warn` 이면 요청이 실패하지 않고 경고 후 필드 추출 없이 일반 문서로 파싱합니다. 안내 문구는 실제로 읽은 설정 파일을 가리킵니다 — 사본이면 `activities/parse_<접미>/config.yaml`, 사이트 완성본 실행이면 `genon/sites/<site>/activities/<slug>/config.yaml` 입니다. 그 파일을 고칩니다 |
-| `doc_type`을 안 줬는데 custom_fields가 동작함 | 등록 블록에 `doc_type` 키가 없으면 **wildcard** 로 모든 요청에 매칭됩니다 |
+| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` (`PARSE_P002`) | 규칙 파일 맨 위의 `doc_type:` 이 없거나 **값**의 문자열 불일치. `defaults.unknown_doc_type: warn` 이면 요청이 실패하지 않고 경고 후 필드 추출 없이 일반 문서로 파싱합니다. 안내 문구는 실제로 읽은 설정 파일을 가리킵니다 — 사본이면 `activities/parse_<접미>/config.yaml`, 사이트 완성본 실행이면 `genon/sites/<site>/activities/<slug>/config.yaml` 입니다. 그 파일을 고칩니다 |
 | 청크는 생성되지만 metadata가 비어 있음 | `unknown_doc_type: warn` 설정에서 일치하는 등록이 없어 일반 처리 경로로 처리되었거나 `alias`가 일치하지 않음 |
 | 청크 본문의 일부가 빠져 있음 | `body.fields`에 어디서도 만들어지지 않는 필드가 있습니다 |
 | 특정 필드만 계속 `null` | `llm`의 `out` 이름과 프롬프트가 내놓는 JSON 키가 다릅니다. `kind: html` 이면 선택자가 안 걸린 것 |
@@ -467,7 +473,7 @@ python parse_chunk_golden.py --check --cases my_cases.yaml --golden ~/my_golden 
 | 본문이 빈 레코드가 빠짐 | 정상입니다. 빈 벡터 적재를 막으려고 경고와 함께 제외합니다 |
 | xlsx가 행별로 나뉘지 않음 | 매칭되는 매핑이 없으면 `formats.xlsx.processing_mode`가 결정합니다 (`tabular` 인지 확인) |
 | `… custom_fields config 없음: …` | `config_file`은 **프로세서 config와 같은 폴더** 기준. 파일명만 적으세요 |
-| `등록되지 않은 transforms 변환기: …` | 기본 제공 10종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
+| `등록되지 않은 transforms 변환기: …` | 기본 제공 11종과 `tb.register_transform`으로 등록한 것만 쓸 수 있습니다([2.6](#26-설정에서-이름으로-불러-쓰는-세-가지-확장-지점)) |
 | `… 에 쓸 수 없는 인자입니다: …` | 변환기 인자 이름의 오타입니다. 메시지의 `쓸 수 있는 인자` 목록과 대조합니다. `html_renderer`는 실행 시 자동으로 주입되므로 설정에 적지 않습니다 |
 | 필드는 안 붙는데 `doc_type`만 모든 청크에 붙음 | `unknown_doc_type: warn` 설정에서 매칭되는 등록이 없는 상태. 스탬프는 매칭 여부와 무관하게 동작합니다 |
 | csv/xlsx인데 `doc_type`도 안 붙음 | 매핑 없는 일반 tabular 경로인지 확인합니다. 매핑된 행 경로와 Docling 문서 경로는 별도로 확인합니다 |
@@ -539,11 +545,11 @@ python parse_chunk_golden.py --check --cases my_cases.yaml --golden ~/my_golden 
 # activities/chunk/processor.py
     CONFIG_BY_DOC_TYPE = {
         "contract": {"chunking.chunk_size": 2000},                   # 문서형 청크 크기
-        "manual": {"chunking.chunk_mode": "resize_all"},             # 크기 기준으로 병합·분할
+        "manual": {"chunking.chunk_mode": "section_merge"},             # 크기 기준으로 병합·분할
     }
 ```
 
-표에 적는 `doc_type`도 [1.5](#15-④-프로세서-설정에-등록합니다)의 custom_fields 등록이 있어야 합니다. 제공 설정(`defaults.unknown_doc_type: fail`)에서는
+표에 적는 `doc_type`도 [1.5](#15-④-doc_type-을-등록합니다)의 custom_fields 등록이 있어야 합니다. 제공 설정(`defaults.unknown_doc_type: fail`)에서는
 등록이 없으면 파서 요청이 이 표를 적용하기 전에 실패합니다(`PARSE_P002`). 등록 없이 기본 경로로 처리하려면 `warn`으로 둡니다.
 
 키는 설정 파일 경로(점 표기)로 씁니다. 같은 뜻의 요청 파라미터 이름(괄호)으로 써도 같게
@@ -553,8 +559,9 @@ python parse_chunk_golden.py --check --cases my_cases.yaml --golden ~/my_golden 
 | 파서 | | 청커 | |
 |---|---|---|---|
 | `enrichment.table_description.enable` (`table_desc`) | 이미지 표 설명 | `chunking.chunk_size` (`chunk_size`) | 청크 최대 크기 |
-| `enrichment.image_description.enable` (`img_desc`) | 이미지 설명 | `chunking.chunk_mode` (`chunk_mode`) | `split_only` / `resize_all` |
+| `enrichment.image_description.enable` (`img_desc`) | 이미지 설명 | `chunking.chunk_mode` (`chunk_mode`) | `section` / `section_merge` / `character` |
 | `enrichment.doc_summary.enable` (`doc_summary`) | 문서 요약 | `chunking.recursive.chunk_overlap` (`chunk_overlap`) | 청크 간 겹침 |
+| | | `chunking.character.chunk_overlap` (`character_chunk_overlap`) | `character` 모드의 청크 간 겹침 |
 | `enrichment.toc.enable` (`toc`) | 목차 보강 | `chunking.short_chunk_size` (`short_chunk_size`) | 본문이 이보다 짧은 청크를 병합 |
 | `table_text_desc` (요청 파라미터 이름으로만 씀) | 텍스트 표 설명 | | |
 | `ocr.ocr_mode` | `auto` / `force` / `disable` | | |
@@ -642,9 +649,9 @@ python parse_chunk_golden.py --check --cases my_cases.yaml --golden ~/my_golden 
 입력 데이터는 `genon/preprocessor/sample_files/drill/`에 있습니다. 기준 입력 데이터는
 `source.records_at: eventList`로 레코드를 찾고, 각 필드는 `alias`로 레코드 안에서 이름을 찾습니다.
 
-예제의 `monimo_event`는 이 구조를 쓰는 records형 등록의 예이며, 표준 `resource/`에는 등록되어 있지 않습니다(등록은 `custom_field_card.yaml` 하나입니다).
+예제의 `monimo_event`는 이 구조를 쓰는 records형 등록의 예이며, 표준 `resource/`에는 등록되어 있지 않습니다(표준에는 등록된 문서유형이 없습니다).
 제공 설정(`defaults.unknown_doc_type: fail`)에서는 등록 없이 이 `doc_type`으로 요청하면 `PARSE_P002`로 실패하므로, 그대로 재현하려면
-같은 구조의 records형 설정을 [1.5](#15-④-프로세서-설정에-등록합니다)처럼 등록하고 예제의 `doc_type` 값을 그 이름으로 바꿉니다.
+같은 구조의 records형 설정을 [1.5](#15-④-doc_type-을-등록합니다)처럼 등록하고 예제의 `doc_type` 값을 그 이름으로 바꿉니다.
 
 변형 ① 관계사별로 한 겹 더 묶여 온다
 
@@ -867,7 +874,7 @@ def extract(text, document=None, output_fields=None, **kwargs):
 - 돌려주는 것은 dict 하나입니다. 그 뒤로는 LLM 경로와 완전히 같은 파이프라인을 거칩니다.
 - `async def`로 써도 됩니다(사내 API 조회). 파일이 없거나 함수 이름이 틀리면 **기동에서** 실패합니다.
 - `url`·`system_prompt` 같은 LLM 전용 키는 이 자리에서 쓸 수 없습니다(기동 실패).
-- `python`은 `kind: document` 전용이며 [1.5](#15-④-프로세서-설정에-등록합니다)처럼 프로세서 설정에 등록해야 합니다. 전체 예제는 `genon/preprocessor/examples/facade_hooks/custom_field_regex_demo.yaml`과 `custom_field_regex_demo.py`에 있습니다.
+- `python`은 `kind: document` 전용이며 [1.5](#15-④-doc_type-을-등록합니다)처럼 규칙 파일 맨 위의 `doc_type:` 으로 등록해야 합니다. 전체 예제는 `genon/preprocessor/examples/facade_hooks/custom_field_regex_demo.yaml`과 `custom_field_regex_demo.py`에 있습니다.
 
 사이트 전용 값 변환기는 **core를 고치지 말고** 액티비티 처리기 파일 최상위에서 등록합니다. core를 고치면
 릴리스 갱신에서 사라집니다.
@@ -1066,7 +1073,7 @@ python -m genon.preprocessor.activities.parse 계약서.pdf --doc-type contract 
 python -m genon.preprocessor.activities.chunk parsed.json --doc-type contract -o chunks.json
 ```
 
-위 `계약서.pdf`와 `contract`는 자리표시입니다. 제공 설정에는 `custom_field_card.yaml` 하나만 등록되어 있고 등록되지 않은 `doc_type`은 `PARSE_P002`로 실패하므로, 실제 입력 파일과 등록된 `doc_type`(예: `card`)으로 바꿔 실행합니다.
+위 `계약서.pdf`와 `contract`는 자리표시입니다. 제공 설정에는 등록된 문서유형이 없고 등록되지 않은 `doc_type`은 `PARSE_P002`로 실패하므로, 실제 입력 파일과 [1장](#1-새-문서-유형-추가하기)에서 등록한 `doc_type`으로 바꿔 실행합니다.
 
 | 인자 | 뜻 |
 |---|---|
@@ -1506,7 +1513,7 @@ git apply "$BACKUP_DIR/my_change.patch"           # 충돌하면 번들에서 �
 | `resource/intelligent_processor_config.yaml` | `/preprocess`, `/preprocess_intelligent` |
 | `resource/convert_processor_config.yaml` | `/preprocess_convert` |
 | `resource/attachment_processor_config.yaml` | `/preprocess_attachment` |
-| `custom_field_*.yaml` (기본 제공 예시 `custom_field_card.yaml` 1개) | 문서 유형별 값 추출과 청크 본문 ([1장](#1-새-문서-유형-추가하기)). 등록한 config와 같은 폴더에 둡니다 |
+| `custom_field_*.yaml` (표준에는 없음, `resource/templates/` 의 템플릿을 복사해 만듭니다) | 문서 유형별 값 추출과 청크 본문 ([1장](#1-새-문서-유형-추가하기)). 등록한 config와 같은 폴더에 둡니다 |
 | `resource/templates/custom_field_TEMPLATE_*.yaml` | 새 문서 유형을 만들 때 복사할 원본 5종. 등록하지 않습니다 |
 
 ### 5.2 설정이 필요한 값 (플레이스홀더)
@@ -1561,7 +1568,7 @@ grep -rnE --exclude-dir=templates "<[A-Z0-9_]+>" genon/preprocessor/resource/ | 
 | `ocr.engine` | 〃 | `paddle` | `paddle` / `upstage` | 띄워 둔 OCR 서버 종류에 맞춰 |
 | `chunking.chunk_size` | chunking · intelligent · convert | chunking `1500` · 나머지 `10000` | 정수 | 청크 길이. 문서형 경로는 양수일 때 `chunking.min_chunk_size` 하한을 적용합니다. 요소형 경로에는 하한이 없습니다 |
 | `chunking.min_chunk_size` | **chunking 전용** | `1024` | 정수 | **문서형 경로 전용** 크기 하한. `0` 이하면 하한 보정을 끕니다. `chunk_size`가 이 값보다 작으면 이 값으로 올립니다. 현재 기본 설정(`1500`)에서는 보정이 일어나지 않습니다 |
-| `chunking.chunk_mode` | 〃 (**attachment에 없음**) | `split_only` | `split_only` / `resize_all` | `split_only`는 섹션 구조 유지(작은 청크 다수), `resize_all`은 크기 기준 재조립(균일) |
+| `chunking.chunk_mode` | 〃 (**attachment에 없음**) | `section` | `section` / `section_merge` / `character` | `section`는 섹션 구조 유지(작은 청크 다수), `section_merge`은 크기 기준 재조립(균일), `character`는 섹션을 무시하고 글자 수로 채워 자름(`HEADER:` 줄 없음, chunking 전용) |
 | `chunking.tokenizer_type` | 〃 | `char` | `char` / `huggingface` | `chunk_size`의 **단위가 바뀝니다** |
 | `chunking.include_chunk_header` | 〃 | 켜짐 | `0` / `1` | 청크 선두의 `HEADER:` 줄이 필요 없을 때 `0` |
 | `chunking.text_cleanup` | 〃 | 코드 기본 `off`; 제공 YAML은 chunking `mode: safe`와 규칙 지정, intelligent·convert `off` | `off` / `safe` 또는 `{mode, rules}` | 문자 정규화와 선택적 정규식 정제. 실제 설정 파일의 값을 확인합니다. 정규식 규칙은 기동 시 컴파일되어 오타가 바로 드러납니다 |
@@ -1575,6 +1582,7 @@ grep -rnE --exclude-dir=templates "<[A-Z0-9_]+>" genon/preprocessor/resource/ | 
 | `enrichment`의 `table_text_description.rag` | parser | `retrieval_context_max_chars: 200`, `key_fact_limit: 2`, `search_terms: 0` | 정수 | 표당 LLM 산출량. 늘리면 배치가 작아져 호출 수가 늘어납니다 |
 | `enrichment`의 `table_text_description.skip` | parser | `single_value_table: true`, `nested_table: true`, `duplicate_table: false`, `self_describing_table: false`, `long_text_table: 0` | 각 키 `true` / `false`, `long_text_table`은 문자 수. `skip: false`는 다섯 개를 모두 끕니다 | LLM에 보내지 않을 표의 종류. 문서유형 YAML의 `table_text_description.skip`과 키 단위로 합쳐집니다 |
 | `defaults.unknown_doc_type` | parser | `fail` (코드 기본 `warn`) | `fail` / `warn` | 요청 `doc_type`에 맞는 custom_fields 등록이 없을 때 요청을 실패시킬지(`PARSE_P002`), 경고 후 기본 경로로 처리할지 |
+| `defaults.llm_call_failure` | parser | `warn` | `warn` / `fail` | LLM·VLM 호출이 실패했을 때 경고 후 그 결과 없이 계속할지, 첫 실패에서 문서 처리를 중단할지(`PARSE_S001`·`S101`·`S102`·`S201`·`P001`). 요청 `error_policy: lenient` 로 `fail` 을 해제할 수 없습니다 |
 | `formats.extension_aliases` | parser | `.parsed` → `.md`, `.dtms` → `.json` | 확장자 매핑 | 내용은 지원 형식인데 확장자만 다른 입력을 처리할 때 |
 | `formats.html.flatten` | parser | `auto` | `auto` / `always` / `off` | HTML 전처리. `auto`는 구조적 결함이 감지될 때만 적용합니다 |
 | `defaults.log_level` | 전부 | `4` | `5`=DEBUG ~ `1`=CRITICAL, `0`=NOLOG | 디버깅할 때 `5` |
@@ -1615,7 +1623,7 @@ curl --location "${GW}/parser" \
 | 처리기 | 자주 쓰는 `params` 키 |
 |---|---|
 | parser | `doc_type`, `toc`, `img_desc`, `chart_desc`, `table_desc`, `table_refine`, `table_text_desc`, `ocr_mode`, `doc_summary`, `save_images`, `use_hwp_sdk` |
-| chunking | `document`, `chunk_size`, `chunk_mode`, `include_chunk_header`, `chunk_overlap`, `table_as_chunk`, `table_format`, `compact_tables`, `table_row_serialization`, `text_cleanup`, `short_chunk_size` |
+| chunking | `document`, `chunk_size`, `chunk_mode`, `include_chunk_header`, `chunk_overlap`, `character_chunk_overlap`, `table_as_chunk`, `table_format`, `compact_tables`, `table_row_serialization`, `text_cleanup`, `short_chunk_size` |
 | intelligent / convert | 위 parser 키 + `chunk_size`, `chunk_mode`, `include_chunk_header`, `use_pdf_sdk`, `table_format`, `export_to_html`, `log_level` |
 | attachment | `chunker_type`, `chunk_size`, `chunk_overlap`, `use_pdf_sdk`, `use_hwp_sdk` |
 | **공통** | `llm_cache`, `interim_root`, `workflow_id`, `run_id`, `error_policy`(`strict`/`lenient`), `request_deadline`(초), `guardrail_call` |
@@ -1631,7 +1639,7 @@ curl --location "${GW}/parser" \
 
 | 공통 키 | 값 | 하는 일 |
 |---|---|---|
-| `error_policy` | `strict` / `lenient` | **기본 `lenient`.** 보강 단계(`custom_fields` · `doc_summary` · `image_description` · `metadata` · `doc_type_stamp`)에서 상위 오류 처리로 전달된 예외를 `strict`는 요청 실패로 올리고, `lenient`는 경고 후 계속합니다. 추출기 내부에서 처리된 예외·빈 결과까지 검출하지는 않으므로 필수 결과값을 별도로 검사합니다. 훅이 던진 예외와 파싱 실패에는 적용되지 않으며 `workflow_id` 없이도 항상 적용됩니다. 표 설명은 예외입니다. 런타임 실패는 `strict`에서도 요청을 막지 않고 건너뛰며, 설정 충돌만 이 정책을 따릅니다 |
+| `error_policy` | `strict` / `lenient` | **기본 `lenient`.** 보강 단계(`custom_fields` · `doc_summary` · `image_description` · `metadata` · `doc_type_stamp`)에서 상위 오류 처리로 전달된 예외를 `strict`는 요청 실패로 올리고, `lenient`는 경고 후 계속합니다. 추출기 내부에서 처리된 예외·빈 결과까지 검출하지는 않으므로 필수 결과값을 별도로 검사합니다. 훅이 던진 예외와 파싱 실패에는 적용되지 않으며 `workflow_id` 없이도 항상 적용됩니다. 표 설명은 예외입니다. 런타임 실패 중 LLM 호출 실패는 `strict`에서 요청 실패가 되고, 그 밖의 실패는 건너뜁니다. 사이트가 상시로 LLM 호출 실패에서 중단하려면 parse 설정 `defaults.llm_call_failure: fail` 을 씁니다(요청 `lenient` 로 해제 불가) |
 | `llm_cache` | `0` / `1` | 같은 입력에 대한 LLM 응답을 재사용합니다. **`workflow_id`가 함께 있을 때만 켜집니다** — 캐시 디렉터리를 `<interim_root>/<workflow_id>/<run_id 또는 default>/llm_cache`로 잡기 때문입니다. `workflow_id` 없이 `llm_cache: 1`만 주면 경고 없이 캐시가 꺼진 채 처리됩니다 |
 | `request_deadline` | 양수 초 | HTTP 처리 래퍼가 요청 전체에 제한 시간을 겁니다. 초과하면 `error_kind: timeout`으로 끊습니다. 생략·0 이하·숫자 변환 불가는 제한을 걸지 않으며, 처리기 단독 실행에는 이 래퍼가 없습니다 |
 
@@ -1678,7 +1686,7 @@ enrichment:
 |---|---|---|
 | 청커 | `GenosSmartChunker` (구조 인식) | 문자 기반 splitter |
 | 크기 단위 | `char` / `huggingface` 선택 | **항상 문자 수** |
-| overlap | 없음 | `chunking.recursive.chunk_overlap` (기본 100) |
+| overlap | `character` 일 때만 `chunking.character.chunk_overlap` (기본 0) | `chunking.recursive.chunk_overlap` (기본 100) |
 | 좌표·미디어 | 실제 값 | `"."` 고정값 |
 
 `.html` 입력은 파싱 전에 전처리가 붙습니다. docling의 HTML 백엔드가 `<iframe srcdoc="...">` 속성값
@@ -1747,7 +1755,7 @@ enrichment:
   실립니다. 코드표는 `custom_fields_exceptions.md` 의 "사유 코드" 절을 참조하세요.
 - 처리기가 `GenosServiceException`으로 던진 오류는 `error_code`가 보존됩니다. 그 외 예외는
   타입에 따라 `INPUT_ERROR` / `TIMEOUT_ERROR` / `INTERNAL_ERROR`로 자동 분류됩니다.
-- core가 넣는 `stage` 값은 `custom_fields` · `doc_summary` · `image_description` · `metadata` · `doc_type_stamp` · `table_description`(보강 단계의 상위 오류 처리로 전달된 예외, `error_policy: strict`일 때)와 `enrichment`(문서 보강 LLM 호출 오류, 정책과 무관), `chunk_validation`(이상 청크 검증 실패, 정책과 무관), `request`(요청 제한 시간 초과)입니다. 행 메타데이터의 청킹 중 타입 검증 실패와 파서의 설정·매핑 오류도 정책과 무관하게 `stage: custom_fields`로 반환됩니다. 훅에서 직접 지정한 값은 그대로 나갑니다.
+- core가 넣는 `stage` 값은 `custom_fields` · `doc_summary` · `image_description` · `metadata` · `doc_type_stamp` · `table_description` · `page_description` · `guardrail`(보강 단계의 상위 오류 처리로 전달된 예외, `error_policy: strict` 또는 parse 설정 `defaults.llm_call_failure: fail`일 때)와 `enrichment`(문서 보강 LLM 호출 오류, 정책과 무관), `chunk_validation`(이상 청크 검증 실패, 정책과 무관), `request`(요청 제한 시간 초과)입니다. 행 메타데이터의 청킹 중 타입 검증 실패와 파서의 설정·매핑 오류도 정책과 무관하게 `stage: custom_fields`로 반환됩니다. 훅에서 직접 지정한 값은 그대로 나갑니다.
 - 요청 `params.request_deadline`(초)을 주면 요청 전체에 상한이 걸립니다.
 
 **응답이 예상과 다를 때**
@@ -1757,7 +1765,7 @@ enrichment:
 | `…지원하지 않습니다` (`code:1`) | 처리기에 `IS_PARSER`/`IS_CHUNKER` 마커가 없어 요청이 도달하지 못함 | 클래스명(`DocumentProcessor`)과 마커를 바꾸지 않았는지 |
 | `/parser`는 되는데 `data.document`가 없음 | 정상 요소형 경로일 수 있음 | 먼저 `data.elements`와 적용 매핑을 확인합니다. 문서형을 기대했다면 `output.format`과 [6.1](#61-파싱-결과-형식)의 분기 조건을 확인합니다 |
 | 청크가 1개만 나옴 | 요소형 입력에 `chunk_size: 0`이 전달됨 | `chunk_size`를 충분히 큰 양수로 |
-| 청크가 합쳐지지 않음 | `chunk_size: 0`은 병합을 끄는 값 | `0` 대신 큰 값과 `chunk_mode: resize_all` |
+| 청크가 합쳐지지 않음 | `chunk_size: 0`은 병합을 끄는 값 | `0` 대신 큰 값과 `chunk_mode: section_merge` |
 | `code:1` + 연결 오류 | 모델 서빙 주소나 키가 실행 환경과 안 맞음 | [3.6](#36-모델-서빙-연결-설정) · [5.2](#52-설정이-필요한-값-플레이스홀더) |
 | 청크 수가 예상보다 적음 | 이상 청크 검증(`action: drop`)에서 제외됨 | 응답 최상위 `chunk_validation`과 로그의 `[chunk_validation]` |
 
@@ -1884,7 +1892,7 @@ grep -rn "<함수명 또는 클래스명>" genon/preprocessor/activities/ genon/
 
 | 문서 | 언제 보나 |
 |---|---|
-| `parser_processor.md` | **custom_fields 전체 매트릭스.** `kind`별 지원 키, `transform` 10종 상세, 별칭 탐색 범위, 설정으로 안 되는 8가지. [1장](#1-새-문서-유형-추가하기)에서 막히면 여기 |
+| `parser_processor.md` | **custom_fields 전체 매트릭스.** `kind`별 지원 키, `transform` 11종 상세, 별칭 탐색 범위, 설정으로 안 되는 8가지. [1장](#1-새-문서-유형-추가하기)에서 막히면 여기 |
 | `facade_hooks.md` | **훅 메소드 전체 계약**과 더 많은 예시. [2.4](#24-설정만으로-입력-데이터-구조를-처리할-수-없는-경우--훅-메소드)의 본편 |
 | `chunking_processor.md` | 청킹 옵션 레퍼런스 |
 | `code_serving.md` | 코드서빙 **호출** 매뉴얼. 요청/응답 스키마, LLM 캐시, 실패 정책 |

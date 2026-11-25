@@ -23,7 +23,7 @@ from docling.utils.thinking import resolve_thinking_kwargs, strip_reasoning
 
 from genon.preprocessor.processing.common.model_params import build_chat_payload, resolve_headers
 
-from .llm_response import post_chat_completion_sync
+from .llm_response import llm_failure_aborts, post_chat_completion_sync
 
 _log = logging.getLogger(__name__)
 
@@ -69,7 +69,10 @@ def summarize_body(
     thinking: Optional[str] = "off",
     thinking_dialect: str = "standard",
 ) -> str:
-    """문서 본문을 1회 LLM(text-only chat) 호출로 요약. 실패 시 "" (파이프라인 비차단)."""
+    """문서 본문을 1회 LLM(text-only chat) 호출로 요약. 실패 시 "" (파이프라인 비차단).
+
+    LLM 호출 실패 중단 모드(parse 설정 `defaults.llm_call_failure: fail` 또는 요청 strict)면 예외를 올린다.
+    """
     full_text = collect_body_text(document, max_chars)
     if not full_text:
         return ""
@@ -101,5 +104,7 @@ def summarize_body(
         _log.debug("[body_summary] body summary success: %s", doc_summary)
         return doc_summary
     except Exception as exc:
+        if llm_failure_aborts():
+            raise   # LLM 호출 실패 중단 모드 — 처리기의 단계 오류 처리가 사유 코드를 붙인다
         _log.warning("[body_summary] body summary failed: %s", exc)
         return ""

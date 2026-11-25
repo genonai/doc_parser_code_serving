@@ -120,6 +120,14 @@ def test_envelope_status_drives_error_classification(body, status, kind):
 
 
 @pytest.mark.unit
+def test_non_json_body_is_a_response_format_error():
+    """HTTP 200 에 JSON 이 아닌 본문은 응답 형식 이상(LLMResponseError)이고 재시도하지 않는다."""
+    result, requests = _run(lambda request: httpx.Response(200, text="<html>upstream unavailable</html>"))
+    assert isinstance(result, lr.LLMResponseError) and result.status_code is None
+    assert len(requests) == 1
+
+
+@pytest.mark.unit
 def test_envelope_error_is_still_a_value_error():
     """종전 호출부가 ValueError 로 받던 계약을 유지한다."""
     with pytest.raises(ValueError):
@@ -408,3 +416,35 @@ def test_llm_failure_reason_is_one_line_with_cause(url, expected):
     with pytest.raises(httpx.HTTPStatusError) as caught:
         httpx.Response(500, request=httpx.Request("POST", url)).raise_for_status()
     assert lr.llm_failure_reason(caught.value) == expected
+
+
+# ── LLM 호출 실패 중단 판정(parse 설정 defaults.llm_call_failure · 요청 error_policy) ──
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("config,request_policy,expected", [
+    ("warn", "lenient", False),
+    ("warn", "strict", True),
+    ("fail", "lenient", True),     # 요청 lenient 로 설정 fail 을 해제할 수 없다
+    ("fail", "strict", True),
+    (None, "strict", False),       # 파사드 — 판정을 싣지 않으므로 요청 strict 여도 종전 동작
+])
+def test_llm_failure_aborts_when_config_fail_or_request_strict(config, request_policy, expected):
+    """판정은 워커 스레드에서도 같아야 한다 — 그림·페이지 설명은 스레드 풀 안에서 실패를 본다.
+
+    config=None 은 parse 처리기를 거치지 않는 파사드 요청이다.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    from docling.utils.llm_cache import in_current_context, resolve_context
+
+    ctx = resolve_context({"error_policy": request_policy})
+    if config is not None:
+        ctx = lr.with_llm_call_failure(ctx, config)
+    token = set_context(ctx)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            in_thread = pool.submit(in_current_context(lr.llm_failure_aborts)).result()
+        assert (lr.llm_failure_aborts(), in_thread, ctx.error_policy) == (expected, expected, request_policy)
+    finally:
+        reset_context(token)

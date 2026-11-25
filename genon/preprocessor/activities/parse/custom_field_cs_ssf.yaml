@@ -1,6 +1,7 @@
 # cs_ssf(삼성화재 고객센터 안내) custom_fields
 
 schema: v2
+doc_type: cs_ssf
 source:
   kind: records
   pre:
@@ -36,8 +37,6 @@ fields:
   SRC_LAST_MOD_DT:
     default: null
     transform: date_int
-require:
-  fields: [GROUP_C]
 body:
   fields: [CS_CTGR_L1, CUSTOM_TITLE, CONTENT]
   labels:

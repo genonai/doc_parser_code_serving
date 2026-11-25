@@ -272,65 +272,23 @@ class TestEnrichmentConfigFromList:
         )
         assert ec_off.image_description_cfg == {"enabled": False}
 
-    def test_single_custom_fields_injects_resource_path(self):
+    def test_common_table_text_description_merges_into_rule_file_registration(self, tmp_path):
+        _rule(tmp_path, "tour", "tour")
         ec = EnrichmentConfig.from_raw(
-            [{"custom_fields": {"enable": True, "output_fields": ["authors"], "system_prompt": "s"}}],
-            Path("/tmp/cfgdir"),
-        )
-        assert len(ec.custom_fields_cfgs) == 1
-        assert ec.custom_fields_cfgs[0]["resource_path"] == "/tmp/cfgdir"
-
-    def test_multiple_custom_fields(self):
-        ec = EnrichmentConfig.from_raw(
-            [
-                {"custom_fields": {"enable": True, "output_fields": ["a"], "system_prompt": "s"}},
-                {"custom_fields": {"enable": True, "config_file": "custom_field_authors.yaml"}},
-            ],
-            Path("."),
-        )
-        assert len(ec.custom_fields_cfgs) == 2
-
-    def test_common_table_text_description_merges_only_document_llm(self):
-        ec = EnrichmentConfig.from_raw(
-            [
-                {"table_text_description": {
-                    "enable": True,
-                    "before_items": 4,
-                    "rag": {"key_fact_limit": 5, "search_terms_limit": 7},
-                }},
-                {"custom_fields": {
-                    "enable": True,
-                    "extractor": "llm",
-                    "url": "http://llm",
-                    "table_text_description": {
-                        "after_items": 6,
-                        "rag": {"search_terms_limit": 2},
-                    },
-                }},
-                {"custom_fields": {
-                    "enable": True,
-                    "extractor": "tabular_mapping",
-                    "config_file": "faq.yaml",
-                }},
-            ],
-            Path("/tmp/cfgdir"),
+            [{"table_text_description": {
+                "enable": True,
+                "before_items": 4,
+                "rag": {"key_fact_limit": 5, "search_terms_limit": 7},
+            }}],
+            tmp_path,
         )
         assert ec.table_text_description_cfg["enabled"] is True
-        llm_cfg, tabular_cfg = ec.custom_fields_cfgs
-        assert llm_cfg["table_text_description"] == {
+        (cfg,) = ec.custom_fields_cfgs
+        assert cfg["table_text_description"] == {
             "enabled": True,
             "before_items": 4,
-            "after_items": 6,
-            "rag": {"key_fact_limit": 5, "search_terms_limit": 2},
+            "rag": {"key_fact_limit": 5, "search_terms_limit": 7},
         }
-        assert "table_text_description" not in tabular_cfg
-
-    def test_disabled_custom_fields_excluded(self):
-        ec = EnrichmentConfig.from_raw(
-            [{"custom_fields": {"enable": False, "output_fields": ["a"]}}],
-            Path("."),
-        )
-        assert ec.custom_fields_cfgs == []
 
     def test_field_transforms_parsed(self):
         transforms = [{"source": ["doc_date"], "target": "created_date", "type": "date_int"}]
@@ -507,34 +465,14 @@ def _rule(folder: Path, name: str, doc_type: str | None) -> None:
 
 
 @pytest.mark.unit
-def test_rule_file_doc_type_registers_without_config_block(tmp_path):
-    """규칙 파일 최상위의 `doc_type` 이 등록이다 — 설정에 등록 블록이 없어도 블록과 같은 모양으로 실린다.
-
-    `doc_type` 을 적지 않은 규칙 파일(card)은 등록 블록이 가리킬 때만 쓰인다.
-    """
+def test_rule_file_doc_type_is_the_registration(tmp_path):
+    """규칙 파일 최상위의 `doc_type` 이 등록이다(#748·#798). `doc_type` 이 없는 규칙 파일은 쓰이지 않고,
+    같은 doc_type 을 등록한 규칙 파일이 여럿이면 모두 실린다(원천 하나에 성격이 다른 배열·표가 여럿일 때)."""
     _rule(tmp_path, "card", None)
     _rule(tmp_path, "tour", "tour")
+    _rule(tmp_path, "tour_notice", "tour")
     ec = EnrichmentConfig.from_raw(
-        [{"custom_fields": {"doc_type": "card", "config_file": "custom_field_card.yaml"}}],
-        tmp_path, parent_cfg={"model_presets": {"default": {"url": "http://llm", "model": "m"}}})
-    from_block, from_file = ec.custom_fields_cfgs
-    assert from_block["doc_type"] == "card" and from_block["resource_path"] == str(tmp_path)
-    assert from_file == {**from_block, "doc_type": "tour", "config_file": "custom_field_tour.yaml"}
-    # enrichment 를 적지 않은 설정에서도 같은 등록을 읽는다 — `doc-types list` 와 기동이 같은 목록을 본다
-    assert [c["doc_type"] for c in EnrichmentConfig.from_raw(None, tmp_path).custom_fields_cfgs] == ["tour"]
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("blocks, other_file, where", [
-    ([{"custom_fields": {"enable": False, "doc_type": "Tour", "config_file": "custom_field_old.yaml"}}], None,
-     "custom_fields 등록 블록"),
-    ([], "tour", "규칙 파일 custom_field_a_copy.yaml"),
-], ids=["꺼진 등록 블록과 겹침", "규칙 파일 둘이 겹침"])
-def test_rule_file_doc_type_registered_twice_fails_startup(tmp_path, blocks, other_file, where):
-    """같은 doc_type 이 두 곳에 등록되면 어느 규칙이 쓰일지 정할 수 없으므로 기동을 막는다."""
-    _rule(tmp_path, "tour", "tour")
-    if other_file:
-        _rule(tmp_path, "a_copy", other_file)
-    with pytest.raises(ValueError, match="doc_type=tour 중복 등록") as err:
-        EnrichmentConfig.from_raw(blocks, tmp_path, parent_cfg={})
-    assert where in str(err.value)
+        None, tmp_path, parent_cfg={"model_presets": {"default": {"url": "http://llm", "model": "m"}}})
+    assert [(c["doc_type"], c["config_file"]) for c in ec.custom_fields_cfgs] == [
+        ("tour", "custom_field_tour.yaml"), ("tour", "custom_field_tour_notice.yaml")]
+    assert all(c["resource_path"] == str(tmp_path) and c["model_presets"] for c in ec.custom_fields_cfgs)

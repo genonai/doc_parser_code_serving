@@ -318,49 +318,29 @@ def test_pre_typo_is_still_refused():
             """)
 
 
-def test_shipped_blocks_derive_their_extractor():
-    """출고 등록 블록은 `extractor` 를 적지 않는다 — 유도가 반드시 성공해야 한다.
+def test_shipped_rule_files_derive_their_extractor():
+    """출고 규칙 파일은 `source.kind` 로 extractor 를 정한다 — 유도가 반드시 성공해야 한다.
 
     유도는 config_file 을 읽어야 하므로, 그 파일이 `schema: v2` 를 잃거나 읽히지 않으면
     None 이 되고 하위호환 폴백으로 `llm` 이 된다. rows/records 설정이 그렇게 되면 기동이
     실패하는데, 원인이 "설정 파일을 못 읽었다" 로 드러나지 않아 짚기 어렵다.
     """
+    from genon.preprocessor.processing.enrichment import config_v2
     from genon.preprocessor.processing.enrichment.custom_fields_enricher import (
         _derive_extractor,
     )
     from shipped_config import PREPROCESSOR_DIR, SHIPPED_ROOTS
 
-    configs = (
-        "config.yaml", "parse_config_simple.yaml",
-        "intelligent_processor_config.yaml", "convert_processor_config.yaml",
-        "chunk_config.yaml", "chunk_config_simple.yaml",
-        "attachment_processor_config.yaml",
-    )
     checked = 0
     for resource_dir in SHIPPED_ROOTS:
         root = PREPROCESSOR_DIR / resource_dir
-        for name in configs:
-            path = root / name
-            if not path.exists():
-                continue
-            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            for item in (loaded.get("enrichment") or []):
-                block = (item or {}).get("custom_fields")
-                if not isinstance(block, dict):
-                    continue
-                assert "extractor" not in block, (
-                    f"{resource_dir}/{name} [doc_type={block.get('doc_type')}]: "
-                    f"extractor 는 source.kind 에서 유도된다 — 등록 블록에 적지 않는다"
-                )
-                config_file = str(block.get("config_file") or "")
-                if not config_file:
-                    continue  # 인라인 설정(문서형 데모). 유도할 원천이 없다
-                assert _derive_extractor(config_file, str(root)) is not None, (
-                    f"{resource_dir}/{name} [doc_type={block.get('doc_type')}]: "
-                    f"{config_file} 에서 extractor 를 유도할 수 없다"
-                )
-                checked += 1
-    assert checked >= 30, f"검사한 블록이 너무 적다({checked}) — 경로가 틀렸을 수 있다"
+        for entry in config_v2.rule_file_registrations(root):
+            assert _derive_extractor(entry["config_file"], str(root)) is not None, (
+                f"{resource_dir} [doc_type={entry['doc_type']}]: "
+                f"{entry['config_file']} 에서 extractor 를 유도할 수 없다"
+            )
+            checked += 1
+    assert checked >= 25, f"검사한 규칙 파일이 너무 적다({checked}) — 경로가 틀렸을 수 있다"
 
 
 # ── source.pre.json ────────────────────────────────────────────────────────
@@ -447,27 +427,6 @@ def test_registered_block_json_is_refused(tmp_path):
         build_json_text_specs([block])
 
 
-# product_hpp 는 빠졌다 — 사이트 설정이 `kind: sections` 로 바뀌어 JSON 을 섹션 매퍼가
-# 직접 읽는다. 문서형 본문 키(`source.pre.json`)를 쓰지 않으므로 검사 대상이 아니다.
-@pytest.mark.parametrize("resource_dir, name, doc_types", [
-    ("resource", "custom_field_card.yaml", ("card",)),
-])
-def test_shipped_configs_keep_json_body_keys(resource_dir, name, doc_types):
-    """등록 블록에서 옮겨 온 본문 키가 출고 설정에 그대로 남아 있어야 한다.
-
-    이 블록이 사라지면 .json 입력이 캐치올로 빠져 표·heading 구조가 소실되는데,
-    파싱은 성공하므로 티가 나지 않는다.
-    """
-    from shipped_config import load_shipped_named
-
-    internal = load_shipped_named(name, resource_dir)
-    assert internal.get("json") == {
-        "text_fields": ["html", "summary_md"],
-        "missing_policy": "skip",
-        "format": "auto",
-    }, f"{resource_dir}/{name}"
-
-
 def test_pre_json_is_document_only(tmp_path):
     """공용 해석기로 옮긴 덕에 문서형 게이트가 붙는다(전에는 rows 에 붙여도 통과했다)."""
     from genon.preprocessor.processing.common.parser_config import build_json_text_specs
@@ -543,18 +502,6 @@ def test_precheck_derives_omitted_extractor(tmp_path):
     )
     block = {"doc_type": "t", "config_file": "custom_field_x.yaml"}
     assert precheck.check_block("cfg.yaml", block, tmp_path, set()) == []
-
-
-def test_precheck_refuses_registered_block_json(tmp_path):
-    """옛 자리를 배포 전에 잡는다 — 기동은 파서 경로에서만 막으므로 점검이 더 넓다."""
-    precheck = _load_script("precheck_custom_fields.py")
-    (tmp_path / "custom_field_x.yaml").write_text(
-        "schema: v2\nsource: {kind: document}\nllm: [{out: [A]}]\n", encoding="utf-8")
-    block = {"doc_type": "card", "extractor": "llm",
-             "config_file": "custom_field_x.yaml",
-             "json": {"text_fields": ["html"]}}
-    problems = precheck.check_block("cfg.yaml", block, tmp_path, set())
-    assert any("source.pre.json" in p and p.startswith("[기동실패]") for p in problems), problems
 
 
 def test_precheck_refuses_v1_notation(tmp_path):

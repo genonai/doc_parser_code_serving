@@ -98,7 +98,7 @@ def test_styled_table_chunks_carry_no_markup_and_no_enricher_meta(module_name):
     assert doc.tables[0].meta is not None  # 이관이 실제로 일어났는지 먼저 고정
 
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char"
     )
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 

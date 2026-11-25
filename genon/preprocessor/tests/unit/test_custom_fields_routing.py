@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from genon.preprocessor.processing.common import parser_config as pcfg
+from genon.preprocessor.processing.enrichment import config_v2
 from genon.preprocessor.processing.enrichment import custom_fields_enricher as cfe
 from genon.preprocessor.processing.enrichment.custom_fields_enricher import (
     CustomFieldsEnricher,
@@ -26,33 +27,21 @@ from genon.preprocessor.processing.enrichment.field_transforms import (
 from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
     TabularCustomFieldsMapper,
     build_tabular_custom_fields_mappers,
+    validate_custom_field_config,
 )
 from genon.preprocessor.facade.chunking_processor import DocumentProcessor as ChunkProcessor
 
 
 @pytest.mark.unit
-def test_enrichment_config_preserves_custom_fields_router_options(tmp_path):
-    raw = [
-        {"custom_fields": {
-            "enable": True,
-            "doc_type": "card",
-            "extractor": "llm",
-            "url": "http://example",
-            "model": "model",
-        }},
-        {"custom_fields": {
-            "enable": True,
-            "doc_type": "faq",
-            "extractor": "tabular_mapping",
-            "config_file": "faq.yaml",
-        }},
-    ]
-    config = EnrichmentConfig.from_raw(raw, tmp_path)
-    assert [item["doc_type"] for item in config.custom_fields_cfgs] == ["card", "faq"]
-    assert [item["extractor"] for item in config.custom_fields_cfgs] == [
-        "llm", "tabular_mapping",
-    ]
-    assert all(item["resource_path"] == str(tmp_path) for item in config.custom_fields_cfgs)
+@pytest.mark.parametrize("raw", [
+    [{"custom_fields": {"doc_type": "card", "config_file": "custom_field_card.yaml"}},
+     {"custom_fields": {"enable": False, "doc_type": "faq", "config_file": "custom_field_faq.yaml"}}],
+    {"custom_fields": [{"doc_type": "card"}, {"doc_type": "faq"}]},
+], ids=["list", "dict"])
+def test_enrichment_config_rejects_registration_blocks(tmp_path, raw):
+    """doc_type 등록은 규칙 파일의 `doc_type:` 한 가지다(#798). 남은 등록 블록은 꺼진 것까지 한 번에 알리고 기동을 막는다."""
+    with pytest.raises(ValueError, match=r"custom_fields 항목 있음 \(doc_type=card, faq\)"):
+        EnrichmentConfig.from_raw(raw, tmp_path)
 
 
 @pytest.mark.unit
@@ -65,15 +54,20 @@ def test_doc_type_matching_is_normalized_and_missing_config_is_wildcard():
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("resolve", [
+    pcfg.resolve_unknown_doc_type_policy, pcfg.resolve_llm_call_failure_policy,
+])
 @pytest.mark.parametrize("value,expected", [
     (None, "warn"), ("", "warn"), ("warn", "warn"), (" FAIL ", "fail"), ("fial", ValueError),
+    (False, ValueError), (0, ValueError),
 ])
-def test_unknown_doc_type_policy_defaults_to_warn_and_rejects_typo(value, expected):
+def test_warn_fail_policy_defaults_to_warn_and_rejects_typo(resolve, value, expected):
+    """defaults.unknown_doc_type·llm_call_failure — 오기입은 ValueError 로 기동을 막는다."""
     if expected is ValueError:
         with pytest.raises(ValueError):
-            pcfg.resolve_unknown_doc_type_policy(value)
+            resolve(value)
     else:
-        assert pcfg.resolve_unknown_doc_type_policy(value) == expected
+        assert resolve(value) == expected
 
 
 @pytest.mark.unit
@@ -556,7 +550,7 @@ def test_llm_extractor_constants_survive_and_win(tmp_path):
 
 # ── 출고 config 전수 검증 ────────────────────────────────────────────────────
 
-from shipped_config import SHIPPED_ROOTS, SITE_MONIMO
+from shipped_config import SITE_MONIMO, SITE_MONIMO_RESOURCE
 
 _RESOURCE_DIRS = [SITE_MONIMO]
 
@@ -1160,28 +1154,30 @@ def test_list_instead_of_mapping_rejected_at_startup(tmp_path, bad_spec):
 
 
 @pytest.mark.unit
-def test_required_on_llm_generated_field_rejected_at_startup(tmp_path):
-    """필수값 검사는 LLM 호출보다 먼저 돈다 — LLM 생성 필드를 required 로 걸면 전 행이 사라진다."""
-    _write_mapper_cfg(tmp_path, """
-        schema: v2
-        source: {kind: rows}
-        fields:
-          TITLE:
-            alias: [제목]
-        require:
-          fields: [SUMMARY_TEXT]
-        body:
-          fields: [TITLE]
-        llm:
-          - out: [SUMMARY_TEXT]
-            in: [TITLE]
-            endpoint: {url: "http://example/v1/chat/completions"}
-    """)
-    with pytest.raises(ValueError, match="llm 이 만드는 필드"):
-        TabularCustomFieldsMapper(
-            config_file="custom_field_probe.yaml", resource_path=str(tmp_path),
-            doc_type="x", extractor="tabular_mapping",
-        )
+@pytest.mark.parametrize("key", ["require", "keep", "filter"])
+def test_selector_on_llm_generated_field_rejected_at_startup(key):
+    """require·keep·filter 는 LLM 호출보다 먼저 돈다 — LLM 생성 필드에 걸면 전 레코드가 사라진다.
+
+    입력은 실물 설정 genon/sites/monimo/resource/custom_field_shopping_card.yaml 에
+    llm 블록(out: CARD_TYPE_C)을 더하고 그 필드를 해당 키에만 건 것이다.
+    """
+    path = (Path(__file__).resolve().parents[4]
+            / "genon/sites/monimo/resource/custom_field_shopping_card.yaml")
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8"))
+    cfg.pop("doc_type", None)
+    cfg["llm"] = [{
+        "out": ["CARD_TYPE_C"], "in": ["PRODUCT_NM"],
+        "endpoint": {"url": "http://example/v1/chat/completions"},
+    }]
+    if key == "require":
+        cfg["require"]["fields"].append("CARD_TYPE_C")
+    elif key == "keep":
+        cfg["fields"]["CARD_TYPE_C"] = {"keep": ["KID"]}
+    else:
+        cfg["filter"] = [{"field": "CARD_TYPE_C", "in": ["KID"]}]
+    out, extractor = config_v2.normalize(cfg)
+    with pytest.raises(ValueError, match=r"llm 이 만드는 필드 있음: \['CARD_TYPE_C'\]"):
+        validate_custom_field_config(out, label="shopping_card", extractor=extractor)
 
 
 @pytest.mark.unit
@@ -1220,29 +1216,25 @@ def test_shipped_configs_pass_startup_validation():
     # 기동과 같은 경로로 읽는다 — 프리셋이 `model_presets_file` 로 지정한 파일에서 모인다.
     raw = cp.load_config(str(base / "config.yaml"))
     built = 0
-    for item in raw.get("enrichment") or []:
-        for name, opts in (item or {}).items():
-            if name != "custom_fields" or not isinstance(opts, dict) or not opts.get("config_file"):
-                continue
-            opts = dict(opts)
-            opts.setdefault("resource_path", str(base))
-            extractor = custom_fields_extractor(opts)
-            if extractor.startswith("tabular"):
-                cls = TabularCustomFieldsMapper
-            elif extractor == "json_semantic":
-                cls = pytest.importorskip(
-                    "genon.preprocessor.processing.enrichment.json_semantic"
-                ).SemanticJsonMapper
-            elif extractor.startswith("json"):
-                cls = pytest.importorskip(
-                    "genon.preprocessor.processing.enrichment.json_records"
-                ).JsonRecordsMapper
-            else:
-                continue
-            cls(config_file=opts["config_file"], resource_path=str(base),
-                doc_type=opts.get("doc_type"), extractor=extractor,
-                model_presets=raw.get("model_presets"))
-            built += 1
+    for entry in config_v2.rule_file_registrations(base):
+        opts = {**entry, "resource_path": str(base)}
+        extractor = custom_fields_extractor(opts)
+        if extractor.startswith("tabular"):
+            cls = TabularCustomFieldsMapper
+        elif extractor == "json_semantic":
+            cls = pytest.importorskip(
+                "genon.preprocessor.processing.enrichment.json_semantic"
+            ).SemanticJsonMapper
+        elif extractor.startswith("json"):
+            cls = pytest.importorskip(
+                "genon.preprocessor.processing.enrichment.json_records"
+            ).JsonRecordsMapper
+        else:
+            continue
+        cls(config_file=opts["config_file"], resource_path=str(base),
+            doc_type=opts.get("doc_type"), extractor=extractor,
+            model_presets=raw.get("model_presets"))
+        built += 1
     assert built >= 10, f"검증 대상 매핑 설정이 너무 적다({built}개) — 등록을 확인하라"
 
 
@@ -1346,7 +1338,7 @@ def test_llm_config_rejects_output_field_typo(tmp_path):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("resource_dir", SHIPPED_ROOTS)
+@pytest.mark.parametrize("resource_dir", [SITE_MONIMO_RESOURCE, SITE_MONIMO])  # 표준 폴더에는 문서유형 설정이 없다
 def test_shipped_configs_match_declared_keys(resource_dir):
     """출고 설정이 지원키 선언과 어긋나지 않는지 지킨다.
 
@@ -1363,21 +1355,12 @@ def test_shipped_configs_match_declared_keys(resource_dir):
     )
 
     root = Path(__file__).resolve().parents[2] / resource_dir
-    registered = {}
-    for name in ("config.yaml", "parse_config_simple.yaml",
-                 "intelligent_processor_config.yaml", "convert_processor_config.yaml"):
-        path = root / name
-        if not path.exists():
-            continue
-        for item in (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("enrichment") or []:
-            block = (item or {}).get("custom_fields")
-            if block and block.get("config_file"):
-                # 판정은 `custom_fields_extractor` 에 맡긴다 — 등록 블록에 적혀 있으면 그 값,
-                # 없으면 config_file 의 source.kind 에서 유도한다. 여기서 규칙을 다시
-                # 구현하면(예전의 `or "llm"`) 기동과 갈려 출고 설정을 오탐한다.
-                block = dict(block)
-                block.setdefault("resource_path", str(root))
-                registered.setdefault(block["config_file"], custom_fields_extractor(block))
+    # 판정은 `custom_fields_extractor` 에 맡긴다 — config_file 의 source.kind 에서 유도한다. 여기서 규칙을
+    # 다시 구현하면(예전의 `or "llm"`) 기동과 갈려 출고 설정을 오탐한다.
+    registered = {
+        entry["config_file"]: custom_fields_extractor({**entry, "resource_path": str(root)})
+        for entry in config_v2.rule_file_registrations(root)
+    }
 
     checked = 0
     for path in sorted(root.glob("custom_field_*.yaml")):
@@ -1388,9 +1371,7 @@ def test_shipped_configs_match_declared_keys(resource_dir):
         cfg = _load_shipped(path)
         cs.validate_known_keys(cfg, label=f"{resource_dir}/{path.name}", extractor=extractor)
         checked += 1
-    # 표준 폴더(resource/·activities/parse/)는 card 한 건뿐이다(문서유형 설정 대부분은 사이트 폴더에 있다).
-    # 모니모 parse 폴더는 13종이다 — music_ai 는 resource/ 에만 두고 parse 폴더에는 Studio 문서유형 추가로 만든다.
-    minimum = 13 if resource_dir == SITE_MONIMO else 1
+    minimum = 15
     assert checked >= minimum, f"검사된 출고 설정이 너무 적다: {checked}건"
 
 

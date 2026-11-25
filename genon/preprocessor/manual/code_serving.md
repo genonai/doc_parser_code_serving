@@ -95,8 +95,8 @@ Authorization: Bearer {auth_key}
 - `code` 가 `0` 이면 성공, 그 외에는 실패이며 `errMsg` 에 사유가 담깁니다.
 - 서버 내부 예외가 발생해도 HTTP 상태는 `200` 이며 `code` 가 `0` 이 아닌 값으로 반환됩니다.
   성공 여부는 HTTP 상태가 아니라 **`code` 값으로 판단**하세요.
-- 실패 응답에는 `error_code` 가 함께 담기며, `error_policy: "strict"`(#329) 또는 요청
-  deadline 초과 시엔 `stage`(실패 단계)·`error_kind`(`transient`/`permanent`/`timeout`) 필드가
+- 실패 응답에는 `error_code` 가 함께 담기며, `error_policy: "strict"`(#329)·parse 설정
+  `defaults.llm_call_failure: fail` 의 중단 또는 요청 deadline 초과 시엔 `stage`(실패 단계)·`error_kind`(`transient`/`permanent`/`timeout`) 필드가
   추가됩니다. 자세한 내용은 아래 「LLM 캐시 / 실패 정책 / 요청 deadline (#329)」 절 참고.
 
 엔드포인트 요약:
@@ -346,7 +346,7 @@ python serving_gateway_test.py --mode parser --file-path /data/documents/report.
 | `interim_root` | `params` | env `INTERIM_ROOT`(미설정 시 `/nfs-root/interim`) | 캐시 루트 경로. 우선순위 요청값 > env > 기본 |
 | `workflow_id` | `params` | (없음) | 캐시 스코프. **없으면 캐시 비활성** |
 | `run_id` | `params` | `"default"` | 캐시 스코프 |
-| `error_policy` | `params` | `"lenient"` | `"strict"` 면 enrichment 실패를 `code:1` 로 응답(+`stage`/`error_kind`) |
+| `error_policy` | `params` | `"lenient"` | `"strict"` 면 enrichment 실패를 `code:1` 로 응답(+`stage`/`error_kind`). parse 설정 `defaults.llm_call_failure: fail` 이면 요청과 무관하게 LLM 호출 실패에서 중단 |
 | `request_deadline` | `params` | (없음) | 요청 전체 상한(초). 초과 시 timeout 응답 |
 
 - 캐시 활성 조건: `llm_cache` **AND** `workflow_id`. interim root 는 요청 `interim_root` > env
@@ -445,11 +445,18 @@ workflow_id/run_id 를 유지하므로 **재시도 간 성공분을 그대로 �
 | `lenient`(기본) | enrichment 실패를 삼키고 null 로 채운 뒤 `code:0` — 기존 하위호환 동작 |
 | `strict` | enrichment 실패 시 삼키지 않고 `code:1` 로 응답 |
 
+parse activity 는 설정 `defaults.llm_call_failure`(`warn` | `fail`)로 같은 중단을 상시로 켤 수 있다. 설정 `fail` 또는 요청 `strict`
+이면 LLM 호출 실패(HTTP·연결 오류, 시간 초과·요청 deadline 초과, 응답 형식 이상, 설정이 선언한 입력 길이 초과)에서 중단하고,
+요청 `lenient` 로 설정 `fail` 을 해제할 수 없다. 이 중단에는 표 설명·레코드형 LLM 생성 필드·PPT 페이지 설명·민감정보 분류도
+포함되며, 그림·페이지·이미지 표·레코드처럼 건별로 부르는 호출은 첫 실패 뒤 남은 호출을 하지 않는다. 빈 응답과 모델 출력 내용
+이상(JSON 깨짐 등)은 중단하지 않는다. 파사드(intelligent·convert·attachment)는 이 설정을 읽지 않으며, 요청 `strict` 의
+범위도 종전과 같다(표 설명 등 내부에서 처리하는 실패는 중단하지 않음).
+
 `strict`/timeout 응답 envelope 에는 실패 맥락이 추가된다.
 
 | 필드 | 설명 |
 | --- | --- |
-| `stage` | 실패 단계(`doc_summary`/`image_description`/`table_description`/`metadata`/`custom_fields`/`enrichment`/`request`) |
+| `stage` | 실패 단계(`doc_summary`/`image_description`/`table_description`/`metadata`/`custom_fields`/`page_description`/`guardrail`/`enrichment`/`request`) |
 | `error_kind` | 실패 성격 — `transient`(연결/429/5xx) / `permanent`(그 밖의 4xx/파싱) / `timeout` |
 | `reason_code` | 사유 코드(예: `PARSE_D001`). 코드표는 `custom_fields_exceptions.md` 의 "사유 코드" 절 |
 | `error_category` | 유형 — `data`(원천데이터) / `preprocess`(전처리) / `system`(시스템) |

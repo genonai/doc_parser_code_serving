@@ -4,11 +4,12 @@
 field_transforms.py 에 함수를 추가하던 통로를 설정으로 옮긴 것이 이 세 기능의 목적이다.
 """
 import json
+import logging
 import textwrap
 
 import pytest
 
-from genon.preprocessor.processing.enrichment.json_records import JsonRecordsMapper
+from genon.preprocessor.processing.enrichment.json_records import AllRecordsFilteredOut, JsonRecordsMapper
 from genon.preprocessor.processing.enrichment.json_semantic import SemanticJsonMapper
 from genon.preprocessor.processing.enrichment.tabular_custom_fields import (
     TabularCustomFieldsMapper,
@@ -69,9 +70,45 @@ def test_filter_selects_records_by_value(tmp_path):
 
 
 def test_filter_is_not_fail_open(tmp_path):
-    """열거하지 않은 값이 통과하던 옛 우회(value_map 빈 표준값)의 반대다."""
-    assert _rows(tmp_path, _FILTER_CFG,
-                 [{"제목": "신규", "삭제여부": "N", "상태": "NEW_UNKNOWN"}]) == []
+    """열거하지 않은 값이 통과하던 옛 우회(value_map 빈 표준값)의 반대다. 행이 모두 빠지면 예외로 알린다."""
+    with pytest.raises(AllRecordsFilteredOut):
+        _rows(tmp_path, _FILTER_CFG, [{"제목": "신규", "삭제여부": "N", "상태": "NEW_UNKNOWN"}])
+
+
+@pytest.mark.parametrize("ids, expected", [
+    (["X9", "S02", "S01"], ["S02", "S01"]),   # 일부 일치: 원천 순서대로 남김
+    (["X8", "X9"], None),                     # 전부 불일치: 레코드 제외
+    ("S01", ["S01"]),                         # 단일 값도 목록으로 적재
+    (["s01 "], ["S01"]),                      # 대소문자·공백 무시, 표기는 설정에 적은 값
+])
+def test_keep_narrows_list_values(tmp_path, caplog, ids, expected):
+    """keep 은 목록 값을 줄이고, 남은 값이 없는 레코드는 filter 와 같은 집계로 뺀다(필수값 누락이 아니다)."""
+    with caplog.at_level(logging.INFO):
+        rows = _rows(tmp_path, """
+            schema: v2
+            source: {kind: records}
+            fields:
+              T: {alias: [t]}
+              IDS: {alias: [ids], keep: [S01, S02]}
+            require: {fields: [IDS]}
+            body: {fields: [T]}
+        """, [{"t": "대조", "ids": ["S01"]}, {"t": "대상", "ids": ids}], kind="json")
+    assert [r["IDS"] for r in rows] == [["S01"]] + ([expected] if expected else [])
+    assert ("filtered 1/2 records (filter·keep 조건 불일치)" in caplog.text) == (expected is None)
+    assert "필수값 누락" not in caplog.text
+
+
+def test_empty_keep_loads_everything(tmp_path):
+    """keep 을 비우면 필터 없이 전부 적재한다(값도 줄이지 않는다)."""
+    rows = _rows(tmp_path, """
+        schema: v2
+        source: {kind: records}
+        fields:
+          T: {alias: [t]}
+          IDS: {alias: [ids], keep: []}
+        body: {fields: [T]}
+    """, [{"t": "가", "ids": ["X9"]}, {"t": "나", "ids": ["S01", "X8"]}], kind="json")
+    assert [r["IDS"] for r in rows] == [["X9"], ["S01", "X8"]]
 
 
 def test_transform_takes_arguments_and_chains(tmp_path):
@@ -552,6 +589,9 @@ def test_json_path_gets_the_same_features(tmp_path):
          "fields: {T: {alias: [제목]}}\n"
          "filter:\n  - {field: T, in: []}\n"
          "body: {fields: [T]}\n", "비어 있지 않은"),
+        ("schema: v2\nsource: {kind: rows}\n"
+         "fields: {T: {alias: [제목], keep: S01}}\n"
+         "body: {fields: [T]}\n", "keep 은 남길 값의 목록"),
         ("schema: v2\nsource: {kind: rows}\n"
          "fields: {T: {alias: [제목]}, J: {pack: [NOPE]}}\n"
          "body: {fields: [T]}\n", "만드는 설정 없"),

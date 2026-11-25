@@ -221,29 +221,32 @@ def _merge_table_text_description_config(
     return merged_cfgs
 
 
-def rule_file_blocks(config_dir: Path, block_doc_types: list, parent_cfg: dict) -> list[dict]:
-    """규칙 파일에 적은 doc_type 등록(#748)을 설정의 등록 블록과 같은 모양으로 만든다.
+def reject_registration_blocks(blocks: list) -> None:
+    """processor 설정 파일의 `custom_fields` 등록 블록이 남아 있으면 기동을 막는다(#798).
 
-    같은 doc_type 이 등록 블록(꺼진 블록 포함)이나 다른 규칙 파일에도 있으면 어느 규칙을 쓸지 정할 수 없으므로
-    기동을 막는다. 꺼진 블록까지 보는 이유는, 꺼 둔 doc_type 이 규칙 파일 때문에 다시 켜지는 일을 막기 위해서다.
+    doc_type 등록은 규칙 파일 최상위의 `doc_type:` 한 가지다. 블록을 무시하고 기동하면 그 doc_type 이
+    등록되지 않은 채로 처리되므로 경고로 낮추지 않는다. 블록이 여러 개면 한 번에 모두 알린다.
     설정 점검기(`tools/config_precheck`)도 이 함수로 같은 판정을 한다.
     """
-    found = config_v2.rule_file_registrations(config_dir)
-    if not found:
-        return []
-    from .custom_fields_enricher import normalize_doc_types
+    if not blocks:
+        return
+    names = [str(_as_dict(block).get("doc_type") or _as_dict(block).get("config_file") or "?") for block in blocks]
+    raise ValueError(
+        f"기동 중단: processor 설정 파일의 enrichment 에 custom_fields 항목 있음 (doc_type={', '.join(names)})\n"
+        "doc_type 은 규칙 파일(custom_field_<doc_type>.yaml) 맨 위의 doc_type: 으로 등록하므로 "
+        "enrichment 의 custom_fields 항목 삭제 필요")
 
-    taken = {name: "processor 설정 파일의 custom_fields 등록 블록" for value in block_doc_types for name in normalize_doc_types(value)}
+
+def rule_file_blocks(config_dir: Path, parent_cfg: dict) -> list[dict]:
+    """규칙 파일에 적은 doc_type 등록(#748)을 custom_fields enricher 설정 목록으로 만든다.
+
+    doc_type 등록은 이것 한 가지다(#798). 규칙 파일 여러 개가 같은 doc_type 을 등록하면 모두 적용된다 —
+    한 원천 파일에 컬럼 구성이 다른 표나 성격이 다른 JSON 배열이 여럿일 때, 규칙 파일마다
+    `require.fields`·`records_at` 에 맞는 부분만 처리한다.
+    """
     presets = parent_cfg.get("model_presets")
     blocks: list[dict] = []
-    for entry in found:
-        config_file = entry["config_file"]
-        for name in normalize_doc_types(entry["doc_type"]):
-            if name in taken:
-                raise ValueError(
-                    f"doc_type={name} 중복 등록: 규칙 파일 {config_file} 과 {taken[name]} 양쪽에 있음\n"
-                    "한 곳만 남기도록 수정 필요")
-            taken[name] = f"규칙 파일 {config_file}"
+    for entry in config_v2.rule_file_registrations(config_dir):
         opts = {**entry, "resource_path": str(config_dir)}
         if presets:
             opts["model_presets"] = presets
@@ -439,7 +442,7 @@ class EnrichmentConfig:
         table_desc_cfg: dict = {"enabled": False}
         table_text_desc_cfg: dict = {"enabled": False}
         custom_fields_cfgs: list = []
-        block_doc_types: list = []                 # 등록 블록의 doc_type(꺼진 블록 포함) — 규칙 파일 등록과의 중복 검사용
+        registration_blocks: list = []             # 남아 있으면 기동을 막는다(reject_registration_blocks)
 
         for item in items:
             if not isinstance(item, dict):
@@ -489,16 +492,10 @@ class EnrichmentConfig:
                 opts["enabled"] = bool(enabled)
                 table_text_desc_cfg = opts
             elif category == "custom_fields":
-                block_doc_types.append(opts.get("doc_type"))
-                if enabled and opts:
-                    if "resource_path" not in opts:
-                        opts["resource_path"] = str(config_dir)
-                    presets = parent_cfg.get("model_presets")
-                    if presets and "model_presets" not in opts:
-                        opts["model_presets"] = presets
-                    custom_fields_cfgs.append(opts)
+                registration_blocks.append(opts)
 
-        custom_fields_cfgs.extend(rule_file_blocks(config_dir, block_doc_types, parent_cfg))
+        reject_registration_blocks(registration_blocks)
+        custom_fields_cfgs.extend(rule_file_blocks(config_dir, parent_cfg))
 
         # toc 는 별도 built-in default 가 없다 (없으면 docling 레이어가 자체 기본값 사용).
         toc_system_prompt = _resolve_prompt(
@@ -658,18 +655,10 @@ class EnrichmentConfig:
 
         raw_cf = cfg.get("custom_fields")
         if isinstance(raw_cf, dict) and raw_cf:
-            cf_list = [dict(raw_cf)]
+            reject_registration_blocks([raw_cf])
         elif isinstance(raw_cf, list):
-            cf_list = [dict(_as_dict(c)) for c in raw_cf if isinstance(c, dict) and c]
-        else:
-            cf_list = []
-        _presets = parent_cfg.get("model_presets")
-        for _cf in cf_list:
-            if "resource_path" not in _cf:
-                _cf["resource_path"] = str(config_dir)
-            if _presets and "model_presets" not in _cf:
-                _cf["model_presets"] = _presets
-        cf_list.extend(rule_file_blocks(config_dir, [c.get("doc_type") for c in cf_list], parent_cfg))
+            reject_registration_blocks([c for c in raw_cf if isinstance(c, dict) and c])
+        cf_list = rule_file_blocks(config_dir, parent_cfg)
         table_text_desc_cfg = _as_dict(cfg.get("table_text_description"))
         if table_text_desc_cfg:
             table_text_desc_cfg = dict(table_text_desc_cfg)

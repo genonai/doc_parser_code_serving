@@ -202,7 +202,7 @@ def test_actual_md_html_samples_parse_describe_once_and_chunk(
     assert f"[표 본문 format={expected_input_format}]" in enricher._call_llm.await_args.args[2]
 
     chunker = GenosSmartChunker(
-        max_tokens=1024, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=1024, chunk_mode="section", tokenizer_type="char"
     )
     table_chunks = [
         chunk.text

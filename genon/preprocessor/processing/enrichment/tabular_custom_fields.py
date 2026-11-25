@@ -140,6 +140,32 @@ def apply_value_map(fields: dict, compiled: dict[str, dict[str, Any]], *, contex
         fields[target] = mapped
 
 
+# ── 목록 값 줄이기(keep) ─────────────────────────────────────────────────────
+# `fields.<필드>.keep: [값 …]` — 그 필드의 값에서 적은 값만 원천 순서대로 남긴다. 레코드를 조건으로
+# 고르는 것은 filter 이고, keep 은 목록 값을 줄인다. 남은 값이 없으면 그 레코드는 적재하지 않는다.
+# 단일 값도 원소 1개짜리 목록으로 보고 적재값도 목록으로 맞춘다. 비교는 value_map·filter 와 같은
+# 정규화를 거치고, 남는 값의 표기는 설정에 적은 값이다. 형태 검증은 config_v2 가 끝냈다.
+
+def compile_keep(cfg: dict) -> dict[str, dict[str, Any]]:
+    """설정의 keep 을 `{목표필드: {정규화 값: 설정 표기}}` 로 컴파일한다."""
+    return {
+        str(target): {normalize_column_name(value): value for value in values}
+        for target, values in (cfg.get("keep") or {}).items()
+    }
+
+
+def apply_keep(fields: dict, compiled: dict[str, dict[str, Any]]) -> bool:
+    """keep 을 제자리 적용한다. 남은 값이 없는 필드가 하나라도 있으면 False(그 레코드는 제외 대상)."""
+    for target, lookup in compiled.items():
+        value = fields.get(target)
+        items = value if isinstance(value, list) else ([] if value in (None, "") else [value])
+        kept = [lookup[key] for key in map(normalize_column_name, items) if key in lookup]
+        if not kept:
+            return False
+        fields[target] = kept
+    return True
+
+
 def validate_target_field_names(targets: Any, *, label: str) -> None:
     """목표필드명이 벡터 예약 필드/property 규칙을 위반하면 **기동 시** 실패시킨다.
 
@@ -220,11 +246,11 @@ def validate_config_shape(cfg: dict, *, label: str) -> None:
         )
 
 
-def validate_required_not_llm_generated(cfg: dict, *, label: str) -> None:
-    """`required` 에 `llm_fields` 생성 필드가 있으면 **기동 시** 거부한다.
+def validate_selectors_not_llm_generated(cfg: dict, *, label: str) -> None:
+    """`required`·`keep`·`filter` 가 `llm_fields` 생성 필드를 가리키면 **기동 시** 거부한다.
 
-    필수값 검사는 LLM 호출보다 **먼저** 돈다(build_fields → _apply_llm_fields 순서).
-    그래서 LLM 이 만들 필드를 required 로 걸면 **LLM 을 한 번도 부르지 않고 전 행이 skip** 되고,
+    세 조건 모두 LLM 호출보다 **먼저** 돈다(build_fields → _apply_llm_fields 순서).
+    그 시점에 LLM 생성 필드는 비어 있으므로 **LLM 을 한 번도 부르지 않고 전 레코드가 빠지고**,
     요청은 빈 문서 + 성공으로 끝난다 — 원인을 찾기 매우 어렵다.
     """
     llm_outputs = {
@@ -232,12 +258,27 @@ def validate_required_not_llm_generated(cfg: dict, *, label: str) -> None:
         for spec in (cfg.get("llm_fields") or [])
         for f in ((spec or {}).get("output_fields") or [])
     }
-    clash = sorted({str(f) for f in (cfg.get("required") or [])} & llm_outputs)
-    if clash:
-        raise ValueError(
-            f"{label}: require.fields 에 llm 이 만드는 필드 있음: {clash}\n"
-            f"require.fields 에서 제외 필요"
-        )
+    if not llm_outputs:
+        return
+    rules = cfg.get("filter")
+    # (설정에서 가리키는 필드, 오류 첫 줄의 위치 표기, 조치 문구)
+    used = [
+        ({str(f) for f in (cfg.get("required") or [])},
+         "require.fields", "require.fields 에서 제외 필요"),
+        ({str(f) for f in (cfg.get("keep") or {})},
+         "keep", "해당 필드의 keep 제거 필요"),
+        # 형태 검사는 compile_filter 가 맡는다. 여기서는 field 이름만 본다.
+        ({str(item.get("field")) for item in (rules if isinstance(rules, list) else [])
+          if isinstance(item, dict)},
+         "filter", "filter 에서 제외 필요"),
+    ]
+    for names, where, action in used:
+        clash = sorted(names & llm_outputs)
+        if clash:
+            raise ValueError(
+                f"{label}: {where} 에 llm 이 만드는 필드 있음: {clash}\n"
+                f"llm 호출 전에 적용되어 모든 레코드가 제외됨, {action}"
+            )
 
 
 def warn_unproducible_text_fields(cfg: dict, *, label: str) -> None:
@@ -313,8 +354,7 @@ def validate_custom_field_config(cfg: dict, *, label: str, extractor: str | None
     cs.validate_known_keys(cfg, label=label, extractor=extractor)
     validate_config_shape(cfg, label=label)
     validate_target_field_names(collect_target_field_names(cfg), label=label)
-    if uses("required"):
-        validate_required_not_llm_generated(cfg, label=label)
+    validate_selectors_not_llm_generated(cfg, label=label)
     if uses("chunk_prefix_fields"):
         validate_chunk_prefix_fields(cfg, label=label)
     if uses("text_fields"):
@@ -1407,8 +1447,11 @@ class CustomFieldsMapperBase:
 
     def _apply_value_pipeline(
         self, fields: dict, *, html_renderer: Any = None, context: str = ""
-    ) -> dict:
-        """원시 매핑 값에 defaults → constants → value_map → transforms → derive 를 건다.
+    ) -> dict | None:
+        """원시 매핑 값에 defaults → constants → value_map → keep → transforms → derive 를 건다.
+
+        keep 으로 남은 값이 없으면 변환하지 않고 None 을 돌려준다. 호출측은 그 레코드를 filter 에
+        걸린 것과 같이 센다. keep 이 변환보다 먼저인 것은 to_json 뒤에는 원소를 셀 수 없기 때문이다.
 
         **순서가 계약이다.** defaults 가 먼저여야 `constants: {X: ""}` 로 못 박은 빈 상수를
         defaults 가 되살리지 않는다("constants 가 이긴다"). 값 정규화가 변환보다 먼저여야
@@ -1430,6 +1473,8 @@ class CustomFieldsMapperBase:
         fields.update(self.constants)
 
         apply_value_map(fields, self.value_map, context=context)
+        if not apply_keep(fields, getattr(self, "keep", None) or {}):
+            return None
         apply_transforms(fields, self.transforms, html_renderer)
         apply_derive(fields, self.derive, self.transforms)
         return fields
@@ -1467,6 +1512,7 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
         self.defaults = dict(self.config.get("defaults") or {})
         self.constants = dict(self.config.get("constants") or {})
         self.value_map = compile_value_map(self.config.get("value_map"))
+        self.keep = compile_keep(self.config)
 
         self.transforms = compile_transforms(
             self.config.get("transforms"), label=label, cfg=self.config
@@ -1584,6 +1630,8 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
         ) if self.transforms else None
 
         fields_list: list[dict] = []
+        # 모든 시트를 합친 레코드 수와 filter·keep 제외 수. 전부 제외되었는지 판정하는 데 쓴다.
+        total_records = total_filtered = 0
         sheets = data_dict.get("data", []) or []
         names = [str(sheet.get("sheet_name") or f"sheet_{idx + 1}") for idx, sheet in enumerate(sheets)]
         if self.sheets is not None:
@@ -1665,7 +1713,7 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
             skipped = filtered = 0
             for record_idx, (fields, row) in enumerate(records, start=1):
                 # 값 파이프라인은 매퍼 3종이 한 벌을 공유한다(순서가 계약이라 베이스에 둔다).
-                self._apply_value_pipeline(
+                kept = self._apply_value_pipeline(
                     fields,
                     html_renderer=html_renderer,
                     context=f"(sheet={sheet_name}, row={record_idx})",
@@ -1673,7 +1721,8 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
 
                 # 대상이 아닌 레코드는 여기서 빠진다. required 보다 **먼저** 보는 것이 중요하다 —
                 # 뒤에 두면 정상 제외가 "필수값 누락" 경고로 찍혀 데이터 사고처럼 보인다.
-                if not passes_filter(fields, self.filter):
+                # keep 으로 남은 값이 없는 레코드(kept is None)도 같은 집계로 센다.
+                if kept is None or not passes_filter(fields, self.filter):
                     filtered += 1
                     continue
 
@@ -1705,11 +1754,13 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
                 )
                 fields_list.append(fields)
 
+            total_records += len(records)
+            total_filtered += filtered
             if filtered:
                 # 정상 제외지만 조용히 줄면 "왜 건수가 다르지"가 된다 — info 로 남긴다.
                 _log.info(
                     f"[tabular_custom_fields] filtered {filtered}/{len(records)} records "
-                    f"(filter 조건 불일치) sheet={sheet_name}"
+                    f"(filter·keep 조건 불일치) sheet={sheet_name}"
                 )
             if skipped:
                 # silent 축소 방지 — 몇 건이 빠졌는지 요약으로 드러낸다.
@@ -1717,6 +1768,16 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
                     f"[tabular_custom_fields] skipped {skipped}/{len(records)} records "
                     f"(missing required) sheet={sheet_name}"
                 )
+
+        if total_filtered and total_filtered == total_records:
+            # records 경로와 같은 예외로 알린다. 파서가 빈 결과 표시를 실어 청커가 0건 실패로 보지 않는다.
+            # json_records 가 이 모듈을 import 하므로 함수 안에서 import 한다.
+            from .json_records import AllRecordsFilteredOut
+            _log.warning(
+                f"빈 결과로 처리: {doc_type or 'rows'} 행 {total_filtered}/{total_records}건이 "
+                f"filter·keep 조건에서 제외됨"
+            )
+            raise AllRecordsFilteredOut(total_filtered)
 
         # 순번은 시트 루프 **밖**에서 매긴다 — 문서 1건 전체로 이어지고, filter/required 로
         # 걸러진 레코드는 이미 빠진 뒤라 번호에 구멍이 생기지 않는다.
@@ -1786,10 +1847,14 @@ class TabularCustomFieldsMapper(CustomFieldsMapperBase):
 
         `llm_fields` 는 적용되지 않는다 — LLM 호출은 async 라 이 동기 경로에서 돌릴 수 없다.
         parser 는 `build_fields` → LLM → `to_parse_format_from_fields` 3단을 직접 쓴다.
+        행이 모두 filter·keep 에서 빠지면 빈 목록으로 변환한다(이 경로의 호출부는 0건을 빈 결과로 다룬다).
         """
-        return self.to_parse_format_from_fields(
-            self.build_fields(data_dict, runtime_doc_type), runtime_doc_type
-        )
+        from .json_records import AllRecordsFilteredOut
+        try:
+            fields_list = self.build_fields(data_dict, runtime_doc_type)
+        except AllRecordsFilteredOut:
+            fields_list = []
+        return self.to_parse_format_from_fields(fields_list, runtime_doc_type)
 
 
 def warn_tabular_llm_fields_unsupported(mappers: list, processor: str) -> None:

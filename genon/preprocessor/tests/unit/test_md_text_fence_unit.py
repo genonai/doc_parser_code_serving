@@ -281,7 +281,7 @@ def test_product_fence_sample_parser_to_chunk_round_trip():
         payload = await parser(request, str(source), doc_type="product_slf", log_level=3)
         vectors = await ChunkProcessor()(
             request, str(source), document=payload,
-            chunk_size=1000, chunk_mode="split_only",
+            chunk_size=1000, chunk_mode="section",
             # 짧은 청크 병합(body.merge_short)은 크기 한도보다 병합을 우선해 아래 상한 단정과
             # 섞인다. 이 테스트는 펜스 분할만 보므로 끈다.
             short_chunk_size=0,
@@ -343,7 +343,7 @@ def test_product_fence_sample_keeps_repeated_qa():
         payload = await parser(request, str(source), doc_type="product_slf", log_level=3)
         vectors = await ChunkProcessor()(
             request, str(source), document=payload,
-            chunk_size=10000, chunk_mode="split_only",
+            chunk_size=10000, chunk_mode="section",
         )
         return "\n".join(v.model_dump()["text"] for v in vectors)
 

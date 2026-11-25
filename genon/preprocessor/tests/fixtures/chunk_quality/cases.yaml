@@ -13,7 +13,7 @@
 #                "문자열"                        그대로
 #                {repeat: "단위", times: N}      단위를 N번 잇는다
 #                {distinct: N}                   서로 다른 한글 음절 N자(가, 각, 갂 …)
-#   config     모듈 기본값에 덮어쓸 판정 설정(선택). 예: {stutter_min_run: 3}
+#   config     모듈 기본값에 덮어쓸 판정 설정(선택). 예: {checks: {char_stutter: report}}
 #   expect     keep | blank | no_content | broken_chars | repetition | min_chars | char_stutter | foreign_script
 #
 # 판정 설정은 모듈 기본값(manual/chunking_processor.md "판정 기준의 근거")에 config 를 덮어쓴 값이다.
@@ -156,26 +156,31 @@ cases:
   - {id: B12, text: [{repeat: "\uFFFD", times: 4}, "가나다라"], expect: broken_chars}
 
   # --- 글자별 반복(char_stutter): 같은 글자 3회 이상 덩어리가 2개 이상 붙으면 제외 ---
-  # 수행사가 보낸 예시 문자열. 기본 설정(stutter_min_run: 0)에서는 검사하지 않는다.
+  # 수행사가 보낸 예시 문자열. checks 에 적지 않으면(기본) 검사하지 않는다.
   - {id: S01, text: "무무무무배배배배당당당당 삼삼삼삼성성성성화화화화재재재재", expect: keep}
-  - {id: S02, config: {stutter_min_run: 3}, text: "무무무무배배배배당당당당 삼삼삼삼성성성성화화화화재재재재", expect: char_stutter}
-  - {id: S03, config: {stutter_min_run: 3}, text: "무무무배배배 안내", expect: char_stutter}
+  - {id: S02, config: {checks: {char_stutter: report}}, text: "무무무무배배배배당당당당 삼삼삼삼성성성성화화화화재재재재", expect: char_stutter}
+  - {id: S03, config: {checks: {char_stutter: report}}, text: "무무무배배배 안내", expect: char_stutter}
   # 제목(HEADER 줄)에만 깨짐이 있어도 찾는다. 다른 사유는 계속 본문만 본다.
-  - {id: S04, config: {stutter_min_run: 3}, prefix: "HEADER: 무무무무배배배배\n", text: "보험금 청구 절차 안내", expect: char_stutter}
+  - {id: S04, config: {checks: {char_stutter: report}}, prefix: "HEADER: 무무무무배배배배\n", text: "보험금 청구 절차 안내", expect: char_stutter}
   # 정상 표기: 덩어리 하나(공공공사·한 글자의 긴 반복), 2회 반복, 공백으로 떨어진 덩어리, 자모·영문
-  - {id: S05, config: {stutter_min_run: 3}, text: "공공공사 발주와 전기기기공사 일정, 一一一一一一 표기", expect: keep}
-  - {id: S06, config: {stutter_min_run: 3}, text: "민주주의의 위기와 摇摇晃晃 무무배배당당", expect: keep}
-  - {id: S07, config: {stutter_min_run: 3}, text: "무무무 배배배 당당당 ㅋㅋㅋㅋㅎㅎㅎㅎ aaabbb", expect: keep}
+  - {id: S05, config: {checks: {char_stutter: report}}, text: "공공공사 발주와 전기기기공사 일정, 一一一一一一 표기", expect: keep}
+  - {id: S06, config: {checks: {char_stutter: report}}, text: "민주주의의 위기와 摇摇晃晃 무무배배당당", expect: keep}
+  - {id: S07, config: {checks: {char_stutter: report}}, text: "무무무 배배배 당당당 ㅋㅋㅋㅋㅎㅎㅎㅎ aaabbb", expect: keep}
 
   # --- 다른 문자체계 섞임(foreign_script): 한글과 섞인 낱말 1개 이상, 또는 다른 문자체계 10자 이상 ---
-  # LLM·VLM 산출물에서 실제로 나온 깨짐 형태. 기본 설정(foreign_min_count: 0)에서는 검사하지 않는다(N01·N02).
-  - {id: F01, config: {foreign_min_count: 10}, text: "금 또는 세라ミク 등의 재료로 만든 보철물", expect: foreign_script}
-  - {id: F02, config: {foreign_min_count: 10}, text: "보장성保问题是란 무엇인가", expect: foreign_script}
-  - {id: F03, config: {foreign_min_count: 10}, text: "구분하여แสดง한 표와 категории별 금액", expect: foreign_script}
-  - {id: F04, config: {foreign_min_count: 10}, text: "本契約は、会員がサービスを利用する際の条件を定めるものです。", expect: foreign_script}
+  # LLM·VLM 산출물에서 실제로 나온 깨짐 형태. checks 에 적지 않으면(기본) 검사하지 않는다(N01·N02).
+  - {id: F01, config: {checks: {foreign_script: report}}, text: "금 또는 세라ミク 등의 재료로 만든 보철물", expect: foreign_script}
+  - {id: F02, config: {checks: {foreign_script: report}}, text: "보장성保问题是란 무엇인가", expect: foreign_script}
+  - {id: F03, config: {checks: {foreign_script: report}}, text: "구분하여แสดง한 표와 категории별 금액", expect: foreign_script}
+  - {id: F04, config: {checks: {foreign_script: report}}, text: "本契約は、会員がサービスを利用する際の条件を定めるものです。", expect: foreign_script}
   # 제목(HEADER 줄)에만 있어도 찾는다.
-  - {id: F05, config: {foreign_min_count: 10}, prefix: "HEADER: 保険나이 안내\n", text: "보험 나이 계산 방법을 안내합니다", expect: foreign_script}
+  - {id: F05, config: {checks: {foreign_script: report}}, prefix: "HEADER: 保険나이 안내\n", text: "보험 나이 계산 방법을 안내합니다", expect: foreign_script}
   # 정상 표기: 한자 병기(KS X 1001 밖 한자 포함)·상품명 속 한자, 그리스 기호, 일본식 가운뎃점, 사용자 영역 글머리
-  - {id: F06, config: {foreign_min_count: 10}, text: "좌안(左眼), 우안(右眼) 시력과 후유장애인(重症 後遺障礙人) 보장", expect: keep}
-  - {id: F07, config: {foreign_min_count: 10}, text: "희망愛찬 직장인보장보험, 철근(Φ10mm+Φ13mm), 기술적・관리적 보호조치", expect: keep}
-  - {id: F08, config: {foreign_min_count: 10}, text: "\uf031 제27조 보험금의 지급사유", expect: keep}
+  - {id: F06, config: {checks: {foreign_script: report}}, text: "좌안(左眼), 우안(右眼) 시력과 후유장애인(重症 後遺障礙人) 보장", expect: keep}
+  - {id: F07, config: {checks: {foreign_script: report}}, text: "희망愛찬 직장인보장보험, 철근(Φ10mm+Φ13mm), 기술적・관리적 보호조치", expect: keep}
+  - {id: F08, config: {checks: {foreign_script: report}}, text: "\uf031 제27조 보험금의 지급사유", expect: keep}
+
+  # --- 여러 검사에 걸리면 더 무거운 처리(fail > drop > report)의 사유가 대표 사유다 ---
+  - {id: M01, config: {checks: {char_stutter: report, foreign_script: fail}}, text: "무무무배배배 категории별 금액", expect: foreign_script}
+  # 본문이 비어도 제목의 다른 문자체계를 본다(blank 는 기본 action report)
+  - {id: M02, config: {checks: {foreign_script: fail}}, prefix: "HEADER: 保険나이 안내\n", text: "", expect: foreign_script}

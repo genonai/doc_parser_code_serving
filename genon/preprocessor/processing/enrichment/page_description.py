@@ -30,6 +30,7 @@ from genon.preprocessor.processing.common.model_params import (
     resolve_thinking,
 )
 from genon.preprocessor.processing.enrichment.image_request import request_image_description
+from genon.preprocessor.processing.enrichment.llm_response import FirstFailure
 from genon.preprocessor.processing.enrichment.prompt_files import read_prompt_file
 from genon.preprocessor.processing.enrichment.prompt_template import PromptTemplate
 
@@ -239,8 +240,12 @@ def describe_page_images(
 
     results: "dict[int, str]" = {}
     lock = threading.Lock()
+    # LLM 호출 실패 중단 모드면 첫 실패 뒤 남은 페이지는 호출하지 않고, 끝난 뒤 첫 실패를 올린다.
+    stop = FirstFailure()
 
     def _describe(page_no: int) -> None:
+        if stop.stopped():
+            return
         image = images.get(page_no)
         if image is None:
             return
@@ -261,6 +266,8 @@ def describe_page_images(
                 thinking_dialect=options.thinking_dialect,
             )
         except Exception as exc:
+            if stop.record(exc):
+                return
             _log.warning(f"[page_description] page={page_no} 설명 실패: {exc}")
             return
         text = str(output or "").strip()
@@ -271,6 +278,7 @@ def describe_page_images(
     with ThreadPoolExecutor(max_workers=max(1, int(options.concurrency or 1))) as executor:
         # #329: 워커 스레드에도 llm_cache 컨텍스트 전파
         list(executor.map(in_current_context(_describe), page_nos))
+    stop.raise_first()
     return results
 
 

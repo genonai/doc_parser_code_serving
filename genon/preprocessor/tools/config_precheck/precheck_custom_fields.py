@@ -24,7 +24,7 @@
    매퍼·enricher 생성자가 이어서 실행하는 검증도 같은 함수로 실행한다 — template·pack 의
    참조 필드, 본문에 넣은 pack 필드, html 선택자 문법, 목표필드명 규칙(`check_startup_compile`).
 6. **텍스트 표 설명 블록의 오기입** — `table_text_description` 과 그 `rag`·`skip` 의 모르는
-   키, 잘못된 `rag.search_terms`·`skip` 값(경고). 프로세서 공통·등록 블록·custom_field yaml
+   키, 잘못된 `rag.search_terms`·`skip` 값(경고). 프로세서 공통·custom_field yaml
    을 따로 본다. 기동은 같은 판정으로 경고만 남기고 그 값을 무시한다.
 7. **파서·청커의 표 형식 불일치** — 같은 폴더의 두 설정에서 `output.table_format` 이 다른
    경우(경고). 레코드형 문서는 파서 값, 일반 문서는 청커 값으로 표가 나가 모양이 갈린다.
@@ -52,7 +52,10 @@ from genon.preprocessor.processing.common import model_preset as mp  # noqa: E40
 from genon.preprocessor.processing.enrichment import config_schema as cs  # noqa: E402
 from genon.preprocessor.processing.enrichment import config_v2 as cv2  # noqa: E402
 from genon.preprocessor.processing.enrichment import html_select  # noqa: E402
-from genon.preprocessor.processing.enrichment.enrichment_config import rule_file_blocks  # noqa: E402
+from genon.preprocessor.processing.enrichment.enrichment_config import (  # noqa: E402
+    reject_registration_blocks,
+    rule_file_blocks,
+)
 from genon.preprocessor.processing.enrichment.tabular_custom_fields import (  # noqa: E402
     compile_derive,
     compile_meta_exclude,
@@ -70,20 +73,6 @@ REMOVED_KEYS = {
     "text_from": "같은 alias 를 목표필드에 한 번 더 붙이고 `transform: to_text` 를 건다",
     "html_text_fields": "같은 alias 를 목표필드에 한 번 더 붙이고 `transform: to_text` 를 건다",
 }
-# 등록 블록에서 없앤 키 → 대신 쓸 것. 등록 블록은 기동 시 키 검증을 받지 않으므로
-# (설정 파일만 받는다) 여기서 잡지 못하면 조용히 무시된다.
-REMOVED_BLOCK_KEYS = {
-    "json": "config_file 의 `source.pre.json` 으로 옮겼습니다"
-            "(안쪽 키도 text_fields → body_from, missing_policy → on_missing)."
-            " 파서 프로세서에서는 기동이 실패하고, 그 밖의 프로세서에서는 소비자가 없어"
-            " 조용히 무시됩니다 — 어느 쪽이든 옮겨야 합니다",
-}
-REMOVED_EXTRACTORS = {
-    "document_llm": "llm",
-    "tabular": "tabular_mapping",
-    "column_mapping": "tabular_mapping",
-    "json_records": "json_mapping",
-}
 
 PROCESSOR_CONFIGS = (
     "config.yaml",                     # 액티비티 폴더(activities/<slug>/·사이트 activities/<slug>/)의 설정
@@ -95,6 +84,11 @@ PROCESSOR_CONFIGS = (
     "chunk_config_simple.yaml",
     "attachment_processor_config.yaml",
 )
+# custom_fields enricher 를 만들지 않는 processor 설정. 같은 폴더의 규칙 파일 등록이 이 설정에는 적용되지 않으므로
+# 규칙 파일의 `model_preset:` 을 이 설정의 프리셋으로 풀어 보지 않는다(청커는 metadata 설정만, 첨부는 enrichment 를 읽지 않음).
+NO_CUSTOM_FIELDS_CONFIGS = frozenset({
+    "chunk_config.yaml", "chunk_config_simple.yaml", "attachment_processor_config.yaml",
+})
 
 
 def load_yaml(path: Path) -> dict:
@@ -105,11 +99,11 @@ def load_yaml(path: Path) -> dict:
 
 
 def registered_blocks(root: Path) -> list[tuple[str, dict, dict]]:
-    """(프로세서 config 이름, custom_fields 등록 블록, 그 config 의 모델 프리셋) 목록.
+    """(프로세서 config 이름, 규칙 파일 등록 `{doc_type, config_file}`, 그 config 의 모델 프리셋) 목록.
 
-    규칙 파일 최상위의 `doc_type:` 으로 한 등록도 같은 모양으로 싣는다. 기동할 때 그 폴더를 읽는 processor 설정마다
-    등록되고 프리셋도 설정마다 다르므로, 설정 파일마다 한 번씩 싣는다. 같은 doc_type 이 두 곳에 등록되어 기동이
-    실패하는 설정은 기동과 같은 함수(`rule_file_blocks`)가 알린다.
+    doc_type 등록은 규칙 파일 최상위의 `doc_type:` 한 가지다(#798). 기동할 때 그 폴더를 읽는 processor 설정마다
+    등록되고 프리셋도 설정마다 다르므로, 설정 파일마다 한 번씩 싣는다. processor 설정에 등록 블록이 남아 있어
+    기동이 실패하는 설정은 기동과 같은 함수(`reject_registration_blocks`)가 알린다.
 
     프리셋을 함께 들고 다니는 이유는 자식 설정 검증 때문이다 — 자식 yaml 의
     `model_preset:` 은 기동 시 이 프리셋으로 펼쳐지므로, 점검도 같은 재료로 해야 한다.
@@ -124,11 +118,13 @@ def registered_blocks(root: Path) -> list[tuple[str, dict, dict]]:
         presets = cp.collect_model_presets(cfg, str(path), strict=False)
         own = [item.get("custom_fields") for item in (cfg.get("enrichment") or [])
                if isinstance(item, dict) and isinstance(item.get("custom_fields"), dict)]
-        blocks.extend((name, block, presets) for block in own)
         try:
-            found = rule_file_blocks(root, [block.get("doc_type") for block in own], {})
+            reject_registration_blocks(own)
+            found = rule_file_blocks(root, {})
         except ValueError as exc:
             raise SystemExit(f"[치명] {name}: {exc}")
+        if name in NO_CUSTOM_FIELDS_CONFIGS:
+            continue
         blocks.extend((name, {k: block[k] for k in ("doc_type", "config_file")}, presets) for block in found)
     return blocks
 
@@ -153,46 +149,16 @@ def check_block(
     source: str, block: dict, root: Path, seen_files: set[str],
     presets: dict | None = None,
 ) -> list[str]:
-    """등록 블록 하나와 그것이 가리키는 config_file 을 검사한다.
+    """규칙 파일 등록 하나(`{doc_type, config_file}`)와 그 규칙 파일을 검사한다.
 
-    같은 config_file 이 여러 프로세서에 등록되는 것이 정상이라(같은 doc_type 을 parser 와
-    intelligent 가 함께 쓴다) 파일 단위 검사는 `seen_files` 로 한 번만 한다. 등록 블록
-    자체는 프로세서마다 다를 수 있으므로 매번 검사한다.
+    같은 규칙 파일이 그 폴더를 읽는 processor 설정마다 등록되는 것이 정상이라 파일 단위 검사는
+    `seen_files` 로 한 번만 한다.
     """
     problems: list[str] = []
     presets = presets if isinstance(presets, dict) else {}
-    # 등록 블록의 `model_preset:` 은 기동 시 load_config 가 먼저 펼친다. 여기서도 같은
-    # 순서로 펴야 지원키 대조가 기동과 어긋나지 않는다 — 안 펴면 정상 설정이 오탐으로
-    # 잡히고, 반대로 프리셋이 이 extractor 가 못 받는 키를 실어 보내는 진짜 사고는 놓친다.
-    try:
-        block = mp.expand_block(block, presets, label=source)
-    except mp.ModelPresetError as exc:
-        return [f"[기동실패] {exc}"]
     where = f"{source} [doc_type={block.get('doc_type')}]"
-    # 등록 블록에 적혀 있으면 그 값, 없으면 config_file 의 source.kind 에서 유도한다 —
-    # 기동 시 `custom_fields_extractor` 가 하는 판정과 같은 순서다.
-    extractor = str(block.get("extractor") or "").strip().lower() or _derive_extractor(
-        root / str(block.get("config_file") or "")
-    ) or "llm"
-
-    if extractor in REMOVED_EXTRACTORS:
-        problems.append(
-            f"[기동실패] {where}: extractor '{extractor}' 는 없어졌습니다 "
-            f"→ '{REMOVED_EXTRACTORS[extractor]}' 로 바꾸세요."
-        )
-        extractor = REMOVED_EXTRACTORS[extractor]
-
-    for key, hint in REMOVED_BLOCK_KEYS.items():
-        if block.get(key) is not None:
-            problems.append(
-                f"[기동실패] {where}: 등록 블록의 `{key}` 는 없어졌습니다 → {hint}."
-            )
-
-    # 등록 블록 자체도 같은 규칙으로 본다(여기 오타도 기동을 막는다).
-    item_cfg = {k: v for k, v in block.items() if k != "enable"}
-    diagnosis = cs.diagnose_keys(item_cfg, extractor)
-    if diagnosis:
-        problems.append(f"[기동실패] {cs.format_diagnosis(where + ' 등록 블록', diagnosis)}")
+    # 기동 시 `custom_fields_extractor` 와 같이 config_file 의 source.kind 에서 유도한다.
+    extractor = _derive_extractor(root / str(block.get("config_file") or "")) or "llm"
 
     config_file = block.get("config_file")
     if not config_file:
@@ -227,10 +193,6 @@ def check_block(
         # 내부 형태로 번역된 뒤에야 extractor 지원키와 대조할 수 있다.
         # 번역 전 원본을 그대로 검사하면 v2 키가 전부 "모르는 키"로 잡힌다.
         #
-        # 번역이 돌려주는 extractor(파생값)로 **덮어쓰지 않는다.** 등록 블록에 적힌 값이
-        # 있으면 기동은 그 값으로 지원키를 대조하므로(매퍼·enricher 생성자 인자로 넘어간다),
-        # 여기서 파생값으로 갈아타면 점검과 기동의 판정이 갈린다. 적혀 있지 않은 경우의
-        # 파생은 위에서 이미 했다.
         # 번역과 함께 `model_preset:` 도 편다. 기동은 같은 순서로 하므로, 여기서 안 펴면
         # 프리셋을 제대로 쓴 설정에서 model_preset 이 "모르는 키" 로 잡히는 오탐이 난다.
         try:
@@ -324,9 +286,9 @@ def check_model_presets(root: Path) -> list[str]:
     여기서 미리 드러내 배포 전에 잡는다. 참조를 찾는 규칙은 `model_preset.iter_refs` 를
     그대로 쓴다 — 스크립트가 다시 구현하면 반드시 갈린다.
 
-    자식 custom_field yaml 의 참조는 **그 파일을 등록한 프로세서 config** 의 프리셋으로
-    푼다. 자식 파일에는 프리셋 정의가 없고 등록 블록을 통해 전달받기 때문이다.
-    최상위 `doc_type:` 으로 스스로 등록한 규칙 파일은 그 폴더의 모든 프로세서 config 가 등록한 것으로 본다.
+    규칙 파일(custom_field yaml)의 참조는 **그 폴더의 프로세서 config** 의 프리셋으로 푼다.
+    규칙 파일에는 프리셋 정의가 없고, 최상위 `doc_type:` 으로 등록하면 그 폴더의 모든 프로세서 config 에
+    등록되기 때문이다.
     """
     problems: list[str] = []
     for name in PROCESSOR_CONFIGS:
@@ -341,17 +303,10 @@ def check_model_presets(root: Path) -> list[str]:
             problems.append(f"[기동실패] {name}: {exc}")
             continue
 
-        # 참조를 찾을 곳: 프로세서 config 자신 + 그것이 등록한 자식 설정 파일들.
+        # 참조를 찾을 곳: 프로세서 config 자신 + 그 폴더에서 doc_type 을 등록한 규칙 파일들.
         targets: list[tuple[str, dict]] = [(name, cfg)]
-        for item in (cfg.get("enrichment") or []):
-            block = (item or {}).get("custom_fields")
-            if not isinstance(block, dict):
-                continue
-            child_name = str(block.get("config_file") or "").strip()
-            if child_name and (root / child_name).exists():
-                targets.append((f"{name} → {child_name}", load_yaml(root / child_name)))
         try:
-            self_registered = cv2.rule_file_registrations(root)
+            self_registered = [] if name in NO_CUSTOM_FIELDS_CONFIGS else cv2.rule_file_registrations(root)
         except ValueError:                  # 형식 오류는 registered_blocks 가 먼저 알린다
             self_registered = []
         for block in self_registered:
@@ -399,7 +354,7 @@ TABLE_FORMAT_PAIRS = (
 
 
 def check_table_text_blocks(root: Path) -> list[str]:
-    """프로세서 설정의 공통 `table_text_description` 과 등록 블록의 같은 키를 본다.
+    """프로세서 설정의 공통 `table_text_description` 을 본다.
 
     custom_field yaml 쪽 블록은 `check_block` 이 번역한 설정으로 본다.
     """
@@ -410,16 +365,8 @@ def check_table_text_blocks(root: Path) -> list[str]:
             continue
         for item in (load_yaml(path).get("enrichment") or []):
             item = item or {}
-            targets = [(f"{name} 공통", item.get("table_text_description"))]
-            block = item.get("custom_fields")
-            if isinstance(block, dict):
-                targets.append((
-                    f"{name} [doc_type={block.get('doc_type')}] 등록 블록",
-                    block.get("table_text_description"),
-                ))
-            for where, target in targets:
-                for problem in cs.diagnose_table_text_description(target):
-                    problems.append(f"[경고] {where} table_text_description: {problem}.")
+            for problem in cs.diagnose_table_text_description(item.get("table_text_description")):
+                problems.append(f"[경고] {name} 공통 table_text_description: {problem}.")
     return problems
 
 
@@ -528,17 +475,19 @@ def _check_root(root: Path) -> int:
     seen_files: set[str] = set()
     for source, block, presets in blocks:
         problems.extend(check_block(source, block, root, seen_files, presets))
-    # 모델 프리셋은 등록 블록과 무관하게 설정 파일 단위로 본다(자식 yaml 참조 포함).
+    # 모델 프리셋은 설정 파일 단위로 본다(그 폴더의 규칙 파일 참조 포함).
     problems.extend(check_model_presets(root))
     problems.extend(check_table_text_blocks(root))
     problems.extend(check_table_format_pairs(root))
 
-    # 등록 블록도 없고 `doc_type:` 도 적지 않은 custom_field yaml 은 배포되지만 쓰이지 않는다(정보성).
+    # `doc_type:` 을 적지 않은 custom_field yaml 은 배포되지만 쓰이지 않는다. 등록 블록에서 옮길 때
+    # 이 줄을 빠뜨린 파일이 여기서 드러난다.
     registered_files = {
         str(b.get("config_file")) for _source, b, _presets in blocks if b.get("config_file")
     }
-    orphans = sorted(
-        p.name for p in root.glob("custom_field_*.yaml") if p.name not in registered_files
+    problems.extend(
+        f"[경고] {p.name}: 최상위 doc_type 없음, 등록되지 않아 쓰이지 않음 (맨 위에 doc_type: <이름> 추가 필요)"
+        for p in sorted(root.glob("custom_field_*.yaml")) if p.name not in registered_files
     )
 
     blocking = [p for p in problems if p.startswith("[기동실패]")]
@@ -562,8 +511,6 @@ def _check_root(root: Path) -> int:
         print(line)
     if info:
         print()
-    if orphans:
-        print(f"[정보] 어느 프로세서에도 등록되지 않은 설정 {len(orphans)}건: {orphans}\n")
 
     print("=" * 70)
     print(f"등록 {len(blocks)}건 검사 | 기동실패 {len(blocking)}건 | 본문변화 {len(body)}건")

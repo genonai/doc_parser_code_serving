@@ -62,6 +62,7 @@ from .tabular_custom_fields import (
     compile_chunk_prefix_fields,
     compile_derive,
     compile_filter,
+    compile_keep,
     compile_meta_exclude,
     compile_pack,
     compile_row_merge,
@@ -78,6 +79,20 @@ from .tabular_custom_fields import (
 )
 
 VALID_MISSING_POLICIES = ("error", "skip")
+
+
+class AllRecordsFilteredOut(Exception):
+    """파일의 레코드가 모두 filter·keep 조건에서 제외되었음을 파서에 알린다.
+
+    오류가 아니다. 대상 레코드가 없는 파일은 정상 운영에서도 오므로 파서는 빈 결과로 응답하고
+    청커가 그 결과를 0건 실패로 보지 않게 표시한다. 다른 이유(필수값 누락 등)로 0건이 된 경우는
+    이 예외를 쓰지 않는다. ValueError 가 아니어야 파서의 설정 오류 처리에 걸리지 않는다.
+    """
+
+    def __init__(self, filtered: int):
+        super().__init__(f"레코드 {filtered}건 모두 filter·keep 조건 불일치")
+        self.filtered = filtered
+
 
 # 스칼라로 볼 값 타입. dict 는 "필드 값"이 아니므로 매칭 대상에서 제외하고 계속 파고든다.
 _SCALAR_TYPES = (str, int, float, bool)
@@ -233,7 +248,8 @@ def collect_records(payload: Any, records_key: str | None) -> list[dict] | None:
     - `records_key` 미지정: payload 가 목록이면 그 안의 dict 들, dict 면 1건짜리 목록.
       매퍼는 dict payload 를 여기로 보내지 않고 `find_record_arrays` 로 배열을 먼저 찾는다.
     - `records_key` 지정: 임의 깊이에서 그 이름의 키를 찾아 값이 list 면 그 안의 dict 들,
-      dict 하나면 1건짜리 목록으로 본다.
+      dict 하나면 1건짜리 목록으로 본다. 매퍼는 값이 dict 이면 그 안의 배열을 다시 고른다
+      (`JsonRecordsMapper._records_in_object`).
     """
     if not records_key:
         if isinstance(payload, list):
@@ -242,6 +258,20 @@ def collect_records(payload: Any, records_key: str | None) -> list[dict] | None:
             return [payload]
         return None
 
+    value = find_records_value(payload, records_key)
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    if isinstance(value, dict):
+        return [value]
+    return None
+
+
+def find_records_value(payload: Any, records_key: str) -> list | dict | None:
+    """임의 깊이에서 `records_key` 이름(정규화 일치 포함)의 키를 찾아 그 값을 돌려준다.
+
+    얕은 깊이부터 훑어 값이 list 나 dict 인 첫 키 하나에서 멈춘다. 같은 이름의 다른 키는
+    합치지 않는다. 찾지 못하면 None 이다.
+    """
     normalized_key = normalize_column_name(records_key)
     queue: deque = deque([payload])
     while queue:
@@ -250,10 +280,8 @@ def collect_records(payload: Any, records_key: str | None) -> list[dict] | None:
             for key, value in node.items():
                 if key != records_key and normalize_column_name(key) != normalized_key:
                     continue
-                if isinstance(value, list):
-                    return [item for item in value if isinstance(item, dict)]
-                if isinstance(value, dict):
-                    return [value]
+                if isinstance(value, (list, dict)):
+                    return value
             queue.extend(node.values())
         elif isinstance(node, list):
             queue.extend(node)
@@ -649,6 +677,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
 
         # 값 별칭 정규화(GROUP_C 의 "삼성생명/생명/SLF" 흔들림 등). tabular 와 같은 구현을 공유한다.
         self.value_map = compile_value_map(cfg.get("value_map"))
+        self.keep = compile_keep(cfg)
 
         self.transforms = compile_transforms(cfg.get("transforms"), label=label, cfg=cfg)
         self.derive = compile_derive(cfg, label=label)
@@ -684,7 +713,13 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         """payload 에서 레코드 목록을 뽑는다. 못 찾으면 missing_policy 에 따라 처리."""
         if self.records_key is None and isinstance(payload, dict):
             return self._auto_records(payload)
-        records = collect_records(payload, self.records_key)
+        if self.records_key is None:
+            records = collect_records(payload, None)
+        else:
+            value = find_records_value(payload, self.records_key)
+            if isinstance(value, dict):
+                return self._records_in_object(value)
+            records = collect_records(value, None) if isinstance(value, list) else None
         if records is None:
             msg = f"records 키 '{self.records_key}' 가 JSON 에 없음"
             if self.missing_policy == "error":
@@ -696,6 +731,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
     def _auto_records(self, payload: dict) -> list[dict]:
         """`records_at` 없이 object payload 에서 레코드 배열을 고른다.
 
+        object 자신의 alias 점수가 어느 배열보다 높으면 object 1건이다. 그렇지 않을 때
         후보가 없으면 object 전체가 1건, 하나면 그 배열이다. 여럿이면 앞쪽 레코드에서
         alias 가 값을 찾는 필드 수로 고르고, 동점이면 얕은 쪽을 쓴다. 그래도 구별되지 않거나
         어느 배열도 맞지 않으면 설정 문제로 보고 missing_policy 와 무관하게 실패시킨다.
@@ -703,29 +739,25 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         candidates = find_record_arrays(payload)
         if not candidates:
             return [payload]
-        if len(candidates) == 1:
-            _, key, records = candidates[0]
-            _log.info(f"[json_records] records_at 생략: '{key}' 배열을 레코드로 사용함")
-            return records
-
-        alias_specs = [
-            (names, target in self.raw_fields) for target, names in self.key_map.items()
-        ] + [(names, False) for names in self.collect_key_map.values()]
-
-        def score(records: list[dict]) -> int:
-            # 키만 있고 값이 빈 필드는 세지 않는다(require 와 같은 "값 없음" 기준).
-            sample = records[:_AUTO_RECORDS_SAMPLE]
-            return sum(
-                1 for names, raw in alias_specs
-                if any(find_field(record, names, raw=raw) not in (None, "") for record in sample)
-            )
-
+        # object 자신도 후보다(바로 아래 값만 센다 — `_records_in_object` 와 같은 기준). 레코드 하나만
+        # 담긴 입력(줄 단위 JSON 1건 등)에서 레코드 안의 하위 배열을 레코드 목록으로 오인하지 않게 한다.
+        # 안쪽 배열보다 점수가 높을 때만 쓰고, 동점이면 종전대로 배열을 고른다.
+        root_score = self._alias_score([payload], max_depth=1)
         ranked = sorted(
-            ((score(records), -depth, key, records) for depth, key, records in candidates),
+            ((self._alias_score(records), -depth, key, records) for depth, key, records in candidates),
             key=lambda item: item[:2],
             reverse=True,
         )
         best = ranked[0]
+        if root_score > best[0]:
+            _log.info(
+                f"[json_records] records_at 생략: 최상위 object 를 레코드 1건으로 사용함 "
+                f"(alias 일치 {root_score}개, '{best[2]}' 배열 {best[0]}개)"
+            )
+            return [payload]
+        if len(candidates) == 1:
+            _log.info(f"[json_records] records_at 생략: '{best[2]}' 배열을 레코드로 사용함")
+            return best[3]
         if best[0] == 0 or ranked[1][:2] == best[:2]:
             keys = [key for _, key, _ in candidates]
             raise CodedValueError(
@@ -738,6 +770,48 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
             f"'{best[2]}' 배열을 레코드로 사용함 (alias 일치 {best[0]}개)"
         )
         return best[3]
+
+    def _records_in_object(self, value: dict) -> list[dict]:
+        """`records_at` 키의 값이 object 일 때 레코드를 고른다.
+
+        object 자신(1건, 깊이 0)과 그 안의 레코드 배열(`find_record_arrays`)을 후보로 두고
+        `_alias_score` 가 가장 높은 후보를 쓴다. object 자신은 바로 아래 값만 센다 — 안쪽
+        배열의 값까지 세면 문서 메타(`documentTitle` 등)를 함께 둔 object 가 항상 이기기
+        때문이다. 동점이면 깊은 쪽을 쓴다(`_auto_records` 와 방향이 반대다). 모든 후보가
+        0점이거나 안쪽 배열이 없으면 object 1건이다.
+        """
+        arrays = find_record_arrays(value)
+        if not arrays:
+            return [value]
+        scored = [(self._alias_score([value], max_depth=1), 0, "", [value])] + [
+            (self._alias_score(records), depth, key, records) for depth, key, records in arrays
+        ]
+        best = max(scored, key=lambda item: item[:2])
+        if best[0] == 0 or best[1] == 0:
+            return [value]
+        _log.info(
+            f"[json_records] records_at '{self.records_key}' 값이 object: "
+            f"안쪽 '{best[2]}' 배열을 레코드로 사용함 (alias 일치 {best[0]}개)"
+        )
+        return best[3]
+
+    def _alias_score(self, records: list[dict], *, max_depth: int | None = None) -> int:
+        """앞쪽 레코드에서 alias·collect 가 값을 찾는 필드 수를 센다(레코드 배열 선택용).
+
+        `max_depth` 는 `find_field` 에 그대로 넘긴다(`1` 이면 레코드 바로 아래 값만 본다).
+        """
+        alias_specs = [
+            (names, target in self.raw_fields) for target, names in self.key_map.items()
+        ] + [(names, False) for names in self.collect_key_map.values()]
+        # 키만 있고 값이 빈 필드는 세지 않는다(require 와 같은 "값 없음" 기준).
+        sample = records[:_AUTO_RECORDS_SAMPLE]
+        return sum(
+            1 for names, raw in alias_specs
+            if any(
+                find_field(record, names, raw=raw, max_depth=max_depth) not in (None, "")
+                for record in sample
+            )
+        )
 
     def map_record(
         self,
@@ -783,8 +857,8 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         `output.table_format`/`compact_tables` 를 그대로 물려 docling 경로와 모양을 맞춘다.
         `to_text` 변환기만 이 렌더러를 받는다.
 
-        적용 순서(defaults → constants → value_map → transforms → derive)는 매퍼 3종이
-        공유하므로 여기서 다시 쓰지 않는다.
+        적용 순서(defaults → constants → value_map → keep → transforms → derive)는 매퍼 3종이
+        공유하므로 여기서 다시 쓰지 않는다. keep 으로 남은 값이 없으면 None 을 돌려준다.
         """
         return self._apply_value_pipeline(
             fields,
@@ -805,7 +879,10 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         compact_tables: bool = True,
         source_filename: str | None = None,
     ) -> list[dict]:
-        """payload → 레코드별 목표필드 목록. 필수값 누락 레코드는 skip(요약 경고)."""
+        """payload → 레코드별 목표필드 목록. 필수값 누락 레코드는 skip(요약 경고).
+
+        레코드가 모두 filter·keep 조건에서 제외되면 `AllRecordsFilteredOut` 을 던진다.
+        """
         records = self.extract_records(payload)
         doc_type = self.canonical_doc_type(runtime_doc_type)
         table_format = normalize_table_format(table_format)
@@ -840,7 +917,7 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
         for index, (fields, _record) in enumerate(raw):
             # 파일명은 원천값과 같은 층이다 — 값 파이프라인(transform 등)을 똑같이 탄다.
             file_source.fill_file_fields(fields, file_fields, source_filename)
-            fields = self.apply_value_pipeline(
+            kept = self.apply_value_pipeline(
                 fields, table_format=table_format, compact_tables=compact_tables
             )
             if index == 0:  # 파일명은 레코드마다 같아 경고도 한 번이면 된다
@@ -848,7 +925,8 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
                     fields, file_fields, source_filename, "json_mapping")
             # 대상이 아닌 레코드는 여기서 빠진다. required 보다 **먼저** 보는 것이 중요하다 —
             # 뒤에 두면 정상 제외가 "필수값 누락" 경고로 찍혀 데이터 사고처럼 보인다.
-            if not passes_filter(fields, self.filter):
+            # keep 으로 남은 값이 없는 레코드(kept is None)도 같은 집계로 센다.
+            if kept is None or not passes_filter(fields, self.filter):
                 filtered += 1
                 continue
             missing = self.missing_required(fields)
@@ -863,10 +941,16 @@ class JsonRecordsMapper(CustomFieldsMapperBase):
                 fields["doc_type"] = doc_type
             mapped.append(fields)
 
+        if filtered and filtered == len(raw):
+            _log.warning(
+                f"빈 결과로 처리: {doc_type or 'json'} 레코드 {filtered}/{len(raw)}건이 "
+                f"filter·keep 조건에서 제외됨"
+            )
+            raise AllRecordsFilteredOut(filtered)
         if filtered:
             # 정상 제외지만 조용히 줄면 "왜 건수가 다르지"가 된다 — info 로 남긴다.
             _log.info(
-                f"[json_records] filtered {filtered}/{len(raw)} records (filter 조건 불일치)"
+                f"[json_records] filtered {filtered}/{len(raw)} records (filter·keep 조건 불일치)"
             )
         if skipped:
             # silent 축소 방지 — 몇 건이 빠졌는지 요약으로 드러낸다.

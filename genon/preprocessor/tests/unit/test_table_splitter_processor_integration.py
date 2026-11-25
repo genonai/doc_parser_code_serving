@@ -72,7 +72,7 @@ def _attach_rag_description(table):
         "genon.preprocessor.facade.convert_processor",
     ],
 )
-@pytest.mark.parametrize("chunk_mode", ["split_only", "resize_all"])
+@pytest.mark.parametrize("chunk_mode", ["section", "section_merge"])
 def test_genos_smart_chunkers_keep_html_table_rows(module_name, chunk_mode):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     chunker = module.GenosSmartChunker(
@@ -107,7 +107,7 @@ def test_chunking_processor_repeats_table_description_within_chunk_size(module_n
     doc = _large_table_doc(rows=12, payload_size=70)
     _attach_rag_description(doc.tables[0])
     chunker = module.GenosSmartChunker(
-        max_tokens=420, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=420, chunk_mode="section", tokenizer_type="char"
     )
     texts = [
         chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)
@@ -138,7 +138,7 @@ def test_image_table_summary_is_not_rendered_as_retrieval_prefix(module_name):
         text="이미지 VLM 이 만든 표 요약", provenance="facade_table_description",
     ))
     chunker = module.GenosSmartChunker(
-        max_tokens=420, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=420, chunk_mode="section", tokenizer_type="char"
     )
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
@@ -153,7 +153,7 @@ def test_image_table_summary_is_not_rendered_as_retrieval_prefix(module_name):
 def test_intelligent_and_convert_repeat_markdown_table_header(module_name):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     chunker = module.GenosSmartChunker(
-        max_tokens=420, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=420, chunk_mode="section", tokenizer_type="char"
     )
     texts = [
         chunk.text for chunk in chunker.chunk(
@@ -238,7 +238,7 @@ def test_rowspan_table_splits_with_description_once_per_piece(module_name):
     doc = _rowspan_table_doc()
     _attach_rag_description(doc.tables[0])
     chunker = module.GenosSmartChunker(
-        max_tokens=420, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=420, chunk_mode="section", tokenizer_type="char"
     )
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)
              if "[표 검색 설명]" in chunk.text]
@@ -256,7 +256,7 @@ def test_chunk_size_zero_keeps_single_table_chunk_with_full_description(module_n
     doc = _large_table_doc(rows=12, payload_size=70)
     _attach_rag_description(doc.tables[0])
     chunker = module.GenosSmartChunker(
-        max_tokens=0, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=0, chunk_mode="section", tokenizer_type="char"
     )
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)
              if "[표 검색 설명]" in chunk.text]
@@ -267,7 +267,7 @@ def test_chunk_size_zero_keeps_single_table_chunk_with_full_description(module_n
 
 @pytest.mark.unit
 @pytest.mark.parametrize("module_name", _CHUNKER_MODULES)
-@pytest.mark.parametrize("chunk_mode", ["split_only", "resize_all", "table_as_chunk"])
+@pytest.mark.parametrize("chunk_mode", ["section", "section_merge", "table_as_chunk"])
 def test_description_survives_every_chunk_mode(module_name, chunk_mode):
     module = pytest.importorskip(module_name, exc_type=ImportError)
     doc = _large_table_doc(rows=12, payload_size=70)
@@ -311,7 +311,7 @@ def test_enricher_meta_does_not_leak_into_chunk_text_after_json_roundtrip(module
     assert doc.tables[0].meta is not None  # 이관이 실제로 일어났는지 먼저 고정
 
     chunker = module.GenosSmartChunker(
-        max_tokens=4000, chunk_mode="split_only", tokenizer_type="char"
+        max_tokens=4000, chunk_mode="section", tokenizer_type="char"
     )
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc, export_to_html=1)]
 
@@ -350,7 +350,7 @@ def test_single_cell_layout_table_is_split_within_chunk_size():
     table.data = core.TableData(num_rows=1, num_cols=1, table_cells=[core.RichTableCell(
         text=" ".join(paragraphs), ref=group.get_ref(), start_row_offset_idx=0,
         end_row_offset_idx=1, start_col_offset_idx=0, end_col_offset_idx=1)])
-    chunker = module.GenosSmartChunker(max_tokens=420, chunk_mode="split_only", tokenizer_type="char")
+    chunker = module.GenosSmartChunker(max_tokens=420, chunk_mode="section", tokenizer_type="char")
 
     texts = [chunk.text for chunk in chunker.chunk(dl_doc=doc)]
 
@@ -391,7 +391,7 @@ def test_complex_table_keeps_same_format_whether_split_or_not():
     def table_headers(max_tokens):
         headers = set()
         for chunk in module.GenosSmartChunker(
-            max_tokens=max_tokens, chunk_mode="split_only", tokenizer_type="char",
+            max_tokens=max_tokens, chunk_mode="section", tokenizer_type="char",
         ).chunk(dl_doc=doc, table_format="markdown"):
             lines = chunk.text.splitlines()
             headers |= {lines[i - 1] for i, line in enumerate(lines) if i and line.startswith("| -")}
@@ -412,7 +412,7 @@ def test_full_width_footnote_row_stays_out_of_row_summary():
     """
     module = pytest.importorskip("genon.preprocessor.facade.chunking_processor", exc_type=ImportError)
     texts = [chunk.text for chunk in module.GenosSmartChunker(
-        max_tokens=1500, chunk_mode="split_only", tokenizer_type="char",
+        max_tokens=1500, chunk_mode="section", tokenizer_type="char",
     ).chunk(dl_doc=_table_edge_sample_doc(), table_format="markdown", table_row_serialization=True)]
 
     summaries = [text.split("[표 행 요약]\n", 1)[1] for text in texts if "[표 행 요약]" in text]

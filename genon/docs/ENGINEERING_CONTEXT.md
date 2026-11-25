@@ -1,7 +1,7 @@
 # Engineering context (Claude · GPT 리뷰어 공용)
 
 GPT 독립 리뷰(`.claude/review/gpt-review.sh`)와 구현 에이전트가 같이 읽는다. 규칙의 정본은 루트 `CLAUDE.md`.
-이 저장소는 **public** 이다 — 리뷰 결과에 내부 주소·계정·비밀값을 쓰지 않는다.
+이 저장소는 private 이지만 리뷰 결과에 내부 주소·계정·비밀값을 쓰지 않는다.
 
 ## 정본 문서
 - 저장소 규칙: `CLAUDE.md`(「전처리 Studio 작업」 절 포함)

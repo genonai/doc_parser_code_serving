@@ -65,7 +65,7 @@ WIRING_KEYS = frozenset({
 # 레코드형 3종이 공유하는 키(값 조립 → 본문 조립 파이프라인).
 _RECORD_COMMON = frozenset({
     "required", "defaults", "constants",
-    "value_map", "transforms", "derive", "pack", "filter",
+    "value_map", "keep", "transforms", "derive", "pack", "filter",
     "llm_fields", "meta_include",
     "text_fields", "split", "chunk_prefix_fields", "field_labels",
 })

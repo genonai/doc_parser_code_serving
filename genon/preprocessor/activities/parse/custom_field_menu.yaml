@@ -1,6 +1,7 @@
 # menu(메뉴·서비스 안내) custom_fields
 
 schema: v2
+doc_type: menu
 source:
   kind: rows
 fields:

@@ -133,6 +133,7 @@ Enrichment는 `config.yaml`의 `enrichment` 항목(list)에 enricher를 나열�
   기본값 `false` 이면 캐시 코드 경로를 타지 않아 기존과 완전히 동일합니다.
 - **실패 정책**(`params.error_policy: "strict"`): enrichment 실패를 삼키지 않고 `code:1` 로 응답하며,
   envelope 에 `stage`(실패 단계)·`error_kind`(transient/permanent/timeout)를 실어 줍니다(기본 `lenient`=기존 soft-fail).
+  parse activity 는 설정 `defaults.llm_call_failure: fail` 로 LLM 호출 실패 중단을 상시로 켤 수 있습니다(요청으로 해제 불가).
 - **요청 deadline**(`params.request_deadline`): LLM 행잉 시 무한 대기 대신 timeout 응답을 돌려줍니다.
 
 - 파라미터·캐시 키 생성/저장 데이터·배포 요건(INTERIM_ROOT/NFS)·테스트 방법 통합 안내:

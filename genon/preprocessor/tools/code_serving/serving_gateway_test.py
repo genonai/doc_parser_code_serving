@@ -81,7 +81,7 @@ requests 등 외부 의존 없이 표준 라이브러리(urllib)만 사용한다
         --param toc=0 --out-doc /tmp/doc_notoc.json
 
     # 12) chunk_mode 0/1 토글(task 296) — intelligent/convert 의 /run 대상. 문자열/0·1 둘 다 수용.
-    #     1(=resize_all): 인접 섹션 병합 / 0(=split_only, 기본): 섹션 구조 보존. 기본값은 config(chunking.chunk_mode).
+    #     1(=section_merge): 인접 섹션 병합 / 0(=section, 기본): 섹션 구조 보존. 기본값은 config(chunking.chunk_mode).
     #     같은 문서를 1/0 로 각각 /run 청킹해 청크 수를 비교한다(1 쪽이 더 적어야 정상).
     python serving_gateway_test.py --mode run --file-path /data/documents/report.pdf \
         --param chunk_mode=1 --out /tmp/run_merged.json
@@ -390,7 +390,7 @@ def _chunk_validation_errors(cv) -> list:
         return [f"키가 action·count·reasons·items(+missing_fields·max_length) 가 아닙니다: {cv!r}"[:300]]
     items = cv["items"]
     errors = []
-    if cv["action"] not in ("report", "drop"):
+    if cv["action"] not in ("report", "drop", "fail"):
         errors.append(f"action={cv['action']!r}")
     if "missing_fields" in cv and not (
             isinstance(cv["missing_fields"], dict) and cv["missing_fields"]
@@ -479,7 +479,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "TOC/청킹 토글(task 296): --param toc=0 (목차 off) / --param chunk_mode=1 (인접 섹션 병합, 0=구조 보존). "
                         "LLM 캐시(#329)도 이걸로: --param llm_cache=1 --param interim_root=.. --param workflow_id=.. --param run_id=..")
     p.add_argument("--doc-type", default=None,
-                   help="문서유형 kwarg (예: faq, card). parser/parser_upload/run/e2e 에 doc_type 으로 전달. "
+                   help="문서유형 kwarg (예: faq, product_slf). parser/parser_upload/run/e2e 에 doc_type 으로 전달. "
                         "--param doc_type=.. 로도 가능(둘 다 주면 --param 우선)")
     p.add_argument("--doc-json", default=None, help="chunker·chunk_validation 모드: 입력 docling JSON 파일 경로")
     p.add_argument("--out", default=None, help="청크 결과 JSON 저장 경로 또는 디렉터리(옵션)")

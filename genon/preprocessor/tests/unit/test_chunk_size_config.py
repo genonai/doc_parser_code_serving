@@ -168,24 +168,57 @@ def test_chunk_size_min_clamp(tmp_path, module_name):
 @pytest.mark.unit
 @pytest.mark.parametrize("module_name", _MODULES)
 def test_chunk_mode_default_and_override(tmp_path, module_name):
-    """chunk_mode: yaml 기본 split_only, 잘못된 값 fallback, kwargs 오버라이드."""
+    """chunk_mode: yaml 기본 section, 잘못된 값 fallback, kwargs 오버라이드."""
     mod = pytest.importorskip(f"facade.{module_name}")
 
-    # yaml 미설정 → 기본 split_only
+    # yaml 미설정 → 기본 section
     proc = _init_processor(module_name, _make_config(tmp_path, module_name, 5000, chunk_mode=None))
-    assert proc._chunk_mode == "split_only"
-    assert _spy_split(mod, proc)["chunk_mode"] == "split_only"
+    assert proc._chunk_mode == "section"
+    assert _spy_split(mod, proc)["chunk_mode"] == "section"
 
-    # yaml resize_all → 로드/전달
-    proc = _init_processor(module_name, _make_config(tmp_path, module_name, 5000, chunk_mode="resize_all"))
-    assert proc._chunk_mode == "resize_all"
-    assert _spy_split(mod, proc)["chunk_mode"] == "resize_all"
+    # yaml section_merge → 로드/전달
+    proc = _init_processor(module_name, _make_config(tmp_path, module_name, 5000, chunk_mode="section_merge"))
+    assert proc._chunk_mode == "section_merge"
+    assert _spy_split(mod, proc)["chunk_mode"] == "section_merge"
     # kwargs 오버라이드
-    assert _spy_split(mod, proc, chunk_mode="split_only")["chunk_mode"] == "split_only"
+    assert _spy_split(mod, proc, chunk_mode="section")["chunk_mode"] == "section"
 
-    # 잘못된 yaml 값 → split_only fallback
+    # 잘못된 yaml 값 → section fallback
     proc = _init_processor(module_name, _make_config(tmp_path, module_name, 5000, chunk_mode="bogus"))
-    assert proc._chunk_mode == "split_only"
+    assert proc._chunk_mode == "section"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs, yaml_value, allow_character, expected", [
+    ({"chunk_mode": "split_only"}, "section_merge", True, "section"),     # 옛 이름
+    ({"chunk_mode": "resize_all"}, "section", True, "section_merge"),
+    ({"chunk_mode": 0}, "section_merge", True, "section"),                # 0/1
+    ({"chunk_mode": "1"}, "section", True, "section_merge"),
+    ({"chunk_mode": " Section_Merge "}, "section", True, "section_merge"),  # 새 이름
+    ({"chunk_mode": "character"}, "section", True, "character"),
+    ({"chunk_mode": "character"}, "section_merge", False, "section"),     # 파사드는 character 미지원
+    ({}, "character", False, "section"),
+    ({"chunk_mode": "bogus"}, "section_merge", True, "section_merge"),    # 잘못된 요청 값 → yaml
+    ({}, "bogus", True, "section"),                                       # yaml 도 잘못됨 → section
+])
+def test_resolve_chunk_mode(kwargs, yaml_value, allow_character, expected):
+    from genon.preprocessor.processing.common import config_parse as cp
+    assert cp.resolve_chunk_mode(kwargs, yaml_value, allow_character=allow_character) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs, yaml_value, size, expected", [
+    ({}, None, 1000, 0),                                    # 기본 0
+    ({}, 100, 1000, 100),
+    ({"character_chunk_overlap": "50"}, 100, 1000, 50),     # 요청 값 우선
+    ({"character_chunk_overlap": -1}, 100, 1000, 0),        # 잘못된 요청 값 → 0
+    ({"character_chunk_overlap": 1.5}, 100, 1000, 0),
+    ({"character_chunk_overlap": "abc"}, 100, 1000, 0),
+    ({"character_chunk_overlap": 1000}, 0, 1000, 0),        # chunk_size 이상 → 0
+])
+def test_resolve_character_overlap(kwargs, yaml_value, size, expected):
+    from genon.preprocessor.processing.common import config_parse as cp
+    assert cp.resolve_character_overlap(kwargs, yaml_value, size) == expected
 
 
 @pytest.mark.unit

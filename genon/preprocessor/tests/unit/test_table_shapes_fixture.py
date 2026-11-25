@@ -106,7 +106,7 @@ def chunker_module():
 
 def _chunk(chunker_module, document, **kwargs):
     chunker = chunker_module.GenosSmartChunker(
-        max_tokens=LIMIT, chunk_mode="split_only", tokenizer_type="char")
+        max_tokens=LIMIT, chunk_mode="section", tokenizer_type="char")
     return chunker, list(chunker.chunk(dl_doc=document, **kwargs))
 
 
@@ -183,7 +183,7 @@ def test_auto_format_is_stable_whether_or_not_the_table_is_split(chunker_module,
 
     def formats(max_tokens):
         chunker = chunker_module.GenosSmartChunker(
-            max_tokens=max_tokens, chunk_mode="split_only", tokenizer_type="char")
+            max_tokens=max_tokens, chunk_mode="section", tokenizer_type="char")
         texts = [c.text for c in chunker.chunk(dl_doc=document, table_format="auto")]
         return {"markdown" if looks_like_markdown_table(t) else "html"
                 for t in texts if looks_like_markdown_table(t) or "<table>" in t}

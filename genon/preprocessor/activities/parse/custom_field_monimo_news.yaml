@@ -1,13 +1,12 @@
 # monimo_news(모니모 관심소식) custom_fields
 
 schema: v2
+doc_type: monimo_news
 source:
   kind: html
   pre:
     json:
       body_from: [content]
-      format: auto
-      on_missing: skip
 
 # `newslertter-` 는 원본 HTML 의 class 이름 그대로이므로 고치지 않는다.
 fields:

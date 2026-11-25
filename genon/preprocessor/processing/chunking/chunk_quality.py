@@ -5,13 +5,18 @@
 근거(측정값·임계값)를 남긴다. 기본값의 근거와 재측정 방법은 manual/chunking_processor.md
 "판정 기준의 근거" 절에 있다.
 
-판정 순서(앞에 걸리면 그 사유가 대표 사유다)
+검사(같은 처리끼리는 앞의 것이 대표 사유다)
 
-  1 blank         판정용 텍스트가 공백뿐
-  2 no_content    내용 문자(str.isalnum) 0자
-  3 broken_chars  손상 문자 개수와 점유율이 모두 기준 이상
-  4 repetition    반복 지표 하나가 횟수 기준 이상이고 중복 점유율도 기준 이상
-  5 min_chars     내용 문자 수가 유형별 하한 미만
+  char_stutter    같은 글자 반복 덩어리가 연달아 붙음(선택 검사, 제목 포함)
+  blank           판정용 텍스트가 공백뿐
+  no_content      내용 문자(str.isalnum) 0자
+  broken_chars    손상 문자 개수와 점유율이 모두 기준 이상
+  repetition      반복 지표 하나가 횟수 기준 이상이고 중복 점유율도 기준 이상
+  min_chars       내용 문자 수가 유형별 하한 미만
+  foreign_script  한국어·영어가 아닌 문자체계가 섞임(선택 검사, 제목 포함)
+
+검사마다 처리(disabled·report·drop·fail)를 정하고, 한 청크가 여러 검사에 걸리면 가장 무거운
+처리를 따른다(Config.mode, judge).
 
 설계 원칙은 "애매하면 통과" 다. 정상 청크를 빼면 그 내용이 검색에서 영구히 사라지지만,
 놓친 불량 청크는 다음 조정에서 잡으면 된다. 아래 예외 규칙은 실제 청크 실측에서 오탐이 난 뒤
@@ -23,7 +28,7 @@
   - 반복은 표 밖 텍스트에서만 센다. 병합 셀(colspan) 값이 열마다 복사된 정상 표가
     `| (전년 대비) | (전년 대비) | …` 처럼 같은 문구 반복으로 걸렸다(실측 hwpx·md 통계표).
     표를 행 문장으로 풀어 쓴 `[표 행 요약]` 블록도 같은 복사본을 담으므로 함께 뺀다
-  - 표가 든 청크는 길이 하한을 적용하지 않는다(table_min_chars 로 켤 수 있다)
+  - 표가 든 청크는 길이 하한을 적용하지 않는다(limits.min_chars.table 로 켤 수 있다)
   - 코드·수식 청크는 길이 하한과 반복 판정을 적용하지 않는다
   - 반복·손상은 횟수와 점유율을 함께 넘어야 한다
   - 동일 문자 연속은 글자만 센다(금액·계좌 번호의 `0` 연속)
@@ -51,9 +56,14 @@ from genon.preprocessor.processing.core.errors import ChunkValidationError
 _log = logging.getLogger(__name__)
 
 ATTR = "_chunk_validation"
-ACTIONS = ("report", "drop")
-REASONS = ("blank", "no_content", "broken_chars", "repetition", "min_chars", "char_stutter",
+# 처리 방식. report=기록만, drop=그 chunk 만 뺌, fail=문서 실패. 검사별 값에만 disabled 를 더 쓴다.
+ACTIONS = ("report", "drop", "fail")
+MODES = ("disabled",) + ACTIONS
+_WEIGHT = {"report": 0, "drop": 1, "fail": 2}
+# 대표 사유를 고르는 순서(같은 처리끼리). 선택 검사는 action 을 따르지 않고 checks 에 적어야 켜진다.
+REASONS = ("char_stutter", "blank", "no_content", "broken_chars", "repetition", "min_chars",
            "foreign_script")
+OPTIONAL_REASONS = ("char_stutter", "foreign_script")
 # char_stutter: 같은 글자 반복 덩어리가 이만큼 이상 붙어 있으면 깨짐으로 본다(무무무무배배배배).
 STUTTER_MIN_RUNS = 2
 
@@ -71,68 +81,122 @@ SECTION_MAX_PATHS = 5
 
 @dataclass(frozen=True)
 class Config:
-    """검증 설정. 기본값은 실측(계획서 3.6)으로 정한 값이다."""
-    action: str = "report"          # report(기록만) | drop(제외)
-    fail_on_any: bool = False       # drop 모드에서 불량 청크가 하나라도 있으면 문서 실패
+    """검증 설정. 기본값은 실측(계획서 3.6)으로 정한 값이다.
+
+    yaml 의 `limits.<검사>.<항목>` 은 아래 기준값 필드로 펼쳐 담는다(_LIMITS).
+    """
+    action: str = "report"          # checks 에 적지 않은 기본 검사의 처리: report | drop | fail
+    checks: dict = field(default_factory=dict, hash=False)  # 검사 → disabled | report | drop | fail
     min_chars: int = 4              # 문서·평문 청크 내용 문자 하한
     row_min_chars: int = 0          # 행 청크 하한(FAQ·메뉴 보호를 위해 기본 끔)
+    table_min_chars: int = 0        # 표가 든 청크 하한(기본 끔)
     repeat_min_count: int = 10
-    repeat_max_share: float = 0.5
-    broken_max_share: float = 0.3
+    repeat_max_share: float = 0.5   # 반복 중복 점유율 하한(이름과 달리 이 값 이상이면 걸린다)
+    broken_max_share: float = 0.3   # 깨진 문자 점유율 하한(위와 같다)
     broken_min_count: int = 3
-    table_min_chars: bool = False   # 표가 든 청크에도 길이 하한을 적용할지
     max_chars: int = 0              # 출력 청크 글자 수 상한(0 = 검사 안 함). 넘으면 보고만 한다(#528)
-    stutter_min_run: int = 0        # char_stutter 의 글자당 반복 횟수(0 = 검사 안 함)
-    fail_reasons: tuple = ()        # 이 사유가 나오면 action·fail_on_any 와 상관없이 문서 실패
-    foreign_min_count: int = 0      # foreign_script 의 외래 문자 수 하한(0 = 검사 안 함)
-    report_reasons: tuple = ()      # 이 사유로만 걸린 chunk 는 빼거나 문서를 실패시키지 않고 기록만 한다
+    stutter_min_run: int = 3        # char_stutter 의 글자당 반복 횟수
+    foreign_min_count: int = 10     # foreign_script 의 외래 문자 수 하한
     by_doc_type: dict = field(default_factory=dict, compare=False, hash=False)
 
+    def mode(self, reason: str) -> str:
+        """검사 하나의 처리. checks 에 적었으면 그 값, 아니면 기본 검사는 action, 선택 검사는 disabled."""
+        if reason in self.checks:
+            return self.checks[reason]
+        return "disabled" if reason in OPTIONAL_REASONS else self.action
+
     @property
-    def drops(self) -> bool:
-        return self.action == "drop"
+    def rejects(self) -> bool:
+        """chunk 를 빼거나 문서를 실패시키는 검사가 하나라도 있는지."""
+        return any(self.mode(reason) in ("drop", "fail") for reason in REASONS)
 
 
-_BOOL_KEYS = ("fail_on_any", "table_min_chars")
-_COUNT_KEYS = ("min_chars", "row_min_chars", "repeat_min_count", "broken_min_count", "max_chars",
-               "stutter_min_run", "foreign_min_count")
-_SHARE_KEYS = ("repeat_max_share", "broken_max_share")
-_VALUE_KEYS = ("action", "fail_reasons", "report_reasons") + _BOOL_KEYS + _COUNT_KEYS + _SHARE_KEYS
+# yaml limits.<검사>.<항목> → (Config 필드, 최솟값). 최솟값이 None 이면 0~1 비율이다.
+_LIMITS = {
+    "min_chars": {"text": ("min_chars", 0), "row": ("row_min_chars", 0), "table": ("table_min_chars", 0)},
+    "repetition": {"count": ("repeat_min_count", 2), "share": ("repeat_max_share", None)},
+    "broken_chars": {"count": ("broken_min_count", 0), "share": ("broken_max_share", None)},
+    # 1 이면 모든 한글 두 글자가 걸린다.
+    "char_stutter": {"run": ("stutter_min_run", 2)},
+    "foreign_script": {"count": ("foreign_min_count", 1)},
+}
+_DOC_TYPE_KEYS = ("action", "checks", "limits", "max_chars")
+_TOP_KEYS = ("enable",) + _DOC_TYPE_KEYS + ("by_doc_type",)
+# 없앤 키 → 대신 쓸 키. 옛 설정을 조용히 무시하지 않고 기동 시 새 위치를 알린다.
+_REMOVED = {
+    "fail_on_any": "action: fail",
+    "fail_reasons": "checks.<검사>: fail",
+    "report_reasons": "checks.<검사>: report",
+    "stutter_min_run": "checks.char_stutter(켜기)·{where}.limits.char_stutter.run(기준값)",
+    "foreign_min_count": "checks.foreign_script(켜기)·{where}.limits.foreign_script.count(기준값)",
+    "min_chars": "limits.min_chars.text",
+    "row_min_chars": "limits.min_chars.row",
+    "table_min_chars": "limits.min_chars.table",
+    "repeat_min_count": "limits.repetition.count",
+    "repeat_max_share": "limits.repetition.share",
+    "broken_min_count": "limits.broken_chars.count",
+    "broken_max_share": "limits.broken_chars.share",
+}
 
 
-def _parse_value(key: str, value: Any, where: str) -> Any:
-    path = f"{where}.{key}"
-    if key == "action":
-        if value not in ACTIONS:
-            raise ValueError(f"{path}: {list(ACTIONS)} 중 하나 지정 필요 (받은 값={value!r})")
-        return value
-    if key in ("fail_reasons", "report_reasons"):
-        if not isinstance(value, list) or any(v not in REASONS for v in value):
-            raise ValueError(f"{path}: {list(REASONS)} 중 값의 목록 지정 필요 (받은 값={value!r})")
-        return tuple(value)
-    if key in _BOOL_KEYS:
-        if not isinstance(value, bool):
-            raise ValueError(f"{path}: true/false 지정 필요 (받은 값={value!r})")
-        return value
-    if key in _COUNT_KEYS:
-        minimum = 2 if key == "repeat_min_count" else 0
-        if key == "stutter_min_run" and value == 1:
-            # 1 이면 모든 한글 두 글자가 걸린다.
-            raise ValueError(f"{path}: 0(검사 안 함) 또는 2 이상의 정수 지정 필요 (받은 값=1)")
-        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-            raise ValueError(f"{path}: {minimum} 이상의 정수 지정 필요 (받은 값={value!r})")
-        return value
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
-        raise ValueError(f"{path}: 0~1 사이 비율 지정 필요 (받은 값={value!r})")
-    return float(value)
+def _check_keys(raw: dict, allowed: tuple, where: str) -> None:
+    for key in raw:
+        if key in _REMOVED and key not in allowed:
+            raise ValueError(f"{where}.{key}: 지원하지 않는 키임, "
+                             f"{where}.{_REMOVED[key].format(where=where)} 로 지정 필요")
+        if key not in allowed:
+            raise ValueError(f"{where}.{key}: 지원하지 않는 키임 (허용 키: {list(allowed)})")
 
 
-def _parse_values(raw: dict, allowed: tuple, where: str) -> dict:
-    unknown = sorted(str(k) for k in raw if k not in allowed)
-    if unknown:
-        raise ValueError(
-            f"{where}.{unknown[0]}: 지원하지 않는 키임 (허용 키: {list(allowed)})")
-    return {key: _parse_value(key, value, where) for key, value in raw.items()}
+def _parse_number(value: Any, minimum: Optional[int], path: str) -> Any:
+    if minimum is None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+            raise ValueError(f"{path}: 0~1 사이 비율 지정 필요 (받은 값={value!r})")
+        return float(value)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{path}: {minimum} 이상의 정수 지정 필요 (받은 값={value!r})")
+    return value
+
+
+def _parse_values(raw: dict, where: str) -> dict:
+    """action·checks·limits·max_chars → Config 필드 값."""
+    _check_keys(raw, _DOC_TYPE_KEYS, where)
+    values: dict = {}
+    if "action" in raw:
+        if raw["action"] not in ACTIONS:
+            raise ValueError(f"{where}.action: {' | '.join(ACTIONS)} 중 하나 지정 필요 "
+                             f"(받은 값={raw['action']!r})")
+        values["action"] = raw["action"]
+    if "checks" in raw:
+        checks = raw["checks"]
+        if not isinstance(checks, dict):
+            raise ValueError(f"{where}.checks: 검사별 object 지정 필요 (예: {{char_stutter: fail}})")
+        for reason, mode in checks.items():
+            if reason not in REASONS:
+                raise ValueError(f"{where}.checks.{reason}: 지원하지 않는 검사임 (검사: {list(REASONS)})")
+            if mode not in MODES or isinstance(mode, bool):
+                # yaml 은 따옴표 없는 off·no 를 false 로 읽는다.
+                raise ValueError(f"{where}.checks.{reason}: {' | '.join(MODES)} 중 하나 지정 필요 "
+                                 f"(받은 값={mode!r})")
+        values["checks"] = dict(checks)
+    if "limits" in raw:
+        limits = raw["limits"]
+        if not isinstance(limits, dict):
+            raise ValueError(f"{where}.limits: 검사별 object 지정 필요 (예: {{min_chars: {{text: 4}}}})")
+        for reason, items in limits.items():
+            path = f"{where}.limits.{reason}"
+            if reason not in _LIMITS:
+                raise ValueError(f"{path}: 지원하지 않는 검사임 (기준값이 있는 검사: {list(_LIMITS)})")
+            if not isinstance(items, dict):
+                raise ValueError(f"{path}: 항목별 object 지정 필요 (허용 항목: {list(_LIMITS[reason])})")
+            for name, value in items.items():
+                if name not in _LIMITS[reason]:
+                    raise ValueError(f"{path}.{name}: 지원하지 않는 항목임 (허용 항목: {list(_LIMITS[reason])})")
+                key, minimum = _LIMITS[reason][name]
+                values[key] = _parse_number(value, minimum, f"{path}.{name}")
+    if "max_chars" in raw:
+        values["max_chars"] = _parse_number(raw["max_chars"], 1, f"{where}.max_chars")
+    return values
 
 
 def _normalize_doc_type(value: Any) -> str:
@@ -151,12 +215,11 @@ def config_from_cfg(chunking_cfg: dict) -> Optional[Config]:
         return None
     if not isinstance(raw, dict):
         raise ValueError(f"{where}: object 지정 필요 (예: {{enable: true, action: report}})")
+    _check_keys(raw, _TOP_KEYS, where)
     enable = raw.get("enable", False)
     if not isinstance(enable, bool):
         raise ValueError(f"{where}.enable: true/false 지정 필요 (받은 값={enable!r})")
-    values = _parse_values(
-        {k: v for k, v in raw.items() if k not in ("enable", "by_doc_type")},
-        _VALUE_KEYS + ("enable", "by_doc_type"), where)
+    values = _parse_values({k: v for k, v in raw.items() if k not in ("enable", "by_doc_type")}, where)
     by_doc_type_raw = raw.get("by_doc_type") or {}
     if not isinstance(by_doc_type_raw, dict):
         raise ValueError(f"{where}.by_doc_type: doc_type 별 object 지정 필요")
@@ -164,8 +227,8 @@ def config_from_cfg(chunking_cfg: dict) -> Optional[Config]:
     for doc_type, overrides in by_doc_type_raw.items():
         path = f"{where}.by_doc_type.{doc_type}"
         if not isinstance(overrides, dict):
-            raise ValueError(f"{path}: object 지정 필요 (예: {{min_chars: 0}})")
-        by_doc_type[_normalize_doc_type(doc_type)] = _parse_values(overrides, _VALUE_KEYS, path)
+            raise ValueError(f"{path}: object 지정 필요 (예: {{action: fail}})")
+        by_doc_type[_normalize_doc_type(doc_type)] = _parse_values(overrides, path)
     if not enable:
         return None
     return Config(**values, by_doc_type=by_doc_type)
@@ -174,13 +237,19 @@ def config_from_cfg(chunking_cfg: dict) -> Optional[Config]:
 def config_for(owner, doc_type: Any = None) -> Optional[Config]:
     """processor 에 실린 설정에 doc_type 별 덮어쓰기를 적용한다. 꺼져 있으면 None.
 
+    일반 키는 교체하고 checks 는 검사 이름 단위로 합친다. 처리 방식은 덮어쓴 최종 설정에서
+    정하므로(Config.mode) 문서 유형에서 fail 을 report·disabled 로 바꾸면 그대로 반영된다.
     `object.__new__` 로 __init__ 을 우회한 인스턴스에는 속성이 없으므로 꺼진 것으로 본다.
     """
     cfg = getattr(owner, ATTR, None)
     if cfg is None:
         return None
     overrides = cfg.by_doc_type.get(_normalize_doc_type(doc_type))
-    return replace(cfg, **overrides) if overrides else cfg
+    if not overrides:
+        return cfg
+    if "checks" in overrides:
+        overrides = {**overrides, "checks": {**cfg.checks, **overrides["checks"]}}
+    return replace(cfg, **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +291,7 @@ class Verdict:
     extra: tuple
     measures: dict
     limits: dict
+    action: str = "report"   # 걸린 검사들의 처리 중 가장 무거운 것(report < drop < fail)
 
     def describe(self) -> str:
         """고객에게 보여줄 근거 한 줄."""
@@ -482,66 +552,80 @@ def judge(text: Optional[str], *, kind: str = "docling", code_like: bool = False
           prefix_len: int = 0, cfg: Config, headings=(), text_only: bool = False) -> Optional[Verdict]:
     """청크 본문 1건을 판정한다. 통과면 None. 출력 본문은 바꾸지 않는다.
 
-    char_stutter 만 접두(HEADER 줄)와 headings 까지 포함해 보고, 다른 사유보다 먼저 판정한다.
-    제목에만 깨짐이 있는 청크나 본문이 빈 청크도 놓치지 않기 위해서다. foreign_script 도 접두와
-    headings 를 포함해 보지만 다른 사유 뒤에 둔다.
+    disabled 가 아닌 검사를 모두 본 뒤, 걸린 검사들의 처리 중 가장 무거운 것(fail > drop >
+    report)을 Verdict.action 으로 정한다. 대표 사유는 그 처리를 가진 사유 중 REASONS 순서의
+    첫 번째다. 검사 하나가 먼저 걸렸다고 다른 검사를 건너뛰면, 더 무거운 처리를 가진 검사가
+    묻힌다.
+
+    char_stutter·foreign_script 는 접두(HEADER 줄)와 headings 까지 포함해 본다. 제목에만 깨짐이
+    있는 청크나 본문이 빈 청크도 놓치지 않기 위해서다. 기본 검사끼리는 blank 면 나머지를,
+    no_content 면 길이·반복·손상을 따로 세지 않는다(disabled 면 다음 검사로 넘어간다).
 
     text_only 면 char_stutter·foreign_script 만 본다. 음성 전사·시트 통째 적재처럼 다른 판정에서
     빠지는 chunk 에 쓴다.
     """
-    if cfg.stutter_min_run:
-        stutter = _stutter("\n".join([*(headings or ()), text or ""]), cfg.stutter_min_run)
-        if stutter >= STUTTER_MIN_RUNS:
-            return Verdict("char_stutter", (), {"stutter": stutter},
-                           {"stutter_min_run": cfg.stutter_min_run})
-    if text_only:
-        if cfg.foreign_min_count:
-            mixed, foreign = _foreign("\n".join([*(headings or ()), text or ""]))
+    def on(reason: str) -> bool:
+        return cfg.mode(reason) != "disabled"
+
+    hits: list = []
+    measures: dict = {}
+    limits: dict = {}
+    if on("char_stutter") or on("foreign_script"):
+        whole = "\n".join([*(headings or ()), text or ""])
+        if on("char_stutter"):
+            stutter = _stutter(whole, cfg.stutter_min_run)
+            if stutter >= STUTTER_MIN_RUNS:
+                hits.append("char_stutter")
+                measures["stutter"] = stutter
+                limits["stutter_min_run"] = cfg.stutter_min_run
+        if on("foreign_script"):
+            mixed, foreign = _foreign(whole)
             if mixed or foreign >= cfg.foreign_min_count:
-                return Verdict("foreign_script", (), {"mixed": mixed, "foreign": foreign},
-                               {"foreign_min_count": cfg.foreign_min_count})
-        return None
-    m = measure(text, prefix_len=prefix_len, repeat_min_count=cfg.repeat_min_count)
-    if m["blank"]:
-        return Verdict("blank", (), {"chars": 0}, {})
-    if m["content"] == 0:
-        return Verdict("no_content", (), {"content": 0, "chars": m["chars"]}, {})
-
-    if kind == "row":
-        min_chars = cfg.row_min_chars
-    elif code_like or (m["has_table"] and not cfg.table_min_chars):
-        min_chars = 0
-    else:
-        min_chars = cfg.min_chars
-
-    hits = [reason for reason, hit in (
-        ("broken_chars", m["broken"] >= cfg.broken_min_count
-         and m["broken_share"] >= cfg.broken_max_share),
-        ("repetition", not code_like and bool(m["run"] or m["line"] or m["phrase"])
-         and m["dup_share"] >= cfg.repeat_max_share),
-        ("min_chars", m["content"] < min_chars),
-    ) if hit]
-    if cfg.foreign_min_count:
-        # 다른 사유보다 뒤에 둔다 — 함께 걸리면 다른 사유가 대표 사유라 기록만 하는 설정에 묶이지 않는다.
-        m["mixed"], m["foreign"] = _foreign("\n".join([*(headings or ()), text or ""]))
-        if m["mixed"] or m["foreign"] >= cfg.foreign_min_count:
-            hits.append("foreign_script")
+                hits.append("foreign_script")
+                measures.update(mixed=mixed, foreign=foreign)
+                limits["foreign_min_count"] = cfg.foreign_min_count
+    if not text_only:
+        m = measure(text, prefix_len=prefix_len, repeat_min_count=cfg.repeat_min_count)
+        if m["blank"] and on("blank"):
+            hits.append("blank")
+            measures.setdefault("chars", 0)
+        elif m["content"] == 0 and on("no_content"):
+            hits.append("no_content")
+            measures.update(content=0, chars=m["chars"])
+        else:
+            if kind == "row":
+                min_chars = cfg.row_min_chars
+            elif code_like:
+                min_chars = 0
+            elif m["has_table"]:
+                min_chars = cfg.table_min_chars
+            else:
+                min_chars = cfg.min_chars
+            basic = [reason for reason, hit in (
+                ("broken_chars", m["broken"] >= cfg.broken_min_count
+                 and m["broken_share"] >= cfg.broken_max_share),
+                ("repetition", not code_like and bool(m["run"] or m["line"] or m["phrase"])
+                 and m["dup_share"] >= cfg.repeat_max_share),
+                ("min_chars", m["content"] < min_chars),
+            ) if hit and on(reason)]
+            if basic:
+                hits += basic
+                measures.update((k, round(v, 3) if isinstance(v, float) else v)
+                                for k, v in m.items() if k not in ("blank", "has_table"))
+                limits.update(
+                    min_chars=min_chars, repeat_min_count=cfg.repeat_min_count,
+                    repeat_max_share=cfg.repeat_max_share, broken_min_count=cfg.broken_min_count,
+                    broken_max_share=cfg.broken_max_share)
     if not hits:
         return None
-    measures = {k: (round(v, 3) if isinstance(v, float) else v)
-                for k, v in m.items() if k not in ("blank", "has_table")}
-    limits = {
-        "min_chars": min_chars, "repeat_min_count": cfg.repeat_min_count,
-        "repeat_max_share": cfg.repeat_max_share, "broken_min_count": cfg.broken_min_count,
-        "broken_max_share": cfg.broken_max_share, "foreign_min_count": cfg.foreign_min_count,
-    }
-    return Verdict(hits[0], tuple(hits[1:]), measures, limits)
+    action = max((cfg.mode(reason) for reason in hits), key=_WEIGHT.__getitem__)
+    ordered = sorted(hits, key=lambda r: (-_WEIGHT[cfg.mode(r)], REASONS.index(r)))
+    return Verdict(ordered[0], tuple(r for r in REASONS if r in ordered[1:]), measures, limits, action)
 
 
-def drops_chunk(cfg: Config, verdict: Optional[Verdict]) -> bool:
-    """drop 모드에서 이 판정으로 chunk 를 빼는지. report_reasons 로만 걸렸으면 빼지 않는다."""
-    return (verdict is not None and cfg.drops
-            and not {verdict.reason, *verdict.extra} <= set(cfg.report_reasons))
+def drops_chunk(verdict: Optional[Verdict]) -> bool:
+    """이 판정으로 chunk 가 빠지는지(drop) 또는 문서가 실패하는지(fail)."""
+    return verdict is not None and verdict.action != "report"
 
 
 def rejects_doc_chunk(cfg: Config):
@@ -551,7 +635,7 @@ def rejects_doc_chunk(cfg: Config):
     쓴다. 초기 검사와 같은 입력(청크 본문, 코드·수식 라벨)으로 판정해야 결과가 어긋나지 않는다.
     """
     def _rejects(doc_chunk) -> bool:
-        return drops_chunk(cfg, judge(doc_chunk.text, code_like=code_like(SimpleNamespace(source=doc_chunk)),
+        return drops_chunk(judge(doc_chunk.text, code_like=code_like(SimpleNamespace(source=doc_chunk)),
                                       cfg=cfg))
     return _rejects
 
@@ -689,8 +773,8 @@ class Session:
             verdict = judge(text, kind=kind, code_like=code_like, prefix_len=prefix_len,
                             cfg=self.cfg, headings=headings, text_only=text_only)
         except Exception as exc:
-            if not self.cfg.drops:
-                # report 모드는 청크를 빼지 않으므로 판정 실패가 적재 결과를 바꾸지 않는다.
+            if not self.cfg.rejects:
+                # 모든 검사가 report 면 청크를 빼지 않으므로 판정 실패가 적재 결과를 바꾸지 않는다.
                 # 관측용 기능이 적재를 막지 않도록 기록만 하고 통과시킨다.
                 _log.error("[chunk_validation] report file=%s index=%s chunk 판정 건너뜀: "
                            "판정 오류 (%s)", self.file_name, index, exc, exc_info=True)
@@ -707,7 +791,7 @@ class Session:
             item = _summary_item(verdict, page, index)
             if stage == "initial":
                 self._pending_item = item
-                if self.cfg.drops and self._display is not None:
+                if self.cfg.rejects and self._display is not None:
                     _fill_from_output(item, self._display(text), 0, headings)
             else:
                 _fill_from_output(item, text, prefix_len, headings)
@@ -715,33 +799,30 @@ class Session:
         _log.info(
             "[chunk_validation] %s file=%s index=%s page=%s stage=%s reason=%s extra=%s "
             "근거=%s measures=%s limits=%s",
-            self.cfg.action, self.file_name, index, page, stage, verdict.reason,
+            verdict.action, self.file_name, index, page, stage, verdict.reason,
             ",".join(verdict.extra) or "-", verdict.describe(), verdict.measures, verdict.limits)
-        drops = drops_chunk(self.cfg, verdict)
-        if ((drops and self.cfg.fail_on_any)
-                or {verdict.reason, *verdict.extra} & set(self.cfg.fail_reasons)):
+        if verdict.action == "fail":
             raise _error(CHUNK_REJECTED,
                          f"불량 chunk 있어 문서 실패 처리: {self.file_name} "
                          f"#{index} ({verdict.reason}: {verdict.describe()})")
-        if drops:
+        if verdict.action == "drop":
             self.rejected += 1
         return verdict
 
     def _recheck_reported(self, text: str, origin) -> bool:
         """초기 검사에서 기록만 한 chunk 의 출력 본문을 다시 판정한다. 빼야 하면 True."""
-        if not self.cfg.fail_reasons and not self.cfg.drops:
+        if not self.cfg.rejects:
             return False
         verdict = judge(text, kind=origin.kind, code_like=origin.code_like,
                         prefix_len=_prefix_len(origin, text), cfg=self.cfg, headings=origin.headings)
-        drops = drops_chunk(self.cfg, verdict)
-        if verdict is not None and ((drops and self.cfg.fail_on_any)
-                                    or {verdict.reason, *verdict.extra} & set(self.cfg.fail_reasons)):
+        if verdict is not None and verdict.action == "fail":
             raise _error(CHUNK_REJECTED,
                          f"불량 chunk 있어 문서 실패 처리: {self.file_name} "
                          f"#{origin.index} ({verdict.reason}: {verdict.describe()})")
-        if drops:
+        if verdict is not None and verdict.action == "drop":
             self.rejected += 1
-        return drops
+            return True
+        return False
 
     def check_chunk(self, chunk, index: int) -> bool:
         """초기 검사. 청크를 빼야 하면 True(report 모드는 항상 False)."""
@@ -753,7 +834,7 @@ class Session:
                               prefix_len=0, stage="initial", index=index, page=chunk.page,
                               headings=chunk.headings)
         self._flagged_initial = verdict is not None
-        return drops_chunk(self.cfg, verdict)
+        return drops_chunk(verdict)
 
     def remember(self, vector_meta, chunk, prefix: str, index: int,
                  expected: Optional[dict] = None) -> None:
@@ -781,13 +862,13 @@ class Session:
             if self._markers.get(id(item)) is item:
                 # 음성 전사·시트 통째 적재 chunk 는 다른 판정에서 빠지지만, 문서 유형과 상관없이 적용하기로
                 # 한 글자 깨짐 판정(char_stutter·foreign_script)은 받는다(#777).
-                if self.cfg.stutter_min_run or self.cfg.foreign_min_count:
+                if any(self.cfg.mode(r) != "disabled" for r in OPTIONAL_REASONS):
                     text = getattr(item, "text", None)
                     verdict = self._check(
                         text if isinstance(text, str) else "", kind="marker", code_like=False,
                         prefix_len=0, stage="final", index=getattr(item, "i_chunk_on_doc", position),
                         page=getattr(item, "i_page", None), text_only=True)
-                    if drops_chunk(self.cfg, verdict):
+                    if drops_chunk(verdict):
                         continue
                 kept.append(item)
                 continue
@@ -820,7 +901,7 @@ class Session:
                 page=origin.page if origin else getattr(item, "i_page", None),
                 # 훅이 새로 만든 청크는 섹션을 알 수 없다.
                 headings=origin.headings if origin else ())
-            if drops_chunk(self.cfg, verdict):
+            if drops_chunk(verdict):
                 if position == 0 and origin is not None and origin.prefix:
                     _log.warning(
                         "[chunk_validation] file=%s 최종 검사에서 첫 chunk 제외: "

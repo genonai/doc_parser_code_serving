@@ -114,6 +114,7 @@ core 메소드가 받습니다. `edit_input`·`edit_chunk`·`edit_output` 의 `*
 | 확장자 | data | 시점 |
 |---|---|---|
 | `.json` | `dict` / `list` (깨진 JSON 이면 `str`) | 매핑 전 |
+| `.jsonl` | 원문 `str`(`ext` 는 `.json`). 그대로 돌려주면 한 줄에 한 건씩 읽은 `list` 로 처리 | 매핑 전 |
 | `.md` `.html` | `str` | 내장 전처리(flatten·front matter) 전 |
 | `.xlsx` `.csv` | `dict[시트명, 2차원 행]` | 병합셀이 이미 펴진 상태 |
 | 그 밖 | `str`(파일 경로) | 파생 파일은 `work_dir` 에 |
@@ -281,7 +282,7 @@ API 라 그 값은 호출자용 정보로 끝납니다. `tb.set_chunk_metadata()
 |---|---|---|---|
 | `enrichment.table_description.enable` (`table_desc`) | 표 설명 | `chunking.chunk_size` (`chunk_size`) | 청크 최대 크기 |
 | `enrichment.image_description.enable` (`img_desc`) | 이미지 설명 | `chunking.recursive.chunk_overlap` (`chunk_overlap`) | 청크 간 겹침 |
-| `enrichment.doc_summary.enable` (`doc_summary`) | 문서 요약 | `chunking.chunk_mode` (`chunk_mode`) | `split_only` / `resize_all` |
+| `enrichment.doc_summary.enable` (`doc_summary`) | 문서 요약 | `chunking.chunk_mode` (`chunk_mode`) | `section` / `section_merge` |
 | `enrichment.toc.enable` (`toc`) | 목차 보강 | `chunking.short_chunk_size` (`short_chunk_size`) | 짧은 청크 병합 기준 |
 | `table_text_desc` (요청 파라미터 이름으로만 씀) | 텍스트 표 설명 | | |
 | `ocr.ocr_mode` | `auto` / `force` / `disable` | | |
@@ -454,8 +455,9 @@ RAG 검색용 정제는 **설정으로 하는 것이 기본**입니다. `activit
 LLM 이 아예 알 수 없습니다. 그럴 때 씁니다.
 
 ```yaml
-# custom_field_contract.yaml
+# custom_field_contract.yaml — 맨 위의 doc_type 한 줄이 등록입니다(프로세서 설정에는 적지 않습니다)
 schema: v2
+doc_type: contract
 source: {kind: document}
 python:
   file: contract_extract.py     # 이 yaml 과 같은 폴더
@@ -464,15 +466,6 @@ python:
 fields:
   AMOUNT: {transform: [to_int]} # 값 파이프라인은 llm 과 완전히 같습니다
   SRC: {const: REGEX}
-```
-
-```yaml
-# 프로세서 설정의 등록 블록
-  - custom_fields:
-      enable: true
-      doc_type: contract
-      extractor: python
-      config_file: custom_field_contract.yaml
 ```
 
 ```python

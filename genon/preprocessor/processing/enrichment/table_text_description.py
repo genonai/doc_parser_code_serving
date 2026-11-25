@@ -36,7 +36,7 @@ import re
 from dataclasses import replace
 from typing import Any, Callable, Optional
 
-from .llm_response import llm_failure_reason
+from .llm_response import aborts_on_llm_failure, llm_failure_reason
 from .table_description import TABLE_RETRIEVAL_LABEL
 from .table_text_context import (
     SKIP_DUPLICATE_TABLE,
@@ -406,6 +406,8 @@ class TableTextDescriptionEnricher:
                 send, **kwargs
             )
         except Exception as exc:
+            if aborts_on_llm_failure(exc):
+                raise   # 호출부(skip_table_stage)가 단계 오류 처리로 넘긴다
             _log.warning(f"[table_text_description] 레코드 표 설명 실패(원문 유지): {llm_failure_reason(exc)}")
             return list(texts)
 
@@ -431,17 +433,27 @@ class TableTextDescriptionEnricher:
         return result
 
 
-def skip_table_stage(exc: Exception, stage: str) -> None:
-    """표 설명의 런타임 실패는 문서를 막지 않는다.
+def skip_table_stage(
+    exc: Exception, stage: str, handle_error: Optional[Callable[[Exception, str], None]] = None
+) -> None:
+    """표 설명의 런타임 실패 처리. 중단 모드가 아니면 문서를 막지 않는다.
 
-    표 설명은 검색 품질을 올리는 부가 기능이고 본문 적재의 전제가 아니다. 그런데
-    error_policy=strict 에서는 LLM 호출 하나가 실패하면 문서 전체가 적재되지 않았다.
-    부가 기능의 실패를 본문 유실로 바꾸는 거래라 값이 맞지 않는다.
+    표 설명은 검색 품질을 올리는 부가 기능이고 본문 적재의 전제가 아니므로, 기본(parse 설정
+    `defaults.llm_call_failure: warn`, 요청 lenient)에서는 경고만 남기고 계속한다.
+
+    중단 모드(설정 fail 또는 요청 error_policy=strict)에서 LLM 호출 실패면 표 설명도 다른 LLM
+    호출과 같이 처리기의 단계 오류 처리(`handle_error`, stage=table_description)로 넘겨 중단한다.
+    `handle_error` 가 없는 호출부에서는 원래 예외를 그대로 올린다.
 
     설정 오기입(conflict_policy=error 충돌)은 여기로 오지 않는다 — 그쪽은 facade 의
     error_policy 를 그대로 타서 strict 면 실패한다. 조용히 넘기면 안 되는 종류이고,
     배포 전에는 tools/config_precheck 가 같은 것을 미리 잡는다.
     """
+    if aborts_on_llm_failure(exc):
+        if handle_error is None:
+            raise exc
+        handle_error(exc, "table_description")
+        return
     _log.warning(f"[{stage}] 표 설명 건너뜀, 문서 처리는 계속함: {llm_failure_reason(exc)}")
 
 
@@ -458,7 +470,8 @@ async def apply_table_description_stage(
 
     facade 3종이 같은 판정을 복제하지 않도록 여기 한 벌만 둔다. 인자로 받는 두 콜러블은
     facade 마다 다른 것(자기 이미지 표 설명 호출, 자기 에러 정책)뿐이다. `handle_error` 는
-    설정 충돌 전용이다 — 런타임 실패는 `skip_table_stage` 로 일원화되어 있다.
+    설정 충돌과, 중단 모드의 LLM 호출 실패(`skip_table_stage` 가 넘긴다)에 쓴다 — 런타임 실패의
+    판정은 `skip_table_stage` 로 일원화되어 있다.
 
     `kwargs` 를 `**` 로 풀지 않고 dict 그대로 받는 이유는 독립 실행이 표 설명을 가져갔음을
     `_table_text_desc_owned` 로 남겨야 하기 때문이다 — 이 스테이지는 custom_fields 스테이지보다
@@ -476,7 +489,7 @@ async def apply_table_description_stage(
         try:
             return await standalone.enrich(document, **kwargs)
         except Exception as exc:
-            skip_table_stage(exc, "table_text_description")
+            skip_table_stage(exc, "table_text_description", handle_error)
             return document
 
     text_table_enricher = next((
@@ -503,5 +516,5 @@ async def apply_table_description_stage(
             result = await result
         return result if result is not None else document
     except Exception as exc:
-        skip_table_stage(exc, "table_description")
+        skip_table_stage(exc, "table_description", handle_error)
         return document

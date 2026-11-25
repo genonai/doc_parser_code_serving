@@ -55,7 +55,7 @@ NONDOCLING_EXTENSIONS = {
     ".csv", ".xlsx", ".txt", ".ppt", ".pptx", ".doc",
     ".jpg", ".jpeg", ".png", ".wav", ".mp3", ".m4a",
 }
-SUPPORTED_EXTENSIONS = PARSE_EXTENSIONS | NONDOCLING_EXTENSIONS | {".json"}
+SUPPORTED_EXTENSIONS = PARSE_EXTENSIONS | NONDOCLING_EXTENSIONS | {".json", ".jsonl"}
 
 
 def _alias_extensions(config_path: str | None = None) -> set[str]:
@@ -247,7 +247,7 @@ def parse_args():
         "--doc_type",
         default=None,
         help="문서 구분(kwargs). 'faq'=tabular 행의 컬럼을 목표 custom field로 매핑, "
-             "'card'=문서 메타에 doc_type 스탬프. 행별 청크 여부는 processing_mode가 결정.",
+             "그 밖의 문서유형=문서 메타에 doc_type 스탬프. 행별 청크 여부는 processing_mode가 결정.",
     )
     ap.add_argument("--chunk-size", type=int, default=None,
                     help="청크 최대 크기 (0=크기 기반 병합·분할 끄기 — docling 입력은 구조 청크가 그대로 "
@@ -255,9 +255,9 @@ def parse_args():
                          "chunking.min_chunk_size(기본 1024)로 올라가고, 행·레코드 입력은 값 그대로 쓴다)")
     ap.add_argument(
         "--chunk-mode",
-        choices=["split_only", "resize_all"],
-        default="split_only",
-        help="split_only=chunk_size 초과 청크만 분할(기본) | resize_all=모든 청크를 chunk_size 에 맞게 병합/분할",
+        choices=["section", "section_merge", "character", "split_only", "resize_all"],
+        default="section",
+        help="section=섹션 단위, chunk_size 초과 섹션만 분할(기본) | section_merge=섹션을 chunk_size 까지 병합/분할 | character=섹션을 무시하고 글자 수로 분할 (옛 이름 split_only·resize_all 도 받음)",
     )
     ap.add_argument(
         "--chunk-header",

@@ -16,6 +16,10 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from typing import Any, Callable, Optional
 
+# 파서 결과(요소형) metadata 에 싣는 키. 값은 filter·keep 조건에서 모두 제외된 레코드 수다.
+# 이 키가 있는 빈 결과는 청커가 0건 실패(CHUNK_D001) 대신 빈 결과로 돌려준다.
+RECORDS_FILTERED_OUT_KEY = "records_filtered_out"
+
 
 @dataclass
 class ParseJob:

@@ -1,7 +1,8 @@
-"""`activities doc-types list | validate | add | remove` (#712, #739, #748) — 임시 activities 폴더에서 doc_type 등록을 다룬다.
+"""`activities doc-types list | validate | add | remove | rename` (#712, #739, #748, #798, #808) — 임시 activities 폴더에서 doc_type 등록을 다룬다.
 
-전처리 Studio 가 코드스페이스에서 부르는 명령이다. 거부할 때 어떤 파일도 바뀌지 않는지, `add` 가 규칙 파일 하나만
-만들고 `config.yaml` 을 고치지 않는지, 결과 줄(`@@RESULT@@`)의 `error.detail.reason` 이 계약대로인지를 본다.
+전처리 Studio 가 코드스페이스에서 부르는 명령이다. 등록은 규칙 파일 최상위의 `doc_type:` 한 가지다. 거부할 때 어떤
+파일도 바뀌지 않는지, `add`·`remove` 가 규칙 파일만 만들고 지우며 `config.yaml` 을 고치지 않는지, 결과 줄(`@@RESULT@@`)의
+`error.detail.reason` 이 계약대로인지를 본다.
 """
 import importlib
 import json
@@ -15,7 +16,7 @@ from genon.preprocessor.activities._doc_types import DocTypeError
 
 pytestmark = pytest.mark.unit
 
-# 기본 activity parse 의 설정을 줄인 것 — 주석·빈 줄·등록 블록 뒤의 다른 섹션을 그대로 둔다.
+# 기본 activity parse 의 설정을 줄인 것. doc_type 등록은 규칙 파일에 있으므로 custom_fields 항목이 없다.
 CONFIG = """\
 # Studio 는 옵션 이름 옆 툴팁에 그 키의 주석을 보여 준다.
 defaults:
@@ -27,18 +28,6 @@ enrichment:
   # 목차 추출
   - toc:
       enable: false
-  # ── 문서 유형별 custom_fields 추출 ──
-  - custom_fields:
-      enable: true                       # 이 문서유형 설정을 쓸지. true(기본) | false
-      doc_type: card                     # 요청의 doc_type 이 이 값과 같을 때 적용한다(대소문자 무시)
-      config_file: custom_field_card.yaml   # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)
-  # 뮤직 AI 플레이리스트 문구
-  - custom_fields:
-      enable: true
-      doc_type: music_ai
-      config_file: custom_field_music_ai.yaml      # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)
-
-  # 고객사이트 전용 문서유형은 여기가 아니라 사이트 폴더에 둔다.
 
 output:
   format: "docling"
@@ -68,9 +57,16 @@ body:
   split: true
 """
 
+def _write_rule(folder: Path, name: str, doc_type: str | None = None, extra: str = "") -> Path:
+    """`custom_field_<name>.yaml` — 최상위 `doc_type:`(기본 name)으로 등록한 RULE."""
+    path = folder / f"custom_field_{name}.yaml"
+    path.write_text(RULE.replace("schema: v2\n", f"schema: v2\ndoc_type: {doc_type or name}\n") + extra, encoding="utf-8")
+    return path
+
+
 @pytest.fixture
 def acts(tmp_path, monkeypatch):
-    """기본 activity parse·chunk 와, parse 를 복제한 parse_tour(복제 때 card·music_ai 등록이 따라온다)."""
+    """기본 activity parse·chunk 와, parse 를 복제한 parse_tour(복제 때 card·music_ai 규칙 파일이 따라온다)."""
     from genon.preprocessor.activities.__main__ import new_activity
 
     root = tmp_path / "activities"
@@ -79,7 +75,7 @@ def acts(tmp_path, monkeypatch):
         (root / slug / "processor.py").write_text(f"# {slug}\nclass DocumentProcessor: ...\n", encoding="utf-8")
         (root / slug / "config.yaml").write_text(CONFIG if slug == "parse" else "output: {}\n", encoding="utf-8")
     for doc_type in ("card", "music_ai"):
-        (root / "parse" / f"custom_field_{doc_type}.yaml").write_text(RULE, encoding="utf-8")
+        _write_rule(root / "parse", doc_type)
     monkeypatch.delenv("GENOS_RESOURCE_DIR", raising=False)
     new_activity("parse", "parse_tour", activities_dir=root)
     return root
@@ -96,131 +92,85 @@ def _edit_config(root: Path, activity: str, old: str, new: str) -> None:
     path.write_text(text.replace(old, new), encoding="utf-8")
 
 
-BLOCK = {"registered_in": "config"}
-
-
-def test_list_reads_registered_blocks_and_their_variants(acts):
-    """등록 블록마다 한 항목. doc_type 목록·doc_type 없음·config_file 없는 블록·꺼진 블록·없는 규칙 파일도 읽는다."""
-    (acts / "parse" / "config.yaml").write_text("""\
-defaults:
-  unknown_doc_type: warn
-enrichment:
-  - custom_fields:
-      doc_type: [Card, card_new]
-      config_file: custom_field_card.yaml
-  - custom_fields:
-      enable: false
-      doc_type: gone
-      config_file: custom_field_gone.yaml
-  - custom_fields:
-      doc_type: inline
-      model_preset: default
-      output_fields: [A]
-  - custom_fields:
-      config_file: custom_field_music_ai.yaml
-""", encoding="utf-8")
-    (acts / "parse" / "custom_field_music_ai.yaml").write_text("schema: v2\n# 첫 줄이 주석이 아님\n", encoding="utf-8")
+def test_list_reads_rule_file_registrations(acts):
+    """규칙 파일 하나의 doc_type 마다 한 항목(파일 이름 순). doc_type 이 없는 규칙 파일은 등록이 아니다."""
+    folder = acts / "parse"
+    _write_rule(folder, "card", "[Card, card_new]")
+    (folder / "custom_field_music_ai.yaml").write_text("schema: v2\ndoc_type: music_ai\n", encoding="utf-8")
+    (folder / "custom_field_orphan.yaml").write_text(RULE, encoding="utf-8")
     described = "모니모 뮤직 AI 플레이리스트 문구 JSON 레코드"
+    common = {"enable": True, "registered_in": "rule_file"}
 
-    assert _doc_types.list_doc_types("parse", acts) == {"activity": "parse", "unknown_doc_type": "warn", "doc_types": [
-        {"doc_type": "card", "config_file": "custom_field_card.yaml", "enable": True, "description": described,
-         **BLOCK, "removable": False, "copyable": True},
-        {"doc_type": "card_new", "config_file": "custom_field_card.yaml", "enable": True, "description": described,
-         **BLOCK, "removable": False, "copyable": True},
-        {"doc_type": "gone", "config_file": "custom_field_gone.yaml", "enable": False, "description": None,
-         **BLOCK, "removable": False, "copyable": False},
-        {"doc_type": "inline", "config_file": None, "enable": True, "description": None,
-         **BLOCK, "removable": False, "copyable": False},
-        {"doc_type": None, "config_file": "custom_field_music_ai.yaml", "enable": True, "description": None,
-         **BLOCK, "removable": False, "copyable": False},
+    assert _doc_types.list_doc_types("parse", acts) == {"activity": "parse", "unknown_doc_type": "fail", "doc_types": [
+        {"doc_type": "card", "config_file": "custom_field_card.yaml", "description": described, **common,
+         "removable": False, "copyable": True},
+        {"doc_type": "card_new", "config_file": "custom_field_card.yaml", "description": described, **common,
+         "removable": False, "copyable": True},
+        {"doc_type": "music_ai", "config_file": "custom_field_music_ai.yaml", "description": None, **common,
+         "removable": True, "copyable": True},
     ]}
-    # 복제한 activity 는 복제 시점의 등록을 그대로 가진다
+    # 복제한 activity 는 복제 시점의 규칙 파일을 그대로 가진다
     assert [d["doc_type"] for d in _doc_types.list_doc_types("parse_tour", acts)["doc_types"]] == ["card", "music_ai"]
 
 
-
 def _flags(root, activity):
-    return {d["doc_type"]: (d["registered_in"], d["removable"], d["copyable"])
+    return {d["doc_type"]: (d["removable"], d["copyable"])
             for d in _doc_types.list_doc_types(activity, root)["doc_types"]}
 
 
 def test_list_flags_agree_with_remove_and_add(acts):
-    """`registered_in`·`removable`·`copyable` 은 `remove`·`add --from` 의 실제 결과와 같다(#756)."""
-    _doc_types.add_doc_type("tour_blog", "music_ai", "parse", activities_dir=acts)
-    _edit_config(acts, "parse_tour", "      doc_type: music_ai\n", "      doc_type: music_ai\n      extractor: json_mapping\n")
+    """`removable`·`copyable` 은 `remove`·`add --from` 의 실제 결과와 같다(#756)."""
+    folder = acts / "parse"
     # 규칙 파일의 doc_type 을 여러 줄 목록으로 적으면 복사본에 doc_type 한 줄을 적을 수 없다 — add --from 이 config_invalid
-    (acts / "parse" / "custom_field_tour_list.yaml").write_text(
+    (folder / "custom_field_tour_list.yaml").write_text(
         RULE.replace("schema: v2\n", "schema: v2\ndoc_type:\n  - tour_list\n"), encoding="utf-8")
+    _write_rule(folder, "music_ai_notice", "music_ai")          # 같은 doc_type 의 두 번째 규칙 파일 — add --from 거부
 
     assert _flags(acts, "parse") == {
-        "card": ("config", False, True),          # 기본 parse 의 등록 블록 — base_activity_not_allowed
-        "music_ai": ("config", False, True),
-        "tour_blog": ("rule_file", True, True),   # add 가 만든 규칙 파일 등록
-        "tour_list": ("rule_file", True, False),
-    }
-    assert _flags(acts, "parse_tour") == {
-        "card": ("config", True, True),           # 복제한 activity 의 등록 블록은 뺄 수 있다
-        "music_ai": ("config", True, False),      # 블록에 그 밖의 키 — add --from 이 config_invalid
+        "card": (True, True),
+        "music_ai": (True, False),
+        "tour_list": (True, False),
     }
     # 판정이 명령 결과와 같은지 실제로 부른다(파일이 바뀌므로 맨 끝에서)
-    for activity in ("parse", "parse_tour"):
-        for doc_type, (_, removable, copyable) in _flags(acts, activity).items():
-            try:
-                _doc_types.add_doc_type("probe_copy", doc_type, activity, activities_dir=acts)
-                copied = True
-                _doc_types.remove_doc_type("probe_copy", activity, activities_dir=acts)
-            except DocTypeError:
-                copied = False
-            assert copied is copyable, (activity, doc_type)
-    for activity in ("parse", "parse_tour"):
-        for doc_type, (_, removable, _) in _flags(acts, activity).items():
-            try:
-                _doc_types.remove_doc_type(doc_type, activity, activities_dir=acts)
-                removed = True
-            except DocTypeError:
-                removed = False
-            assert removed is removable, (activity, doc_type)
+    for doc_type, (removable, copyable) in _flags(acts, "parse").items():
+        try:
+            _doc_types.add_doc_type("probe_copy", doc_type, "parse", activities_dir=acts)
+            copied = True
+            _doc_types.remove_doc_type("probe_copy", "parse", activities_dir=acts)
+        except DocTypeError:
+            copied = False
+        assert copied is copyable, doc_type
+    for doc_type, (removable, _) in _flags(acts, "parse").items():
+        try:
+            _doc_types.remove_doc_type(doc_type, "parse", activities_dir=acts)
+            removed = True
+        except DocTypeError:
+            removed = False
+        assert removed is removable, doc_type
+
 
 def _twice(root):
-    _edit_config(root, "parse", "doc_type: card ", "doc_type: MUSIC_AI ")
+    _write_rule(root / "parse", "music_ai_notice", "MUSIC_AI")
 
 
-def _disabled(root):
-    _edit_config(root, "parse", "      enable: true\n      doc_type: music_ai", "      enable: false\n      doc_type: music_ai")
-
-
-def _renamed(root):
-    (root / "parse" / "custom_field_music_ai.yaml").rename(root / "parse" / "custom_field_music.yaml")
-    _edit_config(root, "parse", "config_file: custom_field_music_ai.yaml", "config_file: custom_field_music.yaml")
-
-
-def _missing(root):
-    (root / "parse" / "custom_field_music_ai.yaml").unlink()
+def _twice_one_broken(root):
+    _write_rule(root / "parse", "music_ai_notice", "music_ai", extra="no_such_key: 1\n")
 
 
 def _unknown_key(root):
-    (root / "parse" / "custom_field_music_ai.yaml").write_text(RULE + "no_such_key: 1\n", encoding="utf-8")
-
-
-def _not_yaml(root):
-    (root / "parse" / "custom_field_music_ai.yaml").write_text("fields: [a\n", encoding="utf-8")
+    _write_rule(root / "parse", "music_ai", extra="no_such_key: 1\n")
 
 
 @pytest.mark.parametrize("name, break_it, valid, expected", [
     ("Music_AI", None, True, [("registered", "pass", None), ("block", "pass", None), ("config_file", "pass", None)]),
     ("tour_blog", None, False,
      [("registered", "fail", "not_registered"), ("block", "skip", None), ("config_file", "skip", None)]),
-    ("music_ai", _twice, False,
-     [("registered", "fail", "registered_twice"), ("block", "skip", None), ("config_file", "skip", None)]),
-    ("music_ai", _disabled, False,
-     [("registered", "pass", None), ("block", "fail", "disabled"), ("config_file", "skip", None)]),
-    ("music_ai", _renamed, True,
-     [("registered", "pass", None), ("block", "warn", "config_file_name_differs"), ("config_file", "pass", None)]),
-    ("music_ai", _missing, False,
-     [("registered", "pass", None), ("block", "pass", None), ("config_file", "fail", "config_file_missing")]),
-    ("music_ai", _unknown_key, False,
+    # 같은 doc_type 을 규칙 파일 여럿이 등록하면 모두 적용된다 — 파일마다 검사하고 첫 실패를 보인다
+    ("music_ai", _twice, True,
+     [("registered", "pass", None), ("block", "pass", None), ("config_file", "pass", None)]),
+    ("music_ai", _twice_one_broken, False,
      [("registered", "pass", None), ("block", "pass", None), ("config_file", "fail", "config_invalid")]),
-    ("music_ai", _not_yaml, False,
+    ("music_ai", _unknown_key, False,
      [("registered", "pass", None), ("block", "pass", None), ("config_file", "fail", "config_invalid")]),
 ])
 def test_validate_reports_each_step_without_raising_or_writing(acts, name, break_it, valid, expected):
@@ -269,13 +219,13 @@ def _broken_config(root):
     (root / "parse_tour" / "config.yaml").write_text("enrichment: [\n", encoding="utf-8")
 
 
-def _extra_block_keys(root):
-    """등록 블록의 그 밖의 키는 규칙 파일로 옮길 자리가 없다 — 조용히 빼지 않고 거부한다."""
-    _edit_config(root, "parse_tour", "      doc_type: music_ai\n", "      doc_type: music_ai\n      extractor: json_mapping\n")
+def _leftover_block(root):
+    """custom_fields 항목이 남은 설정은 worker 가 기동하지 못한다 — 명령도 거부한다."""
+    _edit_config(root, "parse_tour", "  - toc:\n", "  - custom_fields: {doc_type: card, config_file: custom_field_card.yaml}\n  - toc:\n")
 
 
-def _no_source_rule(root):
-    (root / "parse_tour" / "custom_field_music_ai.yaml").unlink()
+def _two_sources(root):
+    _write_rule(root / "parse_tour", "music_ai_notice", "music_ai")
 
 
 def _target_exists(root):
@@ -290,10 +240,10 @@ def _target_exists(root):
     ("1tour", "music_ai", "parse_tour", None, "invalid_name"),     # 소문자로 시작해야 한다
     ("_x", "music_ai", "parse_tour", None, "invalid_name"),
     ("tour_blog", "faq", "parse_tour", None, "source_not_found"),
-    ("tour_blog", "music_ai", "parse_tour", _no_source_rule, "config_file_missing"),
     ("tour_blog", "music_ai", "parse_tour", _target_exists, "config_file_exists"),
     ("tour_blog", "music_ai", "parse_tour", _broken_config, "config_invalid"),
-    ("tour_blog", "music_ai", "parse_tour", _extra_block_keys, "config_invalid"),
+    ("tour_blog", "music_ai", "parse_tour", _leftover_block, "config_invalid"),
+    ("tour_blog", "music_ai", "parse_tour", _two_sources, "multiple_rule_files"),
 ])
 def test_add_rejects_with_reason_and_changes_no_file(acts, name, origin, activity, break_it, reason):
     if break_it:
@@ -318,10 +268,10 @@ def test_add_of_registered_name_fails_with_registration_state(acts):
     assert [s["status"] for s in info.value.detail["steps"]] == ["pass", "pass", "pass"]
     assert _snapshot(acts) == before
 
-    (acts / "parse_tour" / "custom_field_music_ai.yaml").unlink()
+    _write_rule(acts / "parse_tour", "music_ai", extra="no_such_key: 1\n")
     with pytest.raises(DocTypeError) as info:
         _doc_types.add_doc_type("music_ai", "card", "parse_tour", activities_dir=acts)
-    first, second = str(info.value).split("\n")                    # 검사에 실패한 등록은 첫 줄이 알리고 둘째 줄이 사유다
+    first, second = str(info.value).split("\n", 1)                 # 검사에 실패한 등록은 첫 줄이 알리고 그 뒤가 사유다
     assert first.endswith("등록 상태 확인 필요")
     assert second == info.value.detail["steps"][-1]["message"]
 
@@ -363,7 +313,7 @@ def test_cli_result_line_carries_reason_in_error_detail(acts, monkeypatch, capsy
 
 @pytest.mark.parametrize("argv", [
     ("add", "--name", "tour_blog", "--from", "music_ai"),                                    # 필수 인자 누락(argparse)
-    ("rename", "--name", "tour_blog"),                                                       # 모르는 action(argparse)
+    ("update", "--name", "tour_blog"),                                                       # 모르는 action(argparse)
     ("add", "--name", "tour_blog", "--from", "music_ai", "--activity", "parse_tour", "--title", "두\n줄"),
 ])
 def test_cli_usage_error_carries_command_and_reason(acts, monkeypatch, capsys, argv):
@@ -394,34 +344,28 @@ def test_remove_undoes_add_exactly(acts):
     assert _snapshot(acts) == before
 
 
-def test_remove_keeps_other_lines_and_shared_rule_file(acts):
-    """복제 때 따라온 card 를 빼도 다른 줄·주석은 그대로다. 다른 블록이 같은 규칙 파일을 쓰면 파일은 남긴다."""
-    _edit_config(acts, "parse_tour", "config_file: custom_field_music_ai.yaml", "config_file: custom_field_card.yaml")
-    text = (acts / "parse_tour" / "config.yaml").read_text(encoding="utf-8")
+def test_remove_deletes_every_rule_file_of_the_doc_type(acts):
+    """같은 doc_type 을 등록한 규칙 파일을 모두 지운다. config.yaml 과 다른 doc_type 의 규칙 파일은 그대로다."""
+    notice = _write_rule(acts / "parse_tour", "music_ai_notice", "music_ai")
+    before = _snapshot(acts)
 
-    data, files = _doc_types.remove_doc_type("card", "parse_tour", activities_dir=acts)
+    data, files = _doc_types.remove_doc_type("music_ai", "parse_tour", activities_dir=acts)
 
-    assert files == [acts / "parse_tour" / "config.yaml"]                                 # 규칙 파일은 music_ai 가 쓴다
-    assert (acts / "parse_tour" / "custom_field_card.yaml").is_file()
-    card_block = ("  - custom_fields:\n"
-                  "      enable: true                       # 이 문서유형 설정을 쓸지. true(기본) | false\n"
-                  "      doc_type: card                     # 요청의 doc_type 이 이 값과 같을 때 적용한다(대소문자 무시)\n"
-                  "      config_file: custom_field_card.yaml   # 이 문서유형의 필드 추출 규칙 파일(이 폴더 기준)\n")
-    assert card_block in text
-    assert (acts / "parse_tour" / "config.yaml").read_text(encoding="utf-8") == text.replace(card_block, "")
-    assert [d["doc_type"] for d in _doc_types.list_doc_types("parse_tour", acts)["doc_types"]] == ["music_ai"]
+    assert files == [acts / "parse_tour" / "custom_field_music_ai.yaml", notice]
+    assert {k: v for k, v in _snapshot(acts).items()} == {
+        k: v for k, v in before.items()
+        if k not in ("parse_tour/custom_field_music_ai.yaml", "parse_tour/custom_field_music_ai_notice.yaml")}
 
 
 @pytest.mark.parametrize("name, activity, break_it, reason", [
     ("tour_blog", "parse_tour", None, "not_registered"),
-    ("card", "parse", None, "base_activity_not_allowed"),
     ("card", "chunk", None, "not_parse_activity"),
     ("card", "parse_nope", None, "activity_not_found"),
-    ("card", "parse_tour", ("doc_type: card ", "doc_type: [card, cash] "), "shared_block"),
+    ("card", "parse_tour", "[card, cash]", "shared_block"),
 ])
 def test_remove_rejects_with_reason_and_changes_no_file(acts, name, activity, break_it, reason):
     if break_it:
-        _edit_config(acts, "parse_tour", *break_it)
+        _write_rule(acts / "parse_tour", "card", break_it)
     before = _snapshot(acts)
     with pytest.raises(DocTypeError) as exc:
         _doc_types.remove_doc_type(name, activity, activities_dir=acts)
@@ -439,33 +383,60 @@ def test_cli_remove_result_line(acts, monkeypatch, capsys):
     assert (code, result["error"]["detail"]) == (1, {"reason": "not_registered"})
 
 
-def test_remove_keeps_rule_file_shared_through_another_spelling(acts):
-    """다른 블록이 같은 규칙 파일을 다른 표기(`./`·확장자 생략)로 써도 공유로 보고 파일을 남긴다."""
-    _edit_config(acts, "parse_tour", "config_file: custom_field_music_ai.yaml", "config_file: ./custom_field_card")
-    data, files = _doc_types.remove_doc_type("card", "parse_tour", activities_dir=acts)
-    assert files == [acts / "parse_tour" / "config.yaml"]
-    assert (acts / "parse_tour" / "custom_field_card.yaml").is_file()
+# ── rename (#808) ────────────────────────────────────────────────────────────
 
-
-def test_remove_last_block_keeps_enrichment_a_list(acts):
-    """enrichment 의 마지막 항목을 빼도 `enrichment: []` 로 남는다(null 이면 다른 enrichment 기본값이 달라진다)."""
-    path = acts / "parse_tour" / "config.yaml"
-    path.write_text("enrichment:\n  - custom_fields:\n      enable: true\n      doc_type: card\n"
-                    "      config_file: custom_field_card.yaml\noutput:\n  format: docling\n", encoding="utf-8")
-    _doc_types.remove_doc_type("card", "parse_tour", activities_dir=acts)
-    assert path.read_text(encoding="utf-8") == "enrichment: []\noutput:\n  format: docling\n"
-    assert yaml.safe_load(path.read_text(encoding="utf-8"))["enrichment"] == []
-
-
-def test_remove_restores_config_when_rule_file_cannot_be_deleted(acts, monkeypatch):
+def test_rename_rewrites_doc_type_in_place(acts, monkeypatch, capsys):
+    """그 doc_type 을 등록한 규칙 파일마다 `doc_type:` 값만 바꾼다. 관례 이름의 파일은 새 이름으로 옮기고,
+    다른 이름의 파일과 목록 등록 파일은 이름을 두며, 목록에서는 그 원소만 바꾼다. 새 파일은 생기지 않는다."""
+    monkeypatch.setattr(_folders, "ACTIVITIES_DIR", acts)
+    folder = acts / "parse_tour"
+    notice = _write_rule(folder, "music_ai_notice", "music_ai")
+    bundle = _write_rule(folder, "bundle", "[card_extra, music_ai]")
     before = _snapshot(acts)
 
-    def refuse(self, *a, **k):
-        raise PermissionError("read-only")
+    code, result = _run_cli(capsys, "rename", "--name", "music_ai", "--to", "music_list", "--activity", "parse_tour")
 
-    monkeypatch.setattr(Path, "unlink", refuse)
-    with pytest.raises(PermissionError):
-        _doc_types.remove_doc_type("card", "parse_tour", activities_dir=acts)
-    monkeypatch.undo()
+    assert (code, result["ok"], result["command"]) == (0, True, "doc-types")
+    assert {k: result["data"][k] for k in ("doc_type", "renamed_to", "activity")} == {
+        "doc_type": "music_ai", "renamed_to": "music_list", "activity": "parse_tour"}
+    assert [Path(f).name for f in result["data"]["files"]] == [
+        "custom_field_bundle.yaml", "custom_field_music_ai.yaml", "custom_field_music_list.yaml",
+        "custom_field_music_ai_notice.yaml"]
+    after = _snapshot(acts)
+    rel = "parse_tour/custom_field_"
+    assert after[f"{rel}music_list.yaml"] == before[f"{rel}music_ai.yaml"].replace(b"doc_type: music_ai\n",
+                                                                                   b"doc_type: music_list\n")
+    assert after[f"{rel}music_ai_notice.yaml"] == notice.read_bytes() == before[f"{rel}music_ai_notice.yaml"].replace(
+        b"doc_type: music_ai\n", b"doc_type: music_list\n")
+    assert after[f"{rel}bundle.yaml"] == bundle.read_bytes() == before[f"{rel}bundle.yaml"].replace(
+        b"doc_type: [card_extra, music_ai]\n", b"doc_type: [card_extra, music_list]\n")
+    changed = {f"{rel}music_ai.yaml", f"{rel}music_list.yaml", f"{rel}music_ai_notice.yaml", f"{rel}bundle.yaml"}
+    assert {k: v for k, v in after.items() if k not in changed} == {k: v for k, v in before.items() if k not in changed}
+
+
+def _multiline_list(root):
+    (root / "parse_tour" / "custom_field_music_ai.yaml").write_text(
+        RULE.replace("schema: v2\n", "schema: v2\ndoc_type:\n  - music_ai\n"), encoding="utf-8")
+
+
+def _unregistered_target_file(root):
+    (root / "parse_tour" / "custom_field_music_list.yaml").write_text(RULE, encoding="utf-8")
+
+
+@pytest.mark.parametrize("name, to, activity, break_it, reason", [
+    ("tour_blog", "music_list", "parse_tour", None, "not_registered"),
+    ("music_ai", "card", "parse_tour", None, "already_registered"),
+    ("music_ai", "Music-List", "parse_tour", None, "invalid_name"),
+    ("music_ai", "music_list", "parse_tour", _unregistered_target_file, "config_file_exists"),
+    # 여러 줄 목록은 줄 하나로 고칠 수 없다 — 다른 규칙 파일도 바꾸지 않는다
+    ("music_ai", "music_list", "parse_tour", _multiline_list, "config_invalid"),
+])
+def test_rename_rejects_with_reason_and_changes_no_file(acts, name, to, activity, break_it, reason):
+    if break_it:
+        break_it(acts)
+    _write_rule(acts / "parse_tour", "music_ai_notice", "music_ai")
+    before = _snapshot(acts)
+    with pytest.raises(DocTypeError) as exc:
+        _doc_types.rename_doc_type(name, to, activity, activities_dir=acts)
+    assert exc.value.detail["reason"] == reason
     assert _snapshot(acts) == before
-

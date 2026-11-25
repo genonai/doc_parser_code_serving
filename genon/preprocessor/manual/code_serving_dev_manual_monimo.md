@@ -49,7 +49,7 @@
 
 | 단계  | 수정 대상                                                                                                | 이 단계에서 처리하는 것                                       | 다음 단계로 넘어가는 기준                                                         |
 | --- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------- |
-| 1   | `custom_field_<doc_type>.yaml` 작성 + 등록(규칙 파일의 `doc_type:` 줄 또는 `config.yaml` 등록 블록) | 컬럼·키 이름으로 값 매핑, 값 표기 통일, 날짜 변환, 본문 구성, LLM 으로 필드 생성 | 원하는 값이 컬럼·키·CSS selector로 바로 잡히지 않고 본문 속 규칙으로 찾아야 할 때                  |
+| 1   | `custom_field_<doc_type>.yaml` 작성 + 등록(규칙 파일의 `doc_type:` 줄) | 컬럼·키 이름으로 값 매핑, 값 표기 통일, 날짜 변환, 본문 구성, LLM 으로 필드 생성 | 원하는 값이 컬럼·키·CSS selector로 바로 잡히지 않고 본문 속 규칙으로 찾아야 할 때                  |
 | 1-1 | yaml 의 `python:` 블록(Python 추출기)                                                                      | 본문에서 정규식 등 규칙으로 값 추출(`kind: document` 전용)           | 입력 구조 자체를 바꿔야 하거나, doc\_type 별로 공통 옵션을 바꿔야 하거나, 기본 변환기에 없는 값 변환이 필요할 때 |
 | 2   | `processor.py`(훅 메소드·`CONFIG_BY_DOC_TYPE`·값 변환기)                                                     | 입력 구조 변환, doc\_type 별 옵션, 사이트 전용 값 변환, 청크 수정        | 훅으로도 처리할 수 없을 때(새 입력 형식, 처리 순서 변경 등)                                   |
 | 3   | 담당자 요청                                                                                               | 훅 추가 또는 전처리기 처리 코드(`processing/core/`) 수정           | —                                                                      |
@@ -63,12 +63,12 @@
 - [ ] 템플릿을 복사해 `custom_field_<doc_type>.yaml`을 만들고 `schema: v2`를 남겼습니다([1.3](#13-custom_field-yaml-작성))
 - [ ] `alias`가 실제 원본의 컬럼·키 이름과 일치합니다
 - [ ] 검색에 쓸 값을 `body`에 넣었습니다(메타데이터에만 있는 값은 embedding 에 들어가지 않습니다)
-- [ ] doc_type을 등록했습니다(규칙 파일의 `doc_type:` 줄 또는 `config.yaml` 등록 블록, [1.5](#15-doc_type-등록))
+- [ ] doc_type을 등록했습니다(규칙 파일의 `doc_type:` 줄, [1.5](#15-doc_type-등록))
 - [ ] 규칙으로 찾을 값이 있으면 `python:` 블록을 추가했습니다([1.6](#16-python-추출기))
 
 **청킹 단계 체크리스트**
 
-- [ ] 파일 하나가 `BIZ_ID` 하나이고 여러 청크로 나뉘는 유형이면 `validation.by_doc_type`에 `fail_on_any: true`를 추가했습니다([2.2](#22-doc_type별-검증-설정))
+- [ ] 파일 하나가 `BIZ_ID` 하나이고 여러 청크로 나뉘는 유형이면 `validation.by_doc_type`에 `action: fail`을 추가했습니다([2.2](#22-doc_type별-검증-설정))
 - [ ] 청킹 호출에도 `params.doc_type`이 넘어오는지 담당자에게 확인했습니다([2.1](#21-청킹-단계-수정이-필요한-경우))
 - [ ] 두 config.yaml 의 `output.table_format`이 같은 값입니다([2.4](#24-청킹-configyaml-옵션))
 
@@ -76,7 +76,7 @@
 
 청크가 생성되었다는 사실만으로는 검증이 끝나지 않습니다. `alias`가 입력 표기와 어긋나면 값만 비고 오류는 나지 않습니다.
 
-- [ ] `params`에 `{"error_policy": "strict"}`를 넣어 실행했습니다(기본 `lenient`는 보강 단계 오류를 경고만 남기고 건너뜁니다)
+- [ ] `params`에 `{"error_policy": "strict"}`를 넣어 실행했습니다(기본 `lenient`는 보강 단계 오류를 경고만 남기고 건너뜁니다. LLM 호출 실패는 모니모 설정 `defaults.llm_call_failure: fail` 이 이미 실패로 처리합니다)
 - [ ] 건수가 입력 건수에서 필터·필수값·빈 본문 제외·병합을 반영한 예상 건수와 같습니다
 - [ ] 필드 값이 샘플의 기대값과 같고, 청크마다 필드가 실렸으며 `meta: false` 필드는 빠졌습니다
 - [ ] 청크 본문에 필요한 값과 항목명이 있고, 로그에 `WARNING` 줄이 없습니다
@@ -106,7 +106,7 @@
 
 doc_type 의 역할은 다음과 같습니다.
 
-- 파싱 요청의 `params.doc_type`과 같은 doc_type으로 등록된(규칙 파일의 `doc_type:` 줄 또는 등록 블록) `custom_field_*.yaml`이 적용됩니다.
+- 파싱 요청의 `params.doc_type`과 같은 doc_type으로 등록된(규칙 파일의 `doc_type:` 줄) `custom_field_*.yaml`이 적용됩니다.
 - 파싱 등록과 청킹 검증 설정은 비교할 때 대소문자와 앞뒤 공백을 무시합니다(`"Term "`과 `term`은 같고 `terms`는 다릅니다). 청킹 `processor.py`의 `CONFIG_BY_DOC_TYPE`은 받은 문자열 그대로 비교하므로, 파싱·청킹 호출에는 모두 공백 없는 소문자 doc_type 을 씁니다.
 - 등록되지 않은 doc_type 으로 요청하면 파싱이 실패합니다(모니모 설정 `defaults.unknown_doc_type: fail`).
 
@@ -387,22 +387,19 @@ body:
 
 ### 1.5 doc_type 등록
 
-전처리기 스튜디오의 doc_type 추가를 쓰면 규칙 파일 최상위(`schema: v2` 줄 아래)에 `doc_type: <이름>` 줄이 적혀 등록되며, `config.yaml`은 고치지 않습니다. 이 방식에는 `enable`이 없습니다. 끄고 켤 수 있어야 하면 아래처럼 `activities/parse/config.yaml`의 `enrichment` 목록에 등록 블록을 둡니다.
+규칙 파일 최상위(`schema: v2` 줄 아래)의 `doc_type: <이름>` 한 줄이 등록입니다. 전처리기 스튜디오의 doc_type 추가도 이 줄을 적어 등록하며, `config.yaml`은 고치지 않습니다.
 
 ```yaml
-enrichment:
-  # … 이미 있는 항목 …
-  # 공지사항
-  - custom_fields:
-      enable: true                          # 이 doc_type 설정을 쓸지. true | false
-      doc_type: notice                      # 요청의 doc_type 이 이 값과 같을 때 적용(대소문자 무시)
-      config_file: custom_field_notice.yaml # 규칙 파일. 파일명만 적음(이 폴더 기준)
+# activities/parse/custom_field_notice.yaml
+schema: v2
+doc_type: notice                            # 요청의 doc_type 이 이 값과 같을 때 적용(대소문자 무시)
+source:
+  kind: records
 ```
 
-- 잠시 쓰지 않을 유형은 블록을 지우지 말고 `enable: false`로 끕니다. 끈 유형은 등록되지 않은 것과 같습니다.
-- 모니모 설정은 `defaults.unknown_doc_type: fail` 이므로 등록되지 않았거나 꺼진 doc_type 으로 요청하면 파싱이 실패합니다. 유형을 끌 때는 그 doc_type 을 보내는 적재 workflow 설정 변경을 담당자에게 요청합니다.
-- `doc_type`을 적지 않은 등록 블록은 모든 요청에 적용됩니다. 모니모 설정에는 이런 블록을 두지 않습니다.
-- 같은 doc_type 을 등록 블록(꺼진 블록 포함)과 규칙 파일, 또는 두 규칙 파일에 함께 등록하면 activity 실행이 설정 오류로 실패합니다.
+- 쓰지 않을 유형은 규칙 파일을 지웁니다. 모니모 설정은 `defaults.unknown_doc_type: fail` 이므로 등록되지 않은 doc_type 으로 요청하면 파싱이 실패합니다. 유형을 뺄 때는 그 doc_type 을 보내는 적재 workflow 설정 변경을 담당자에게 요청합니다.
+- `config.yaml`의 `enrichment`에 `- custom_fields:` 항목을 적으면 activity 실행이 설정 오류로 실패합니다.
+- 같은 doc_type 을 규칙 파일 여러 개가 등록하면 모두 적용됩니다.
 - 다른 doc_type을 복사해 추가한 규칙 파일은 원본과 같은 필드를 추출하므로 새 문서에 맞게 고칩니다([1.3](#13-custom_field-yaml-작성)).
 
 ### 1.6 Python 추출기
@@ -485,8 +482,8 @@ processor.py 로 할 수 없는 것도 있습니다. 새 입력 형식의 파서
 | 옵션                                                       | 하는 일                                      | 모니모 값           | 바꿀 때                                                                                  |
 | -------------------------------------------------------- | ----------------------------------------- | --------------- | ------------------------------------------------------------------------------------- |
 | `defaults.unknown_doc_type`                              | 등록되지 않은 doc\_type 요청을 어떻게 처리할지            | `fail`          | `warn`이면 경고만 남기고 일반 문서로 파싱합니다. 모니모는 `fail`을 유지합니다                                     |
+| `defaults.llm_call_failure`                              | LLM·VLM 호출이 실패했을 때 어떻게 처리할지               | `fail`          | `warn`이면 경고만 남기고 그 결과 없이 계속합니다. 모니모는 LLM 결과가 빠진 문서를 적재하지 않도록 `fail`을 유지합니다 |
 | `defaults.log_level`                                     | 로그 상세도. `5`=DEBUG \~ `1`=CRITICAL, `0`=끄기 | `4`             | 문제를 조사할 때만 `5`로 올립니다                                                                  |
-| `enrichment`의 `custom_fields`                            | doc\_type 하나에 등록 블록 하나                    | doc\_type 마다 1개 | 스튜디오의 doc\_type 추가는 규칙 파일의 `doc_type:` 줄로 등록하므로 이 목록은 고치지 않습니다([1.5](#15-doc_type-등록))   |
 | `enrichment`의 `table_text_description.enable`            | 텍스트 표에 검색용 설명을 LLM 으로 만들지                 | `true`          | 끄면 표 설명이 청크에서 빠집니다. 재적재                                                               |
 | `table_text_description.model_preset`                    | 표 설명에 쓸 모델 이름(`model_presets.yaml`의 키)    | `default`       | 모델 연결은 [부록 A.7](#a7-모델-서빙-연결-설정)을 봅니다                                                    |
 | `table_text_description.model_context_tokens` · `max_tokens` | 모델의 입력 한도와 응답 길이 상한(토큰). 한 번에 담는 표 개수를 정합니다 | `40000` · `4000` | 모델이 바뀌면 그 모델의 한도에 맞춥니다. `max_tokens`는 서빙의 출력 상한 이하로 둡니다 |
@@ -516,7 +513,7 @@ processor.py 로 할 수 없는 것도 있습니다. 새 입력 형식의 파서
 | 상황                                                       | 할 일                                              | 절                                 |
 | -------------------------------------------------------- | ------------------------------------------------ | --------------------------------- |
 | 공통 검증과 기본 청킹으로 충분하고, 유형별 차이를 custom\_field yaml 로 표현했습니다 | 수정하지 않습니다                                        | —                                 |
-| 한 문서를 여러 청크로 나누는 유형이라 일부 청크만 빠지면 내용이 끊깁니다                | `validation.by_doc_type`에 `fail_on_any: true` 추가 | [2.2](#22-doc_type별-검증-설정)        |
+| 한 문서를 여러 청크로 나누는 유형이라 일부 청크만 빠지면 내용이 끊깁니다                | `validation.by_doc_type`에 `action: fail` 추가          | [2.2](#22-doc_type별-검증-설정)        |
 | 청크를 유형별로 다르게 고쳐야 합니다(본문 교체, 일부 제외, 필드 추가)                | 청킹 `processor.py` 수정                             | [2.3](#23-processorpy-수정이-필요한-경우) |
 
 
@@ -524,7 +521,7 @@ processor.py 로 할 수 없는 것도 있습니다. 새 입력 형식의 파서
 
 ### 2.2 doc_type별 검증 설정
 
-청킹 단계는 내용이 없거나, 너무 짧거나, 같은 말이 반복되거나, 문자가 깨진 청크를 검사합니다. 모니모 설정은 걸린 청크를 적재에서 뺍니다(`action: drop`). `by_doc_type`은 이 공통 값을 doc_type 별로 덮어씁니다. 모니모 실제 설정은 다음과 같습니다.
+청킹 단계는 내용이 없거나, 너무 짧거나, 같은 말이 반복되거나, 문자가 깨진 청크를 검사합니다. 처리 방식은 세 가지입니다: `report`(기록만), `drop`(걸린 청크만 적재에서 뺌), `fail`(문서 전체 실패). 모니모 실제 설정은 다음과 같습니다.
 
 ```yaml
 # activities/chunk/config.yaml
@@ -532,16 +529,24 @@ chunking:
   validation:
     enable: true
     action: drop
+    checks:
+      char_stutter: fail
+      foreign_script: report
     by_doc_type:
-      product_slf: {fail_on_any: true}
-      product_ssf: {fail_on_any: true}
-      product_hpp: {fail_on_any: true}
-      monimo_news: {fail_on_any: true}
+      product_slf: {action: fail}
+      product_ssf: {action: fail}
+      product_hpp: {action: fail}
+      monimo_news: {action: fail}
 ```
 
-- `fail_on_any: true`는 걸린 청크가 하나라도 있으면 그 문서 전체를 실패로 처리합니다. 파일 하나가 `BIZ_ID` 하나이고 여러 청크로 나뉘는 유형(상품설명서, 관심소식)에 넣습니다. 일부만 적재되어 내용이 끊기는 것을 막습니다.
+- `action`은 기본 검사(내용 없음·너무 짧음·같은 말 반복·깨진 문자)에 걸린 청크의 처리입니다. 모니모는 걸린 청크만 뺍니다(`drop`).
+- `checks`는 검사별 처리이며 `action`과 문서 유형보다 앞섭니다. 값은 `disabled`(검사 안 함)·`report`·`drop`·`fail` 중 하나입니다.
+  - `char_stutter`: 같은 글자가 겹쳐 반복되는 깨짐(`무무무무배배배배`). 제목 줄을 포함해 보고, 문서 유형과 상관없이 문서를 실패로 처리합니다.
+  - `foreign_script`: 한국어·영어가 아닌 문자가 섞인 깨짐(`保険나이`). 실제 표본이 없어 처음에는 기록만 합니다. 처리를 중단하려면 `fail`로 바꿉니다.
+- `by_doc_type`의 `action: fail`은 걸린 청크가 하나라도 있으면 그 문서 전체를 실패로 처리합니다. 파일 하나가 `BIZ_ID` 하나이고 여러 청크로 나뉘는 유형(상품설명서, 관심소식)에 넣습니다. 일부만 적재되어 내용이 끊기는 것을 막습니다.
 - 목록에 없는 doc_type(menu·term·faq·cs\_*·monimo_event·stock_insight)은 공통 값을 쓰며, 걸린 청크만 빠집니다. 레코드 하나가 청크 하나인 유형은 이 동작이 맞습니다.
-- `by_doc_type`에서 덮어쓸 수 있는 키: `action`, `fail_on_any`, `min_chars`, `row_min_chars`, `repeat_*`, `broken_*`, `table_min_chars`, `max_chars`.
+- 한 청크가 여러 검사에 걸리면 `fail` > `drop` > `report` 순으로 무거운 처리를 따릅니다.
+- `by_doc_type`에서 덮어쓸 수 있는 키: `action`, `checks`, `limits`, `max_chars`. 판정 기준 숫자(`limits`)는 [청킹 매뉴얼](chunking_processor.md#판정-기준값)을 봅니다.
 - 검증 설정은 요청 `params`로 바꿀 수 없고, 값을 잘못 적으면 전처리기가 기동하지 않습니다.
 
 ### 2.3 processor.py 수정이 필요한 경우
@@ -567,21 +572,22 @@ chunking:
 | `chunking.chunk_size`             | 청크 하나의 최대 글자 수. `0`은 나누지 않음                                                                                                                      | `1500`                                      | 줄이면 청크가 짧아지고 개수가 늘어납니다. 재적재                   |
 | `chunking.min_chunk_size`         | 문서 단위 유형(`document`·`html`·`sections`)의 청크 크기 하한. 양수 `chunk_size`가 이 값보다 작으면 이 값으로 올립니다. `0` 이하는 보정 안 함. 행·레코드 단위 유형(`rows`·`records`)에는 적용되지 않음 | 기본값(`1024`)                              | `chunk_size`를 1024보다 작게 하려면 이 값도 함께 낮춥니다. 재적재 |
 | `chunking.tokenizer_type`         | 문서 단위 유형의 `chunk_size` 단위. `char`=글자 수, `huggingface`=토큰 수. 행·레코드 단위 유형은 항상 글자 수                                                                 | 기본값(`char`)                              | 바꾸면 같은 `chunk_size` 값의 의미가 달라집니다. 재적재         |
-| `chunking.chunk_mode`             | `split_only`=문서 구조 단위 유지, `resize_all`=작은 섹션을 합쳐 크기를 맞춤                                                                                          | 기본값(`split_only`)                         | 재적재                                           |
-| `chunking.table_as_chunk`         | 표를 본문과 섞지 않고 별도 청크로 만들지                                                                                                                          | `false`                                     | 재적재                                           |
-| `chunking.include_chunk_header`   | 청크 맨 앞에 `HEADER: <섹션 경로>` 줄을 붙일지                                                                                                                 | 기본값(`true`)                               | 끄면 검색 때 섹션 문맥이 사라집니다. 재적재                     |
+| `chunking.chunk_mode`             | `section`=섹션 단위로 나눔(제목만 있는 조각은 이웃과 합침), `section_merge`=본문이 있는 섹션도 크기까지 이어 합치고 큰 섹션은 나눔, `character`=섹션을 무시하고 글자 수로 채워 자름(`HEADER:` 줄 없음) | 기본값(`section`) | 재적재                                           |
+| `chunking.character.chunk_overlap` | `chunk_mode`가 `character`일 때 이웃 청크가 겹치는 글자 수. 음수이면 기동 실패, `chunk_size` 이상이면 0 | 기본값(`0`) | 늘리면 중복 본문이 늘어납니다. 재적재 |
+| `chunking.table_as_chunk`         | 표를 본문과 섞지 않고 별도 청크로 만들지. `character`에서는 쓰지 않음                                                                                                                          | `false`                                     | 재적재                                           |
+| `chunking.include_chunk_header`   | 청크 맨 앞에 `HEADER: <섹션 경로>` 줄을 붙일지. `character`에서는 붙지 않음                                                                                                                 | 기본값(`true`)                               | 끄면 검색 때 섹션 문맥이 사라집니다. 재적재                     |
 | `chunking.text_cleanup.mode`      | `safe`=깨진 한글·보이지 않는 문자·특수 공백 정리, `off`=정리 안 함                                                                                                    | `safe`                                      | 재적재                                           |
 | `chunking.text_cleanup.rules`     | `safe` 일 때 추가로 적용할 정규식 규칙(`line` 줄 삭제, `find`/`replace` 치환, `chunk` 청크 삭제)                                                                       | 장식용 글머리표 삭제 1건                              | 규칙을 더하면 청크 본문이 바뀝니다. 재적재                      |
 | `chunking.validation.enable`      | 이상 청크 검증을 할지                                                                                                                                     | `true`                                      | —                                             |
-| `chunking.validation.action`      | `drop`=걸린 청크를 적재에서 뺌, `report`=기록만                                                                                                               | `drop`                                      | —                                             |
-| `chunking.validation.fail_on_any` | 걸린 청크가 하나라도 있으면 문서 전체 실패                                                                                                                         | 기본값(`false`)                              | doc\_type 별로는 `by_doc_type`에 둡니다              |
-| `chunking.validation.by_doc_type` | doc\_type 별로 검증 값을 덮어씀                                                                                                                           | 상품설명서 3종·monimo\_news 에 `fail_on_any: true` | [2.2](#22-doc_type별-검증-설정)                    |
-| `chunking.validation.max_chars`   | 청크 글자 수 상한. 넘은 청크는 버리지 않고 기록만 함. `0`은 검사 안 함                                                                                                     | 기본값(`0`)                                  | embedding 모델 입력 한도보다 조금 낮게 둡니다                |
+| `chunking.validation.action`      | 기본 검사에 걸린 청크의 처리. `report`=기록만, `drop`=그 청크를 적재에서 뺌, `fail`=문서 전체 실패                                                                         | `drop`                                      | —                                             |
+| `chunking.validation.checks`      | 검사별 처리(`disabled`·`report`·`drop`·`fail`). `action`·문서 유형보다 앞섬                                                                                | `char_stutter: fail`, `foreign_script: report` | `foreign_script`를 중단으로 바꿀 때 `fail`로 고칩니다     |
+| `chunking.validation.by_doc_type` | doc\_type 별로 검증 값을 덮어씀                                                                                                                           | 상품설명서 3종·monimo\_news 에 `action: fail`      | [2.2](#22-doc_type별-검증-설정)                    |
+| `chunking.validation.max_chars`   | 청크 글자 수 상한. 넘은 청크는 버리지 않고 기록만 함. 적지 않으면 검사 안 함                                                                                                   | 적지 않음                                     | embedding 모델 입력 한도보다 조금 낮게 둡니다                |
 | `output.table_format`             | 청크 본문에 표를 넣는 형식(`html`·`markdown`·`auto`)                                                                                                        | `markdown`                                  | 파싱 config.yaml 의 같은 키와 같은 값으로 둡니다. 재적재        |
 | `output.table_row_serialization`  | 병합 셀이 있는 표 뒤에 `컬럼=값 | 컬럼=값` 행 문장을 덧붙일지                                                                                                           | `true`                                      | 재적재                                           |
 
 
-- `chunk_size`·`chunk_mode`·`table_as_chunk`·`include_chunk_header`는 요청 `params`로 온 값이 config.yaml 보다 우선합니다. `text_cleanup`의 정규식이 잘못되었거나 모르는 키가 있으면 요청 때가 아니라 기동 때 실패합니다.
+- `chunk_size`·`chunk_mode`·`table_as_chunk`·`include_chunk_header`는 요청 `params`로 온 값이 config.yaml 보다 우선합니다. `character.chunk_overlap`은 요청 `params`의 `character_chunk_overlap`이 우선합니다. `text_cleanup`의 정규식이 잘못되었거나 모르는 키가 있으면 요청 때가 아니라 기동 때 실패합니다.
 
 ---
 
@@ -593,26 +599,25 @@ chunking:
 
 | 증상                                                                  | 원인과 조치                                                                                                                                  |
 | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` (`PARSE_P002`)             | 등록이 없거나, `enable: false`이거나, doc\_type 문자열이 다릅니다. 기본 제공 설정은 `defaults.unknown_doc_type: fail`이라 재시도 없이 실패합니다. 메시지에 나온 설정 파일을 고칩니다       |
-| `doc_type`을 지정하지 않았는데 custom\_fields가 동작함                           | 등록 블록에 `doc_type` 키가 없으면 모든 요청에 적용됩니다                                                                                                   |
+| `doc_type=… 에 맞는 custom_fields 등록이 없습니다` (`PARSE_P002`)             | 규칙 파일 맨 위의 `doc_type:` 이 없거나 doc\_type 문자열이 다릅니다. 기본 제공 설정은 `defaults.unknown_doc_type: fail`이라 재시도 없이 실패합니다. 메시지에 나온 설정 파일을 고칩니다       |
 | 필드 없이 `doc_type`만 붙거나 metadata가 비어 있음                               | `unknown_doc_type: warn`에서 일치하는 등록이 없어 doc\_type 설정 없이 일반 문서로 처리되었습니다                                                                   |
 | 청킹의 doc\_type별 검증·설정이 적용되지 않음                                       | 청킹 호출에 `doc_type`이 없습니다. 스튜디오 단건 실행에서는 청킹 단계에도 doc_type이 지정되었는지 확인하고, 적재 workflow는 담당자에게 확인합니다([2.1](#21-청킹-단계-수정이-필요한-경우))                       |
 | `… custom_fields config 없음: …`                                      | `config_file`은 파싱 `config.yaml`과 같은 폴더 기준입니다. 파일명만 적습니다                                                                                 |
 | 특정 필드만 계속 `null`                                                    | `alias`·CSS selector가 입력 표기와 다르거나, `llm`의 `out` 이름과 프롬프트가 내놓는 JSON 키가 다릅니다. `rows`·`records`에서 `require`에 넣지 않은 필드는 경고 없이 `null`이 됩니다   |
 | 엉뚱한 값이 실림                                                           | 같은 이름 key가 얕은 곳과 깊은 곳에 모두 있으면 얕은 쪽이 우선합니다([부록 A.4](#a4-별칭이-값을-찾는-범위))                                                                   |
-| 레코드 일부가 경고 없이 빠짐                                                    | `records_at`은 이름이 맞는 첫 배열만 찾습니다. 여러 부모 아래 나뉜 배열은 `edit_input`에서 합칩니다([부록 B.4](#b4-훅-메소드))                                               |
+| 레코드 일부가 경고 없이 빠짐                                                    | `records_at`은 이름이 맞는 첫 배열만 찾습니다. 여러 부모 아래 나뉜 배열은 `edit_input`에서 합칩니다([부록 B.4](#b4-훅-메소드)). 찾은 값이 객체이면 그 안의 dict 배열과 객체 자체(바로 아래 값만 셈) 중 `alias`가 더 많이 맞는 쪽을 레코드로 씁니다(동점이면 안쪽 배열, 같은 이름의 다른 key는 합치지 않습니다)                                               |
 | 부모 객체의 값이 모든 레코드에서 기본값                                              | `alias`는 레코드 안에서만 찾습니다. `edit_input`에서 부모 값을 레코드에 넣습니다                                                                                  |
 | `body.fields`의 필드가 본문에서 빠짐                                          | `fields`와 `llm` 어디에서도 값을 만들지 않는 필드입니다. `llm`을 주석 처리하고 그 출력 필드를 남긴 경우가 가장 흔합니다                                                           |
 | `values`에 없는 값이 그대로 실림                                              | `values`는 목록에 없는 값을 바꾸지 않고 경고만 남깁니다                                                                                                     |
-| 보강 단계가 실패했는데 activity는 성공                                           | 기본 `error_policy: lenient`입니다. 검증은 `strict`로 실행합니다([부록 A.6](#a6-params와-activity-인자))                                                                    |
+| 보강 단계가 실패했는데 activity는 성공                                           | 기본 `error_policy: lenient`입니다. LLM 호출 실패는 모니모 설정(`defaults.llm_call_failure: fail`)이 실패로 처리하므로, 성공했다면 빈 응답·응답 해석 실패처럼 호출 실패가 아닌 경우입니다. 검증은 `strict`로 실행합니다([부록 A.6](#a6-params와-activity-인자)) |
 | 모든 레코드가 제외됨                                                         | `skipped N/N records (missing required)` 경고를 확인합니다. 입력 표기가 `alias`와 달라 `require` 필드가 `null`이 되었습니다                                      |
 | `필수 Excel 컬럼 매핑 실패`                                                 | rows의 `require` 필드와 일치하는 컬럼이 없습니다. 메시지의 `available` 목록과 `alias`를 대조합니다. 값만 빈 행은 제외만 됩니다                                                 |
 | sections가 0건으로 성공                                                   | `source.on_missing: skip`이면 필수값이 없을 때 경고 후 0건을 반환합니다(기본 `error`는 실패)                                                                    |
 | 본문이 빈 레코드가 빠짐                                                       | 정상입니다. 빈 vector 적재를 막기 위해 경고와 함께 제외합니다                                                                                                  |
 | 청크 수가 예상보다 적음                                                       | 청크 검증(`action: drop`)에서 제외되었습니다. 결과 요약의 `chunk_validation`과 로그의 `[chunk_validation]`을 확인합니다([2.2](#22-doc_type별-검증-설정))                 |
-| 청크가 1개만 나오거나 합쳐지지 않음                                                | `chunk_size: 0`은 병합·분할을 끄는 값입니다. 충분히 큰 양수를 쓰고, 필요하면 `chunk_mode: resize_all`을 지정합니다                                                     |
+| 청크가 1개만 나오거나 합쳐지지 않음                                                | `chunk_size: 0`은 병합·분할을 끄는 값입니다. 충분히 큰 양수를 쓰고, 필요하면 `chunk_mode: section_merge`을 지정합니다                                                     |
 | xlsx가 행별로 나뉘지 않음, `doc_type`도 붙지 않음                                 | 일치하는 매핑이 없어 일반 표로 처리되었습니다. 등록과 `alias`를 확인합니다                                                                                           |
-| `등록되지 않은 transforms 변환기: …` · `… 에 쓸 수 없는 인자입니다: …`                 | 기본 제공 10종([부록 A.2](#a2-transform-10종))과 `tb.register_transform`으로 등록한 것만 씁니다([부록 B.5](#b5-값-변환기와-llm-응답-파서)). 인자는 메시지의 `쓸 수 있는 인자`와 대조합니다 |
+| `등록되지 않은 transforms 변환기: …` · `… 에 쓸 수 없는 인자입니다: …`                 | 기본 제공 11종([부록 A.2](#a2-transform-11종))과 `tb.register_transform`으로 등록한 것만 씁니다([부록 B.5](#b5-값-변환기와-llm-응답-파서)). 인자는 메시지의 `쓸 수 있는 인자`와 대조합니다 |
 | `… 의 DocumentProcessor 는 ParserCore 를 상속해야 합니다` (청킹은 `ChunkerCore`) | `processor.py`의 클래스 이름이나 부모 클래스를 바꿨습니다. 되돌립니다                                                                                           |
 | `파서 결과에 document/elements 가 없습니다`                                   | 파싱 `edit_output`이 `document` 또는 `elements`를 지웠습니다                                                                                       |
 | 파싱 결과가 Docling 문서가 아니라 `elements`임                                  | `elements` 목록으로 반환되는 정상 결과일 수 있습니다. 적용된 매핑과 `output.format`을 확인합니다([부록 C.1](#c1-파싱-결과-형식))                                              |
@@ -654,6 +659,7 @@ custom_field yaml의 키별 지원 범위입니다. 작성 방법은 [1.3](#13-c
 | 구분자 텍스트 원천                                          | `source.pre.delimited`                                                             | ⚠ 무시      | ✔         | ⚠ 무시     | ⚠ 무시                          | ⚠ 무시         |
 | 필수값(빈 값 제외)                                         | `require.fields`                                                                   | ✔ 건별      | ✔ 건별      | ✔ 문서 전체  | ✗                             | ✗            |
 | 값 기반 제외                                             | `filter`                                                                           | ✔         | ✔         | ✗        | ✗                             | ✗            |
+| 목록 값 줄이기                                           | `keep`                                                                             | ✔         | ✔         | ✗        | ✗                             | ✗            |
 | 필드별 LLM 생성                                          | `llm:`                                                                             | ✔ 행별      | ✔ 레코드별    | ✔ 문서 1회  | ✔ 문서 1회(Python 추출기와 함께 사용 불가) | ✗            |
 | doc\_type별 표 설명 덮어쓰기                                | `table_text_description`                                                           | ✔         | ✔         | ✔        | ✔                             | ✔            |
 
@@ -681,7 +687,7 @@ custom_field yaml의 키별 지원 범위입니다. 작성 방법은 [1.3](#13-c
 | `source.records_at` · `on_missing` · `merge_rows`          | `records` · `missing_policy` · `row_merge`                                                                 |
 
 
-### A.2 transform 10종
+### A.2 transform 11종
 
 여러 개를 이어 붙일 수 있으며, 인자가 있으면 `{name: ...}` 형태로 적습니다. 잘못된 이름·인자·정규식은 기동할 때 실패합니다.
 
@@ -695,6 +701,7 @@ custom_field yaml의 키별 지원 범위입니다. 작성 방법은 [1.3](#13-c
 | `hash`          | `length` 기본 `16`, `prefix` 기본 `""`                 | SHA-1 16진 코드                                                                |
 | `to_int`        | `on_error` 기본 `null`                               | 정수로 변환. 쉼표·단위는 무시하고, 소수(`1.5`)나 숫자가 둘 이상(`3~5개`)이면 `on_error`               |
 | `percent`       | —                                                  | `"분자/분모"`를 백분율 정수(내림)로 바꿉니다(`"10600/25000"` → `42`). `template`으로 결합한 값에 겁니다. 분모가 0이면 `null` |
+| `unique`        | —                                                  | 목록에서 같은 값을 지웁니다. 처음 나온 순서를 유지하고, 목록이 아니면 그대로 둡니다(`["A", "B", "A"]` → `["A", "B"]`) |
 | `truncate`      | `length` 필수, `suffix` 기본 `""`                      | 길이 자르기(적재 컬럼 길이 맞춤)                                                         |
 | `to_text`       | —                                                  | JSON/HTML/평문을 자동 판별해 평문으로 바꿉니다                                              |
 | `to_json`       | `on_scalar`(`wrap`/`drop`), `key` 기본 `value`       | 유효한 JSON 문자열로 맞춥니다. 체인 맨 뒤에 두며 `body.*`·`pack`과 함께 쓸 수 없습니다                 |
@@ -726,6 +733,8 @@ fields:
 
 
 값으로 거르는 `filter`는 별도 블록이며 연산자는 `in`과 `not_in`입니다(예: `- {field: DEL_YN, not_in: [Y]}`).
+
+목록 값을 줄이는 `keep`은 필드에 적습니다(예: `keep: [S000000293, S000025345]`). 적은 값만 원천 순서대로 남기고, 단일 값도 목록으로 적재하며, 남은 값이 없으면 그 레코드를 적재하지 않습니다. 상품을 조건으로 고를 때는 `filter`, 목록 값을 줄일 때는 `keep`을 씁니다. 파일의 모든 레코드가 `filter`·`keep`으로 빠지면 오류 없이 빈 결과와 경고 로그로 끝납니다. `keep`을 비워 두면(`keep: []`) 값을 줄이지 않고 전부 적재합니다.
 
 ### A.4 별칭이 값을 찾는 범위
 
@@ -806,9 +815,10 @@ activity 인자는 pipeline 워커가 만들어 보냅니다. 오류 메시지�
 | activity | 자주 쓰는 `params` 키 |
 |---|---|
 | parse | `doc_type`, `toc`, `img_desc`, `chart_desc`, `table_desc`, `table_refine`, `table_text_desc`, `ocr_mode`, `doc_summary`, `save_images`, `use_hwp_sdk` |
-| chunk | `doc_type`, `chunk_size`, `chunk_mode`, `include_chunk_header`, `chunk_overlap`, `table_as_chunk`, `export_to_html`, `table_format`, `compact_tables`, `table_row_serialization`, `text_cleanup`, `short_chunk_size` |
+| chunk | `doc_type`, `chunk_size`, `chunk_mode`, `include_chunk_header`, `chunk_overlap`, `character_chunk_overlap`, `table_as_chunk`, `export_to_html`, `table_format`, `compact_tables`, `table_row_serialization`, `text_cleanup`, `short_chunk_size` |
 | 공통 | `llm_cache`, `workflow_id`(pipeline 워커가 넣습니다), `error_policy`, `request_deadline` — 동작 조건은 아래 표 |
 
+- `chunk_overlap`은 `elements` 형식의 문자 기반 분할에만, `character_chunk_overlap`은 `chunk_mode`가 `character`일 때만 적용됩니다.
 - 0/1 플래그 형태의 키는 `0`/`1`과 `true`/`false`를 모두 받습니다.
 - 로그 수준은 config.yaml의 `defaults.log_level`로만 정합니다. `params`의 `log_level`은 반영되지 않습니다.
 - `table_desc`는 이미지 표 설명, `table_text_desc`는 텍스트 표 설명의 스위치입니다. 모니모 설정에서 켜져 있는 것은 텍스트 표 설명이므로, 호출별로 표 설명 LLM 호출을 끄려면 `table_text_desc: 0`을 사용합니다.
@@ -818,7 +828,7 @@ activity 인자는 pipeline 워커가 만들어 보냅니다. 오류 메시지�
 
 | 키                  | 값                    | 동작                                                                                                                                                               |
 | ------------------ | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `error_policy`     | `strict` / `lenient` | 기본 `lenient`. 보강 단계 예외를 `strict`는 실패로, `lenient`는 경고 후 계속 처리합니다. 훅 예외와 파싱 실패에는 적용되지 않으며, 표 설명의 실행 중 실패는 `strict`에서도 건너뜁니다                                        |
+| `error_policy`     | `strict` / `lenient` | 기본 `lenient`. 보강 단계 예외를 `strict`는 실패로, `lenient`는 경고 후 계속 처리합니다. 훅 예외와 파싱 실패에는 적용되지 않습니다. LLM 호출 실패는 모니모 설정 `defaults.llm_call_failure: fail` 이 요청 값과 관계없이 실패로 처리합니다(`lenient` 로 해제 불가) |
 | `request_deadline` | 양수 초                 | 워커와 단건 실행의 처리 시간 제한. 넘기면 `type: timeout`으로 실패합니다(재시도 대상)                                                                                                         |
 | `llm_cache`        | `0` / `1`            | 파싱 단계의 LLM 응답 캐시. 실행 환경에 캐시 저장소가 설정되어 있고 `params.workflow_id`가 함께 전달될 때만 동작하며, 아니면 경고 없이 캐시를 쓰지 않습니다. 사용 가능 여부는 담당자에게 확인합니다 |
 
@@ -907,7 +917,7 @@ activity 설정은 모델 접속 정보를 `model_preset: <이름>`으로 참조
 ```
 
 - 키에 쓰는 doc_type도 해당 parse activity에 등록되어 있어야 합니다. 청킹의 `CONFIG_BY_DOC_TYPE`은 청킹 호출에 `params.doc_type`이 넘어올 때만 적용되며([2.1](#21-청킹-단계-수정이-필요한-경우)), 받은 doc_type 문자열을 그대로 비교하므로 공백 없는 소문자로 넘깁니다.
-- 값의 키는 설정 경로의 점 표기 또는 같은 뜻의 요청 파라미터 이름입니다. 자주 쓰는 키: 파싱 `enrichment.table_description.enable`(`table_desc`), `enrichment.image_description.enable`(`img_desc`), `enrichment.doc_summary.enable`(`doc_summary`), `enrichment.toc.enable`(`toc`), `ocr.ocr_mode`, `table_text_desc` / 청킹 `chunking.chunk_size`, `chunking.chunk_mode`, `chunking.recursive.chunk_overlap`, `chunking.short_chunk_size`.
+- 값의 키는 설정 경로의 점 표기 또는 같은 뜻의 요청 파라미터 이름입니다. 자주 쓰는 키: 파싱 `enrichment.table_description.enable`(`table_desc`), `enrichment.image_description.enable`(`img_desc`), `enrichment.doc_summary.enable`(`doc_summary`), `enrichment.toc.enable`(`toc`), `ocr.ocr_mode`, `table_text_desc` / 청킹 `chunking.chunk_size`, `chunking.chunk_mode`, `chunking.recursive.chunk_overlap`, `chunking.character.chunk_overlap`, `chunking.short_chunk_size`.
 - 지원하지 않는 점 표기 키는 경고 후 건너뛰고, 점이 없는 이름은 오타여도 경고 없이 무시될 수 있습니다. 엔드포인트·프롬프트·`min_chunk_size`처럼 기동할 때 읽는 값은 `config.yaml`에서 바꿉니다.
 
 doc_type만으로 구분할 수 없는 조건은 `config_by_condition(job)`에서 같은 형식의 dict를 반환합니다(빈 dict이면 변경 없음).
@@ -1106,8 +1116,8 @@ element의 공통 키는 `{category, content, coordinates, id, page}`이며, 행
 
 | 구분    | Docling 문서 형식                                | 행·레코드형                                    | 그 밖의 `elements` 형식                 |
 | ----- | -------------------------------------------- | ----------------------------------------- | ---------------------------------- |
-| 분할 방식 | 문서 구조 기반 분할·병합                               | 기본 1건당 1청크. `body.split`이면 긴 본문 분할        | 문자 기반 분할                           |
-| 관련 설정 | `chunk_size`, `chunk_mode`, `min_chunk_size` | `body.split`, `body.repeat`, `chunk_size` | `chunking.recursive.chunk_overlap` |
+| 분할 방식 | 문서 구조 기반 분할·병합. `character`이면 글자 수로 채워 자름 | 기본 1건당 1청크. `body.split`이면 긴 본문 분할        | 문자 기반 분할                           |
+| 관련 설정 | `chunk_size`, `chunk_mode`, `min_chunk_size`, `chunking.character.chunk_overlap` | `body.split`, `body.repeat`, `chunk_size` | `chunking.recursive.chunk_overlap` |
 
 
 섹션 인식은 정규식이 아니라 파싱 단계가 붙인 제목 라벨로 판정합니다. "제N조" 같은 텍스트 패턴으로 나누어야 하면
@@ -1179,7 +1189,7 @@ activity는 결과 JSON을 `output_ref` 위치에 저장하고, 호출한 쪽에
 | `processor.py`             | activity 폴더의 처리기 파일. 진입 클래스는 `DocumentProcessor`이며 확장 지점을 제공합니다                                          |
 | 훅 메소드(hook)                | `processor.py`에서 오버라이드하면 정해진 시점에 호출되는 메소드(`edit_input` · `edit_document` · `edit_chunk` · `edit_output`) |
 | toolbox (`tb`)             | 훅에서 사용할 수 있는 기능 모음. 값 변환기 등록(`tb.register_transform`)과 청크 메타데이터·통계 수정 등에 사용합니다                           |
-| doc\_type                  | activity 인자 `params`의 문서 유형 문자열. parse activity의 등록 블록 또는 규칙 파일에 선언한 `doc_type`과 비교합니다                   |
+| doc\_type                  | activity 인자 `params`의 문서 유형 문자열. parse activity의 규칙 파일에 선언한 `doc_type`과 비교합니다                   |
 | custom\_fields · 필드        | doc\_type별 값 추출 설정(`custom_field_*.yaml`)과 그 `fields`에 선언한 값. 필드는 청크에 실리며, DB 적재는 적재 매핑과 컬럼을 확인합니다       |
 | enrichment                 | 파싱 결과에 필드·요약·설명을 덧붙이는 단계                                                                                 |
 | docling                    | 문서 파싱 엔진. wheel로 설치되어 있어 직접 수정할 수 없습니다                                                                   |

@@ -15,7 +15,7 @@ from genon.preprocessor.processing.common.markdown_export import export_markdown
 from genon.preprocessor.processing.common.model_params import build_chat_payload, resolve_headers
 
 from .base_enricher import BaseEnricher
-from .llm_response import post_chat_completion
+from .llm_response import aborts_on_llm_failure, post_chat_completion
 from .prompt_template import PromptTemplate
 
 _log = logging.getLogger(__name__)
@@ -322,6 +322,8 @@ class MetadataEnricher(BaseEnricher):
                 else parsed
             )
         except Exception as e:
+            if aborts_on_llm_failure(e):
+                raise   # LLM 호출 실패 중단 모드 — 처리기의 단계 오류 처리가 사유 코드를 붙인다
             _log.warning(f"metadata 추출 실패: {e}")
             normalized = empty_result
 

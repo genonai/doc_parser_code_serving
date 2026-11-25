@@ -215,11 +215,11 @@ chunking:
   # 우선순위: 호출 kwargs 의 chunk_size > 아래 chunk_size. 0 = 크기 기반 분할 안 함(순수 섹션 분할).
   # 0 초과 시 최소 1024 로 보정된다(그보다 작은 값은 문맥이 과도하게 잘림).
   chunk_size: 10000
-  # 청킹 모드. split_only(기본) = 구조 기반 청크를 유지하고 chunk_size 를 초과하는 청크만 분할(작은 청크는 병합하지 않음).
-  #            resize_all = 모든 청크를 chunk_size 에 맞게 병합/분할(작은 청크도 인접 청크와 합쳐 채움).
+  # 청킹 모드. section(기본) = 구조 기반 청크를 유지하고 chunk_size 를 초과하는 청크만 분할(작은 청크는 병합하지 않음).
+  #            section_merge = 모든 청크를 chunk_size 에 맞게 병합/분할(작은 청크도 인접 청크와 합쳐 채움).
   # 우선순위: 호출 kwargs 의 chunk_mode > 아래 chunk_mode.
-  # 런타임 kwarg 는 문자열('split_only'/'resize_all') 외에 0/1 플래그도 수용한다(0=split_only, 1=resize_all).
-  chunk_mode: split_only
+  # 런타임 kwarg 는 문자열('section'/'section_merge') 외에 0/1 플래그도 수용한다(0=section, 1=section_merge).
+  chunk_mode: section
   # 토큰 수 계산 방식. "char"(default)=문자 수 기준 | "huggingface"=HF 토크나이저 기준
   tokenizer_type: "char"
   # 청킹용 토크나이저(huggingface 모드에서만 사용). tokenizer_path 존재 시 그 경로, 없으면 tokenizer_id(HF) 폴백
@@ -862,12 +862,12 @@ chunking:
 | `1024` | 중간 병합 | 일반 RAG |
 | `2000` | 큰 단위 병합 | 문맥 연속성 중시 |
 
-**청킹 모드 (`chunk_mode`)** — `chunk_size` 초과 청크의 처리 방식을 고릅니다. yaml `chunking.chunk_mode` 또는 호출 kwargs `chunk_mode` 로 지정합니다(우선순위 kwargs > yaml > `split_only`). 런타임 kwarg 는 문자열 또는 `0`/`1` 플래그를 받습니다.
+**청킹 모드 (`chunk_mode`)** — `chunk_size` 초과 청크의 처리 방식을 고릅니다. yaml `chunking.chunk_mode` 또는 호출 kwargs `chunk_mode` 로 지정합니다(우선순위 kwargs > yaml > `section`). 런타임 kwarg 는 문자열 또는 `0`/`1` 플래그를 받습니다.
 
 | `chunk_mode` | kwarg 값 | 동작 |
 |----|----|------|
-| `split_only`(기본) | `"split_only"` 또는 `0` | 구조 기반 청크를 유지하고 `chunk_size` 초과 청크만 분할(작은 청크는 병합하지 않음) |
-| `resize_all` | `"resize_all"` 또는 `1` | 모든 청크를 `chunk_size` 에 맞게 병합/분할(작은 청크도 인접 청크와 합쳐 채움) |
+| `section`(기본) | `"section"` 또는 `0` | 구조 기반 청크를 유지하고 `chunk_size` 초과 청크만 분할(작은 청크는 병합하지 않음) |
+| `section_merge` | `"section_merge"` 또는 `1` | 모든 청크를 `chunk_size` 에 맞게 병합/분할(작은 청크도 인접 청크와 합쳐 채움) |
 
 > `chunk_mode` 는 `chunk_size > 0` 일 때만 의미가 있습니다. `chunk_size=0`(순수 섹션 분할)이면 병합·초과분할이 모두 스킵되어 두 모드가 동일하게 동작합니다.
 
@@ -1194,6 +1194,8 @@ class GenOSVectorMeta(BaseModel):
   strict 는 캐시가 선행돼야 실용적입니다(캐시 없이 하드페일하면 재시도마다 성공분 재과금).
   단, **TOC/문서 품질검사(base enrichment)의 LLM 실패는 정책과 무관하게 하드페일**(`stage="enrichment"`, 기존 동작);
   `error_policy` 는 이후 enricher(doc_summary/image/table/metadata/custom_fields) 실패를 관장합니다.
+  이 파사드는 parse activity 설정 `defaults.llm_call_failure` 를 읽지 않으며, 그 설정이 넓힌 중단 범위(표 설명 등)도
+  적용되지 않습니다.
 - **`request_deadline`**: 요청 전체 상한과 함께 개별 LLM 호출 timeout 도 좁혀 행잉 대신 timeout 응답을 돌려줍니다.
   (요청 상한은 await 경계 기준 — 완전 동기 파싱 단계는 선점되지 않을 수 있고, LLM 행잉은 per-call timeout 으로 방어.)
 

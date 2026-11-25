@@ -205,10 +205,10 @@ chunking:
   # 우선순위: 호출 kwargs 의 chunk_size > 아래 chunk_size. 0 = 크기 기반 분할 안 함.
   # 0 초과 시 최소 1024 로 보정된다.
   chunk_size: 10000
-  # 청킹 모드. split_only(기본) = 구조 기반 청크 유지, chunk_size 초과 청크만 분할(작은 청크 병합 안 함).
-  #            resize_all = 모든 청크를 chunk_size 에 맞게 병합/분할. 우선순위: kwargs.chunk_mode > 아래.
-  # 런타임 kwarg 는 문자열('split_only'/'resize_all') 외에 0/1 플래그도 수용한다(0=split_only, 1=resize_all).
-  chunk_mode: split_only
+  # 청킹 모드. section(기본) = 구조 기반 청크 유지, chunk_size 초과 청크만 분할(작은 청크 병합 안 함).
+  #            section_merge = 모든 청크를 chunk_size 에 맞게 병합/분할. 우선순위: kwargs.chunk_mode > 아래.
+  # 런타임 kwarg 는 문자열('section'/'section_merge') 외에 0/1 플래그도 수용한다(0=section, 1=section_merge).
+  chunk_mode: section
   # 토큰 수 계산 방식. "char"(default)=문자 수 기준 | "huggingface"=HF 토크나이저 기준
   tokenizer_type: "char"
   # 청킹용 토크나이저(huggingface 모드에서만 사용). tokenizer_path 존재 시 그 경로, 없으면 tokenizer_id(HF) 폴백
@@ -747,28 +747,24 @@ convert 의 기본 변환 대상은 `created_date`이며 `authors` 등 나머지
 - refine 통합 프롬프트는 `[[[TABLE_HTML]]]` / `[[[TABLE_SUMMARY]]]` 마커로 재구성 HTML 과 요약을 한 응답에 함께 출력하도록 강제합니다.
 - `table_description` 은 별도 LLM 호출을 유발하므로 기본 off 입니다.
 
-#### custom_fields (복수 허용)
+#### custom_fields (doc_type 별 규칙 파일)
 
-사용자 정의 필드를 LLM 으로 추출합니다. **여러 항목을 동시에 둘 수 있으며**, 각 항목은 독립 LLM 호출 후 결과를 metadata 에 병합합니다. 설정 방식은 두 가지입니다.
+사용자 정의 필드를 문서유형(doc_type)마다 추출합니다. 규칙은 이 설정과 **같은 폴더**의 `custom_field_<doc_type>.yaml` 에 두고, 그 파일 맨 위의 `doc_type: <이름>` 한 줄이 등록입니다. 파일을 지우면 등록이 빠집니다. 이 설정 파일의 `enrichment` 에는 `custom_fields` 항목을 적지 않습니다(적으면 기동 실패).
 
 ```yaml
-# (A) 인라인: 항목 안에 프롬프트(.md 파일 참조)/필드를 직접 작성
-- custom_fields:
-    enable: true
-    model_preset: default
-    pages: [1]
-    output_fields: [authors]
-    parser: { type: json }     # json | python
-    system_prompt_file: prompt_custom_fields_authors_system.md  # 생략 시 built-in default
-    user_prompt_file: prompt_custom_fields_authors_user.md      # 파일 안에서 {{raw_text}} 치환
-
-# (B) config_file: 별도 yaml 파일로 분리 (그 yaml 안에서도 *_file 사용 가능)
-- custom_fields:
-    enable: true
-    config_file: custom_field_authors.yaml   # resource_path 는 이 yaml 디렉토리로 자동 주입
+# custom_field_authors.yaml
+schema: v2
+doc_type: authors
+source: {kind: document}
+llm:
+  - out: [authors]
+    endpoint: {model_preset: default}
+    prompt:
+      system_file: prompt_custom_fields_authors_system.md
+      user_file: prompt_custom_fields_authors_user.md   # 파일 안에서 {{raw_text}} 치환
 ```
 
-> `custom_fields` 항목은 `enable: true` 이고 옵션이 비어있지 않을 때만 활성화됩니다. `resource_path` 를 지정하지 않으면 config 파일이 위치한 디렉토리가 자동 주입되어, `config_file` 및 `*_file` 상대 경로 해석에 사용됩니다. system 프롬프트(파일·inline 모두) 미지정 시 built-in default 가 사용됩니다.
+> 등록은 폴더 단위라, 이 폴더를 읽는 모든 processor 설정에 적용됩니다. 같은 doc_type 을 규칙 파일 여러 개가 등록하면 모두 적용됩니다. `config_file` 안의 `*_file` 상대 경로는 이 폴더 기준으로 해석합니다. 규칙 파일 형식은 `templates/custom_field_TEMPLATE_*.yaml` 을 봅니다.
 
 #### 프롬프트 파일 분리 & 변수 치환
 
@@ -923,12 +919,12 @@ filename: 보고서.pdf
 | **메모리 절감** | `pdf_pipeline.generate_page_images: false`, `images_scale: 1` |
 | **레이아웃 인프라 없음** | `layout.layout_model_type: "docling_layout"` |
 | **청크 크기 조정** | `chunking.chunk_size` (yaml) 또는 호출 kwargs `chunk_size`. 우선순위 kwargs > yaml > 0 |
-| **청킹 모드(작은 청크 병합)** | `chunking.chunk_mode` (yaml) 또는 호출 kwargs `chunk_mode`. `split_only`(기본)/`resize_all`, kwarg 는 `0`/`1` 도 수용 |
+| **청킹 모드(작은 청크 병합)** | `chunking.chunk_mode` (yaml) 또는 호출 kwargs `chunk_mode`. `section`(기본)/`section_merge`, kwarg 는 `0`/`1` 도 수용 |
 | **청크 크기 계산 방식** | `chunking.tokenizer_type`: `char`(기본)=문자 수 기준 / `huggingface`=HF 토큰 수 기준 |
 
 > **청크 크기**: convert 경로의 청크 크기는 `split_documents()` → `GenosSmartChunker(max_tokens=...)` 로 결정됩니다. 값은 호출 kwargs `chunk_size` 가 우선이고, 없으면 yaml `chunking.chunk_size`, 둘 다 없으면 `0`(크기 기반 분할 안 함)입니다. 크기 단위는 `chunking.tokenizer_type` 으로 정해집니다(`char`=문자 수, `huggingface`=HF 토큰 수). char 모드에서는 HF 토크나이저를 로드하지 않습니다.
 >
-> **청킹 모드(`chunk_mode`)**: `chunk_size` 초과 청크의 처리 방식입니다. `split_only`(기본)=구조 기반 청크 유지·초과 청크만 분할(작은 청크 병합 안 함) / `resize_all`=모든 청크를 `chunk_size` 에 맞게 병합·분할. 우선순위 kwargs > yaml > `split_only` 이고, 런타임 kwarg 는 문자열(`"split_only"`/`"resize_all"`) 또는 `0`/`1`(0=split_only, 1=resize_all)을 받습니다. `chunk_size=0` 이면 병합·초과분할이 스킵되어 두 모드가 동일합니다.
+> **청킹 모드(`chunk_mode`)**: `chunk_size` 초과 청크의 처리 방식입니다. `section`(기본)=구조 기반 청크 유지·초과 청크만 분할(작은 청크 병합 안 함) / `section_merge`=모든 청크를 `chunk_size` 에 맞게 병합·분할. 우선순위 kwargs > yaml > `section` 이고, 런타임 kwarg 는 문자열(`"section"`/`"section_merge"`) 또는 `0`/`1`(0=section, 1=section_merge)을 받습니다. `chunk_size=0` 이면 병합·초과분할이 스킵되어 두 모드가 동일합니다.
 >
 > **`chunk_overlap`**(langchain 경로 전용): docling 이 아닌 **langchain fallback**(`RecursiveCharacterTextSplitter`) 으로 청킹하는 포맷에서만 `chunk_size` 와 함께 인접 청크 간 겹침 문자 수를 지정합니다. docling 청킹 경로에는 적용되지 않습니다.
 >

@@ -367,13 +367,16 @@ def _product_slf_round_trip() -> list[dict]:
             Path(__file__).resolve().parents[2]
             / "sample_files" / "monimo" / "monimo_product_slf_sample.md"
         )
-        payload = await parser(request, str(source), doc_type="product_slf", log_level=3)
+        # 표 설명은 끈다 — 모니모 preset 주소가 자리표시값(<…>)이라 호출이 실패하고, 모니모 설정
+        # defaults.llm_call_failure: fail 이 그 실패로 parse 를 중단한다.
+        payload = await parser(request, str(source), doc_type="product_slf", log_level=3,
+                               table_text_desc=0)
         vectors = await ChunkProcessor()(
             request,
             str(source),
             document=payload,
             chunk_size=10000,
-            chunk_mode="split_only",
+            chunk_mode="section",
             include_chunk_header=0,
         )
         return [vector.model_dump() for vector in vectors]

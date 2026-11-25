@@ -29,7 +29,7 @@ from genon.preprocessor.processing.enrichment import config_schema as cs
 from .base_enricher import BaseEnricher
 from . import file_source, html_select, plugin_loader
 from .field_transforms import store_metadata_in_document
-from .llm_response import llm_failure_reason, post_chat_completion
+from .llm_response import aborts_on_llm_failure, llm_failure_reason, post_chat_completion
 from .prompt_files import read_prompt_file
 from .prompt_template import PromptTemplate
 from .table_description import TABLE_TEXT_DESCRIPTION_PROVENANCE, TableDescriptionExtractor
@@ -1207,10 +1207,12 @@ class CustomFieldsEnricher(BaseEnricher):
         띄운다(`concurrency`).
 
         실패를 돌려주는 기준은 "하나라도 건졌는가"다. 표 설명은 부가 기능인데 배치 하나의
-        실패를 그대로 올리면 error_policy=strict 에서 문서 전체가 실패해, 이미 만들어 둔
-        나머지 배치의 설명까지 함께 버려진다. 그래서 부분 성공은 경고만 남기고 성공분으로
+        실패를 그대로 올리면 문서 전체가 실패해, 이미 만들어 둔 나머지 배치의 설명까지
+        함께 버려진다. 그래서 부분 성공은 경고만 남기고 성공분으로
         진행하고, 전량 실패일 때만 첫 예외를 돌려준다. 다만 요청 deadline 소진과 취소는
         부분 성공이어도 그대로 올린다 — 남은 작업을 계속할 근거가 사라진 것이기 때문이다.
+        LLM 호출 실패 중단 모드(parse 설정 `defaults.llm_call_failure: fail` 또는 요청 strict)에서도
+        부분 성공과 관계없이 첫 호출 실패를 돌려준다.
         """
         if not batches:
             return [], None
@@ -1235,6 +1237,8 @@ class CustomFieldsEnricher(BaseEnricher):
         if not failures:
             return results, None
         fatal = next((exc for exc in failures if isinstance(exc, _FATAL_BATCH_ERRORS)), None)
+        if fatal is None:
+            fatal = next((exc for exc in failures if aborts_on_llm_failure(exc)), None)
         if fatal is not None or not results:
             return results, fatal or failures[0]
         _log.warning(
@@ -1294,6 +1298,8 @@ class CustomFieldsEnricher(BaseEnricher):
             if failure is not None:
                 raise failure
         except Exception as exc:
+            if aborts_on_llm_failure(exc):
+                raise   # LLM 호출 실패 중단 모드 — custom_fields 단계 오류로 올린다
             # 이미 추출한 custom fields 는 유지한다 — 표 설명만 없는 상태로 진행.
             _log.warning("표 설명 배치 호출 실패(custom fields 는 유지): %s", llm_failure_reason(exc))
         return parsed
@@ -1454,6 +1460,9 @@ class CustomFieldsEnricher(BaseEnricher):
             try:
                 parsed = await self._call_python_extractor(raw_text, document, **kwargs)
             except Exception as e:
+                # 고객 함수 안의 LLM·외부 호출 실패도 중단 모드면 올린다. 함수 자체의 오류는 경고 후 계속.
+                if aborts_on_llm_failure(e):
+                    raise
                 _log.warning(f"custom_fields 추출 실패(extractor: python): {e}")
         elif self.is_configured:
             try:
@@ -1470,6 +1479,10 @@ class CustomFieldsEnricher(BaseEnricher):
                     llm_output = await self._call_llm(raw_text, document)
                     parsed = self._parse_with_custom_parser(llm_output, document, **kwargs)
             except Exception as e:
+                # 호출 실패(overflow_policy=error 의 입력 길이 초과 포함)는 중단 모드면 올린다.
+                # 모델 출력 해석 실패는 중단 대상이 아니다.
+                if aborts_on_llm_failure(e):
+                    raise
                 _log.warning(f"custom_fields 추출 실패: {e}")
         elif self._llm_declared:
             # LLM 연결과 무관한 constants/front matter 는 계속 산출해야 한다.

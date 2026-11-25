@@ -36,6 +36,7 @@ from genon.preprocessor.processing.common.model_params import (
     resolve_thinking,
 )
 from genon.preprocessor.processing.enrichment.image_request import request_image_description
+from genon.preprocessor.processing.enrichment.llm_response import FirstFailure
 from genon.preprocessor.processing.enrichment.prompt_files import read_prompt_file
 from genon.preprocessor.processing.enrichment.prompt_template import PromptTemplate
 from genon.preprocessor.processing.enrichment.chart_detection import is_chart
@@ -656,15 +657,21 @@ class ImageDescriptionEnricher:
         success_count = 0
         failed_count = 0
         skipped_count = 0
+        # LLM 호출 실패 중단 모드면 첫 실패 뒤 남은 그림은 호출하지 않고, 끝난 뒤 첫 실패를 올린다.
+        stop = FirstFailure()
 
         def _annotate_target(target: tuple[int, PictureItem, str]) -> None:
             nonlocal success_count, failed_count, skipped_count
+            if stop.stopped():
+                return
             seq, pic, prompt = target
             picture_started_at = time.perf_counter()
             page_no = self._get_item_page_no(pic, default_page_no=1)
             try:
                 annotation = self._annotate_single_picture(document, pic, prompt)
             except Exception as exc:
+                if stop.record(exc):
+                    return
                 elapsed = time.perf_counter() - picture_started_at
                 with stats_lock:
                     failed_count += 1
@@ -702,6 +709,7 @@ class ImageDescriptionEnricher:
         with ThreadPoolExecutor(max_workers=self.options.concurrency) as executor:
             # #329: 워커 스레드에도 llm_cache 컨텍스트 전파
             list(executor.map(in_current_context(_annotate_target), targets))
+        stop.raise_first()
 
         total_elapsed = time.perf_counter() - stage_started_at
         _log.info(

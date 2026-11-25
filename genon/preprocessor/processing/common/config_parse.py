@@ -509,29 +509,85 @@ def clamp_chunk_size(size: Optional[int], minimum: int) -> Optional[int]:
     return size
 
 
-def resolve_chunk_mode(kwargs: dict, yaml_default: str) -> str:
-    """청킹 병합 모드 결정. 우선순위: 요청 chunk_mode > yaml > 'split_only'.
+# chunk_mode 값 -> 해석한 이름. 옛 이름(split_only·resize_all)도 오류 없이 새 이름으로 받는다.
+_CHUNK_MODES = {
+    "section": "section", "split_only": "section",
+    "section_merge": "section_merge", "resize_all": "section_merge",
+    "character": "character",
+}
 
-    chunk_mode 는 문자열('split_only'|'resize_all') 또는 0/1 플래그를 받는다.
-    0(false/no/off) → 'split_only'(구조 경계 보존, 초과 그룹만 분할),
-    1(true/yes/on)  → 'resize_all'(인접 섹션을 chunk_size 한도까지 greedy 병합).
+
+def _parse_chunk_mode(raw: Any) -> Optional[str]:
+    """chunk_mode 값 하나를 해석한다. 지정하지 않았으면 None, 해석할 수 없으면 빈 문자열."""
+    if raw is None or raw == "":
+        return None
+    # 숫자 0/0.0/1/1.0 은 문자열 파싱 전에 정규화(JSON number 로 오는 경우 대응).
+    # bool 은 제외 — 아래 문자열 분기의 "true"/"false" 로 처리한다(True==1 오분류 방지).
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw in (0, 1):
+        return "section_merge" if raw == 1 else "section"
+    s = str(raw).strip().lower()
+    if s in _CHUNK_MODES:
+        return _CHUNK_MODES[s]
+    if s in _TRUE_WORDS:
+        return "section_merge"
+    if s in _FALSE_WORDS:
+        return "section"
+    return ""
+
+
+def resolve_chunk_mode(kwargs: dict, yaml_default: Any, *, allow_character: bool = False) -> str:
+    """청킹 방식 결정. 우선순위: 요청 chunk_mode > yaml > 'section'.
+
+    chunk_mode 는 이름(section|section_merge|character, 옛 이름 split_only|resize_all) 또는
+    0/1 플래그를 받는다. 0(false/no/off) → 'section'(섹션 경계 보존, 초과 섹션만 분할),
+    1(true/yes/on) → 'section_merge'(인접 섹션을 chunk_size 한도까지 greedy 병합).
+    character(섹션을 무시한 글자 수 분할)는 chunk activity 만 지원하므로 allow_character=True
+    로 부른 경우에만 받고, 아니면 경고 후 'section' 으로 처리한다.
+    해석할 수 없는 요청 값은 경고 후 yaml 값을, yaml 값도 해석할 수 없으면 경고 후 'section' 을 쓴다.
     (chunk_mode=0 은 falsy 라 `x or default` 로는 무시되므로 `is not None` 으로 판별한다.)
     """
-    raw = kwargs.get("chunk_mode")
-    if raw is not None:
-        # 숫자 0/0.0/1/1.0 은 문자열 파싱 전에 정규화(JSON number 로 오는 경우 대응).
-        # bool 은 제외 — 아래 문자열 분기의 "true"/"false" 로 처리한다(True==1 오분류 방지).
-        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw in (0, 1):
-            return "resize_all" if raw == 1 else "split_only"
-        s = str(raw).strip().lower()
-        if s in {"split_only", "resize_all"}:
-            return s
-        if s in _TRUE_WORDS:
-            return "resize_all"
-        if s in _FALSE_WORDS:
-            return "split_only"
-    mode = str(yaml_default or "").strip().lower()
-    return mode if mode in {"split_only", "resize_all"} else "split_only"
+    allowed = "section, section_merge" + (", character" if allow_character else "")
+
+    def accept(value: Any, where: str, fallback: str) -> Optional[str]:
+        mode = _parse_chunk_mode(value)
+        if mode == "character" and not allow_character:
+            _log.warning(f"{where}=character 미지원: section 으로 처리함 (character 는 chunk activity 에서만 지원)")
+            return "section"
+        if mode == "":
+            _log.warning(f"{where}={value!r} 미지원: {fallback} (허용 값: {allowed})")
+            return None
+        return mode
+
+    mode = accept(kwargs.get("chunk_mode"), "chunk_mode", "chunking.chunk_mode 설정 값으로 처리함")
+    if mode:
+        return mode
+    return accept(yaml_default, "chunking.chunk_mode", "section 으로 처리함") or "section"
+
+
+# chunk_mode=character 에서 이웃 chunk 가 겹치는 글자 수. 요청 파라미터 이름이며, 설정 파일의
+# chunking.character.chunk_overlap 이 기본값이다(CONFIG_PATH_ALIASES 참조).
+CHARACTER_OVERLAP_KEY = "character_chunk_overlap"
+
+
+def resolve_character_overlap(kwargs: dict, yaml_default: Optional[int], size: Optional[int]) -> int:
+    """글자 수 청킹의 overlap. 우선순위: 요청 character_chunk_overlap > yaml > 0.
+
+    yaml 값은 기동 시 parse_short_chunk_size 로 이미 검사했다. 요청 값이 0 이상의 정수가
+    아니면 경고 후 0 이다. 음수·chunk_size 이상은 0 으로 처리한다 — size-1 로 깎으면 한 번에
+    1글자씩만 나아가 chunk 수가 폭증한다.
+    """
+    overlap = yaml_default or 0
+    raw = kwargs.get(CHARACTER_OVERLAP_KEY)
+    if raw is not None and raw != "":
+        try:
+            overlap = parse_short_chunk_size(raw, CHARACTER_OVERLAP_KEY) or 0
+        except ValueError as exc:
+            _log.warning(f"{exc}: 0 으로 처리함")
+            overlap = 0
+    if size and size > 0 and overlap >= size:
+        _log.warning(f"{CHARACTER_OVERLAP_KEY}={overlap} 가 chunk_size({size}) 이상: 0 으로 처리함")
+        overlap = 0
+    return overlap
 
 
 def resolve_include_chunk_header(kwargs: dict, yaml_default: bool) -> bool:
@@ -587,6 +643,7 @@ CONFIG_PATH_ALIASES = {
     "chunking.chunk_mode": "chunk_mode",
     "chunking.short_chunk_size": "short_chunk_size",
     "chunking.recursive.chunk_overlap": "chunk_overlap",
+    "chunking.character.chunk_overlap": "character_chunk_overlap",
     "pdf_output.keep": "keep_pdf",
     "pdf_output.dir": "pdf_dir",
 }

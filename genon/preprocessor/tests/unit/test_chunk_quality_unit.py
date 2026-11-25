@@ -56,14 +56,20 @@ def test_config_from_cfg_matches_sample(case):
 
 
 def test_config_for_applies_doc_type_overrides():
-    """by_doc_type 은 요청의 doc_type 을 정규화해 찾고, 적지 않은 키는 기본 블록 값을 쓴다."""
+    """by_doc_type 은 요청의 doc_type 을 정규화해 찾는다. 적지 않은 키는 기본 블록 값을 쓰고,
+    checks 는 검사 이름 단위로 합쳐 문서 유형의 action 보다 앞선다."""
     class _Owner:
         _chunk_validation = cq.config_from_cfg({"validation": {
-            "enable": True, "action": "drop", "min_chars": 6,
-            "by_doc_type": {"FAQ": {"min_chars": 0}}}})
+            "enable": True, "action": "drop", "limits": {"min_chars": {"text": 6}},
+            "checks": {"char_stutter": "fail", "foreign_script": "report"},
+            "by_doc_type": {
+                "FAQ": {"limits": {"min_chars": {"text": 0}}},
+                "product_slf": {"action": "fail", "checks": {"char_stutter": "report"}}}}})
 
-    assert (cq.config_for(_Owner(), " faq ").min_chars, cq.config_for(_Owner(), "faq").action) == (0, "drop")
+    faq, slf = cq.config_for(_Owner(), " faq "), cq.config_for(_Owner(), "product_slf")
+    assert (faq.min_chars, faq.action, faq.mode("char_stutter")) == (0, "drop", "fail")
     assert cq.config_for(_Owner(), "manual").min_chars == 6
+    assert [slf.mode(r) for r in ("min_chars", "char_stutter", "foreign_script")] == ["fail", "report", "report"]
     assert cq.config_for(object(), "faq") is None
 
 
@@ -123,16 +129,15 @@ def test_session_summary(action, steps, expected):
     assert _summarize(action, steps) == expected
 
 
-_FAILING = cq.Config(action="drop", stutter_min_run=3, fail_reasons=("char_stutter",),
-                     foreign_min_count=10, report_reasons=("foreign_script",))
+_FAILING = cq.Config(action="drop", checks={"char_stutter": "fail", "foreign_script": "report"})
 
 
 @pytest.mark.parametrize("marker,output,cfg", [
     (False, "무무무무배배배배당당당당 안내", _FAILING),
     (True, "무무무무배배배배당당당당 안내", _FAILING),
-    # 훅이 바꾼 본문이 다른 사유(깨진 문자)여도 fail_on_any 문서 유형이면 멈춘다
-    (False, "\ufffd\ufffd\ufffd가", replace(_FAILING, fail_on_any=True)),
-], ids=["reported_chunk", "marker_chunk", "reported_chunk_fail_on_any"])
+    # 훅이 바꾼 본문이 다른 사유(깨진 문자)여도 action: fail 문서 유형이면 멈춘다
+    (False, "\ufffd\ufffd\ufffd가", replace(_FAILING, action="fail")),
+], ids=["reported_chunk", "marker_chunk", "reported_chunk_action_fail"])
 def test_final_check_stops_on_fail_reason(marker, output, cfg):
     """#777: 기록만 한 chunk 를 훅이 바꿨거나 음성 전사·시트 통째 chunk 여도 멈출 대상이면 멈춘다."""
     broken = SimpleNamespace(text=output)

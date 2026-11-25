@@ -161,8 +161,8 @@ def test_batch_is_not_lost_whole_when_the_response_is_cut():
     assert all(table_id.startswith("table_") for table_id in described)
 
 
-# 배치 하나의 실패가 문서 전체를 죽이지 않는다. 표 설명은 부가 기능인데 예외를 그대로
-# 올리면 error_policy=strict 에서 이미 만들어 둔 나머지 설명까지 함께 버려진다.
+# 중단 모드가 아니면 배치 하나의 실패가 문서 전체를 죽이지 않는다. 표 설명은 부가 기능인데
+# 예외를 그대로 올리면 이미 만들어 둔 나머지 설명까지 함께 버려진다.
 
 @pytest.mark.unit
 def test_one_failed_batch_keeps_the_others_without_raising():

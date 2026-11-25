@@ -118,22 +118,35 @@ def json_records_mappers_for(mappers: Iterable, runtime_doc_type: Any,
     return matching
 
 
-# `defaults.unknown_doc_type` 이 받는 값. warn 이 기본값이다.
+# `defaults.unknown_doc_type`·`defaults.llm_call_failure` 가 받는 값. warn 이 기본값이다.
 UNKNOWN_DOC_TYPE_POLICIES = ("warn", "fail")
 
 
-def resolve_unknown_doc_type_policy(value: Any) -> str:
-    """`defaults.unknown_doc_type` 값을 해석한다. 없으면 warn 이다.
+def _resolve_warn_fail(value: Any, key: str) -> str:
+    """warn | fail 정책 키를 해석한다. 없으면 warn 이다.
 
-    그 밖의 값은 ValueError 로 기동을 막는다. 누락을 드러내려고 둔 키이므로, 오기입이
+    그 밖의 값은 ValueError 로 기동을 막는다. 중단을 선언하려고 두는 키이므로, 오기입이
     조용히 warn 으로 떨어지면 목적과 반대가 된다.
     """
-    policy = str(value or "").strip().lower() or "warn"
+    if value is not None and not isinstance(value, str):
+        policy = ""   # false·0 같은 비문자열 값은 warn 으로 보지 않고 거부한다
+    else:
+        policy = (value or "").strip().lower() or "warn"
     if policy not in UNKNOWN_DOC_TYPE_POLICIES:
         raise ValueError(
-            f"defaults.unknown_doc_type 값 오류: {value!r} (허용 값: {' | '.join(UNKNOWN_DOC_TYPE_POLICIES)})"
+            f"{key} 값 오류: {value!r} (허용 값: {' | '.join(UNKNOWN_DOC_TYPE_POLICIES)})"
         )
     return policy
+
+
+def resolve_unknown_doc_type_policy(value: Any) -> str:
+    """`defaults.unknown_doc_type` 값을 해석한다. 없으면 warn 이다."""
+    return _resolve_warn_fail(value, "defaults.unknown_doc_type")
+
+
+def resolve_llm_call_failure_policy(value: Any) -> str:
+    """`defaults.llm_call_failure` 값을 해석한다. 없으면 warn 이다."""
+    return _resolve_warn_fail(value, "defaults.llm_call_failure")
 
 
 def check_doc_type_configured(custom_fields_cfgs: Iterable[dict] | None, runtime_doc_type: Any,

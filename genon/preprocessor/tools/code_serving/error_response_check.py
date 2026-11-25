@@ -332,8 +332,7 @@ def main() -> int:
     # 요청 deadline 초과. 처리기 안에서 난 시간 초과와 구분되어 COMMON_S102 로 실린다.
     # 동기 변환 구간은 deadline 이 끊지 못하므로(알려진 한계) 비동기 LLM 호출을 기다리는 동안 넘긴다.
     _LLM_MODE["value"] = "slow"
-    body = post("/parser", REPO_ROOT / "genon" / "preprocessor" / "sample_files" / "json" /
-                "monimo_card_sample.json", {"doc_type": "card", "request_deadline": 1})
+    body = post("/parser", small, {"doc_type": "product_ssf", "request_deadline": 1})
     _LLM_MODE["value"] = 503
     ok = _failure_ok(body, "COMMON_S102", "timeout") and body.get("stage") == "request"
     failures += not ok

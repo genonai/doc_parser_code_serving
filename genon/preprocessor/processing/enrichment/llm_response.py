@@ -6,8 +6,8 @@
 `status_code` 로 실어 둔다 — `classify_error` 가 그 속성을 읽어 transient/permanent 를 가른다.
 
 재시도는 한 번뿐이고, 생성이 시작되기 전에 실패한 것으로 볼 수 있는 경우만 다시 부른다.
-표 설명·레코드 필드처럼 실패해도 문서를 막지 않는 경로는 호출 측(Temporal) 재시도가 닿지
-않으므로, 여기가 그 경로들의 유일한 재시도 수단이다.
+표 설명·레코드 필드처럼 실패해도 문서를 막지 않는 경로(parse 설정 `defaults.llm_call_failure: warn`)는
+호출 측(Temporal) 재시도가 닿지 않으므로, 여기가 그 경로들의 유일한 재시도 수단이다.
 
 같은 판정이 필요한 곳이 셋(custom_fields / metadata / body_summary)이라 여기 한 벌만 둔다.
 async 판(`post_chat_completion`)과 동기 판(`post_chat_completion_sync`)을 함께 두고,
@@ -35,14 +35,22 @@ import json
 import logging
 import random
 import re
+import threading
 import time
+from dataclasses import dataclass, fields
 from typing import Any, Callable, Optional
 from urllib.parse import unquote
 
 import httpx
 import requests
 
-from docling.utils.llm_cache import CacheDeadlineExceeded, remaining_timeout
+from docling.utils.llm_cache import (
+    CacheContext,
+    CacheDeadlineExceeded,
+    classify_error,
+    current_context,
+    remaining_timeout,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -64,6 +72,18 @@ class LLMResponseError(ValueError):
     def __init__(self, message: str, status_code: Optional[int] = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+def _response_json(resp: Any) -> Any:
+    """HTTP 응답 본문을 JSON 으로 읽는다. JSON 이 아니면 응답 형식 이상(LLMResponseError)으로 바꾼다.
+
+    게이트웨이가 HTTP 200 에 HTML·일반 텍스트를 주는 경우다. 모델 출력 안의 JSON 오류와 구분하려고
+    본문 해석 경계에서만 바꾼다.
+    """
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise LLMResponseError(f"LLM 응답 형식 오류: 응답 본문이 JSON 아님 ({exc})") from exc
 
 
 def chat_completion_message(data: Any) -> Any:
@@ -101,7 +121,7 @@ async def post_chat_completion(
                 timeout=httpx.Timeout(remaining_timeout(timeout)),
             )
             resp.raise_for_status()
-            return chat_completion_message(resp.json())
+            return chat_completion_message(_response_json(resp))
         except Exception as exc:
             if attempt > 1 or not is_retryable(exc):
                 raise
@@ -127,7 +147,7 @@ def post_chat_completion_sync(
             timeout=httpx.Timeout(remaining_timeout(timeout)),
         )
         resp.raise_for_status()
-        return chat_completion_message(resp.json())
+        return chat_completion_message(_response_json(resp))
 
     return retry_once_sync(_send)
 
@@ -259,3 +279,112 @@ def _body_snippet(data: Any) -> str:
     if len(body) > ERROR_BODY_CHARS:
         return f"{body[:ERROR_BODY_CHARS]}...(이하 생략)"
     return body
+
+
+# ── LLM 호출 실패 시 문서 처리 중단(parse 설정 defaults.llm_call_failure · 요청 error_policy) ──
+#
+# 중단 여부는 요청 스코프 CacheContext 에서 읽는다. 워커 스레드에는 in_current_context 가 컨텍스트
+# 객체를 그대로 옮기므로 어느 스레드에서 판정해도 결과가 같다. 요청 error_policy 는 그대로 두고
+# 판정값과 설정값을 별도 필드로 싣는다 — 중단 안내를 설정·요청으로 나누고, LLM 이 아닌 단계
+# (doc_type_stamp)에는 설정값을 적용하지 않기 위해서다. 이 필드는 parse 처리기(ParserCore)만 싣는다.
+# 파사드는 싣지 않으므로 요청 strict 여도 공용 모듈의 동작이 종전 그대로다.
+# 단계 이름·사유 코드·메시지는 처리기의 단계 오류 처리가 붙인다.
+
+
+@dataclass(frozen=True)
+class _LlmFailureContext(CacheContext):
+    """LLM 호출 실패 중단 판정과 parse 설정 `defaults.llm_call_failure` 를 함께 실은 요청 컨텍스트."""
+
+    llm_call_failure: str = "warn"
+    abort_on_llm_failure: bool = False
+
+
+def with_llm_call_failure(ctx: Any, policy: str) -> Any:
+    """parse 처리기의 요청 컨텍스트에 LLM 호출 실패 중단 판정을 싣는다.
+
+    설정 `fail` 또는 요청 `error_policy=strict` 면 중단한다(요청 lenient 로 설정 fail 을 해제할 수 없음).
+    둘 다 아니면 ctx 를 그대로 돌려준다.
+    """
+    strict = getattr(ctx, "error_policy", "lenient") == "strict"
+    if policy != "fail" and not strict:
+        return ctx
+    values = {item.name: getattr(ctx, item.name) for item in fields(ctx) if item.init}
+    values.update(llm_call_failure=policy, abort_on_llm_failure=True)
+    return _LlmFailureContext(**values)
+
+
+def llm_call_failure_configured() -> bool:
+    """이 요청이 parse 설정 `defaults.llm_call_failure: fail` 로 실행 중인가."""
+    return getattr(current_context(), "llm_call_failure", "warn") == "fail"
+
+
+def llm_failure_aborts() -> bool:
+    """LLM 호출이 실패하면 문서 처리를 중단하는 요청인가(parse 처리기에서 설정 fail 또는 요청 strict).
+
+    판정은 `with_llm_call_failure` 가 실은 값만 읽는다. 파사드 요청은 늘 False 다.
+    """
+    return bool(getattr(current_context(), "abort_on_llm_failure", False))
+
+
+def is_llm_call_failure(exc: BaseException) -> bool:
+    """호출 자체의 실패인가 — HTTP 오류·연결 오류·시간 초과·요청 deadline 초과·응답 형식 이상·입력 길이 초과.
+
+    빈 응답과 모델 출력 내용 이상(JSON 깨짐 등)은 예외가 되지 않거나 파서의 다른 예외로 올라오므로
+    여기에 들지 않는다. 호출과 출력 해석을 한 try 로 감싼 자리(custom_fields·metadata·llm_fields·
+    텍스트 표 설명)가 둘을 가르는 데 쓴다. 원인 예외(`__cause__`)까지 본다.
+    """
+    if classify_error(exc) in ("transient", "timeout"):
+        return True
+    current, seen = exc, 0
+    while current is not None and seen < 8:
+        if isinstance(current, (httpx.HTTPError, requests.RequestException, CacheDeadlineExceeded,
+                                TimeoutError)):
+            return True
+        status = getattr(current, "status_code", None)
+        if not isinstance(status, int):
+            status = getattr(getattr(current, "response", None), "status_code", None)
+        if isinstance(status, int):
+            return True
+        # 클래스 이름으로 본다 — 같은 모듈이 두 경로로 import 되어 클래스 객체가 갈리는 자리가 있다.
+        # ValidationError 는 VLM 응답이 chat completion 형식이 아닐 때(api_image_request)다.
+        if type(current).__name__ in ("LLMResponseError", "LLMApiError", "ValidationError"):
+            return True
+        if getattr(current, "reason_code", None) == "PARSE_P001":
+            return True
+        current, seen = current.__cause__, seen + 1
+    return False
+
+
+def aborts_on_llm_failure(exc: BaseException) -> bool:
+    """중단 모드이고 exc 가 LLM 호출 실패인가. 예외를 삼키는 자리의 except 첫 줄에서 쓴다."""
+    return llm_failure_aborts() and is_llm_call_failure(exc)
+
+
+class FirstFailure:
+    """건별 LLM 호출 묶음(그림·페이지·표·레코드)에서 중단 모드일 때 첫 실패를 기억한다.
+
+    중단 모드이면 첫 실패 뒤 남은 항목은 호출하지 않고 돌아가게 하고, 묶음이 끝난 뒤 첫 실패를
+    올린다. 이미 나가 있는 동시 호출은 끝까지 기다린다. 중단 모드가 아니면 아무것도 하지 않아
+    호출부의 건너뛰기 동작이 그대로 남는다. 판정은 만들 때 한 번, 호출 스레드에서 읽는다.
+    """
+
+    def __init__(self) -> None:
+        self.aborts = llm_failure_aborts()
+        self.error: Optional[BaseException] = None
+        self._lock = threading.Lock()
+
+    def stopped(self) -> bool:
+        return self.error is not None
+
+    def record(self, exc: BaseException) -> bool:
+        """중단 모드이고 LLM 호출 실패면 기록하고 True(호출부는 경고 없이 돌아감), 아니면 False."""
+        if not (self.aborts and is_llm_call_failure(exc)):
+            return False
+        with self._lock:
+            if self.error is None:
+                self.error = exc
+        return True
+
+    def raise_first(self) -> None:
+        if self.error is not None:
+            raise self.error

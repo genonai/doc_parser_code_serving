@@ -82,7 +82,7 @@ Temporal 워커 경로에서는 같은 세 값이 액티비티 오류(`Applicati
 | `PARSE_D013` | permanent | `source.sheets` 로 지정한 시트가 워크북에 없음 |
 | `PARSE_D014` | permanent | 확장자와 실제 파일 형식 불일치(`formats.verify_extension: true`). 원천 파일 확장자 수정 필요 |
 | `PARSE_D015` | permanent | 표 HTML 구조 손상: 셀·행 닫는 태그 누락, `<tr>` 밖의 셀, 닫히지 않은 `<table>`(`formats.verify_table_markup: true`). 원천 HTML 의 표 태그 수정 필요 |
-| `PARSE_P001` | permanent | LLM 입력 길이 사전 검사 초과(목차·메타데이터 추출의 `precheck`). 표 설명의 길이 초과(`overflow_policy: error`)는 경고 후 진행합니다 |
+| `PARSE_P001` | permanent | LLM 입력 길이 사전 검사 초과(목차·메타데이터 추출의 `precheck`). 표 설명의 길이 초과(`overflow_policy: error`)는 `defaults.llm_call_failure: warn` 에서는 경고 후 진행하고, `fail` 에서는 이 코드로 실패합니다 |
 | `PARSE_P002` | permanent | 등록되지 않은 doc_type(`defaults.unknown_doc_type: fail`) |
 | `PARSE_P003` | permanent | 같은 doc_type 에 설정이 여러 개 |
 | `PARSE_P004` | permanent | `llm_fields` 설정 오류 |
@@ -97,7 +97,7 @@ Temporal 워커 경로에서는 같은 세 값이 액티비티 오류(`Applicati
 | `PARSE_S201` | permanent | LLM 응답 형식 이상 |
 | `CHUNK_D001` | permanent | 청크로 만들 본문 없음(`chunk 0건: …`) |
 | `CHUNK_D002` | permanent | 전체 청크 불량(`CHUNK_ALL_REJECTED`) |
-| `CHUNK_D003` | permanent | 불량 청크 존재, `fail_on_any: true` 또는 `fail_reasons` 에 적은 사유(`CHUNK_REJECTED`) |
+| `CHUNK_D003` | permanent | 불량 청크 존재, `action: fail` 또는 `checks` 에 `fail` 로 적은 검사에 걸림(`CHUNK_REJECTED`) |
 | `CHUNK_P001` | permanent | 행 메타를 청크 속성으로 옮기지 못함 |
 | `CHUNK_P002` | permanent | 입력 누락 |
 | `CHUNK_P003` | permanent | 파서 결과가 아닌 입력 |
@@ -115,10 +115,18 @@ Temporal 워커 경로에서는 같은 세 값이 액티비티 오류(`Applicati
 
 ### 실패 정책
 
-문서형 extractor(`llm`/`python`/`html_select`)의 LLM 호출 실패·응답 해석 실패는 `error_policy` 와 무관하게
-WARNING 을 남기고 해당 필드를 null 로 둔 채 성공 응답합니다. 문서 요약·표 설명 단계도 같습니다.
-LLM 오류를 실패 응답(`code: 1`, `PARSE_S0xx`·`S1xx`·`S2xx`)으로 받는 경로는 docling 기본 enrichment(목차·메타데이터
-추출)입니다. 레코드형(`rows`/`records`/`sections`)의 매핑 오류는 정책과 무관하게 실패합니다.
+LLM 호출 실패의 처리는 parse 설정 `defaults.llm_call_failure`(`warn` | `fail`)가 정합니다. 요청 `error_policy: strict` 는
+그 요청만 `fail` 과 같이 처리하며, 요청으로 설정 `fail` 을 해제할 수는 없습니다.
+
+- `warn`(코드 기본값): 문서형 extractor(`llm`/`python`/`html_select`)의 LLM 호출 실패·응답 해석 실패는 WARNING 을 남기고
+  해당 필드를 null 로 둔 채 성공 응답합니다. 문서 요약·표 설명 단계도 같습니다. 레코드형의 LLM 생성 필드는 `on_error` 를 따릅니다.
+- `fail`: LLM 호출 실패(HTTP 오류·연결 오류·시간 초과·요청 deadline 초과·응답 형식 이상·`overflow_policy: error` 의 입력 길이
+  초과)가 나면 첫 실패에서 실패 응답(`code: 1`, `PARSE_S001`·`S101`·`S102`·`S201`·`P001`)을 돌려줍니다. `extractor: python`
+  은 고객 함수 안의 HTTP 호출 실패도 같습니다. 레코드형의 `on_error` 는 적용되지 않습니다. 빈 응답과 모델 출력 내용 이상
+  (응답 해석 실패)은 `warn` 과 같이 null 로 두고 진행합니다.
+- docling 기본 enrichment(목차·메타데이터 추출)의 HTTP·연결 오류는 설정과 무관하게 실패 응답입니다.
+
+레코드형(`rows`/`records`/`sections`)의 매핑 오류는 정책과 무관하게 실패합니다.
 
 ### 응답 예시
 
@@ -220,7 +228,7 @@ LLM 오류를 실패 응답(`code: 1`, `PARSE_S0xx`·`S1xx`·`S2xx`)으로 받�
 | `GenosServiceException` | `{"object": "error", "message": "프롬프트 입력 토큰 (…) 초과 하였습니다. (… - reserved …).", "type": "BadRequestError", …}` | LLM 호출 전 길이 검사에 걸려 호출하지 않고 중단<br>· 사전 길이 검사를 켠 경우에만 동작하며, 그 문서 처리는 실패로 끝남<br>· 검사 한도를 올리거나 검사를 끄면 호출은 진행 → 단, 모델이 길이를 이유로 거부할 수 있음 |
 | `LLMApiError` | LLM 서버가 돌려준 응답 원문 (고정 문구 없음) | LLM 호출 자체가 실패<br>· 인증·권한 문제나 잘못된 요청 → 연결 설정을 고쳐야 함<br>· 서버 내부 오류·연결 실패·응답 시간 초과 → 일시적 장애일 수 있어 재시도가 유효 |
 | `LLMResponseError` | `LLM 응답이 chat completion 형식이 아닙니다: …` | LLM 호출은 성공했지만 응답 내용이 약속된 형식이 아님<br>· LLM 앞단 게이트웨이가 오류를 정상 응답(200)에 담아 보내는 경우가 대표적 |
-| `TypeError` | `extractor: python 의 결과는 dict 이어야 합니다: <타입>` / `custom_fields parser 결과는 dict 이어야 합니다.` | 직접 작성한 처리 함수의 반환값이 약속된 형식이 아님<br>· python 추출 함수나 LLM 응답 해석 함수(parser)가 dict 가 아닌 값을 돌려줌<br>· 기본 설정(`error_policy: lenient`)은 경고만 남기고 진행 → `strict` 로 바꾼 경우에만 실패 |
+| `TypeError` | `extractor: python 의 결과는 dict 이어야 합니다: <타입>` / `custom_fields parser 결과는 dict 이어야 합니다.` | 직접 작성한 처리 함수의 반환값이 약속된 형식이 아님<br>· python 추출 함수나 LLM 응답 해석 함수(parser)가 dict 가 아닌 값을 돌려줌<br>· 경고만 남기고 진행(LLM 호출 실패가 아니므로 `defaults.llm_call_failure: fail`·`error_policy: strict` 에서도 같음) |
 
 **구분 단서**
 
@@ -246,7 +254,7 @@ custom_fields 설정 검증 단계가 없습니다. 파서 산출물을 소비�
 | `chunker 입력을 parse 결과 JSON 으로 읽지 못함(…)` (워커 실행) | 청커에 들어온 입력을 읽지 못함<br>· 단건 실행: parse 를 거치지 않은 원본 문서를 그대로 넣음<br>· 배치: parse 산출물이 깨짐 |
 | `parse 결과의 docling 문서 복원 실패: 첫 오류 <위치>: <내용> (총 N건)` | 청커에 들어온 입력을 읽지 못함<br>· 파서 결과 JSON 이 잘리거나 깨져 되살릴 수 없음<br>· parse 와 chunk 의 전처리기 버전이 달라 문서 형식이 맞지 않음 |
 | `chunk 0건: <원인>` | 입력은 정상적으로 읽었지만 청크가 하나도 만들어지지 않음. 원인이 메시지에 실림<br>· `parse 결과의 elements 가 0개` — 파싱 결과에 본문이 없음. 설정의 필수값 조건을 채우지 못해 파서 단계에서 모든 항목이 제외된 경우도 여기로 이어짐<br>· `elements N개의 content 가 모두 비어 있음` — element 는 있지만 본문이 빔<br>· `chunking.text_cleanup 이 chunk N건을 모두 지움` — `text_cleanup.rules` 가 본문까지 지움<br>· `processor.py 의 edit_input 이 elements N개를 모두 걸러` — 훅이 입력을 비움<br>· `edit_chunk` 가 청크를 모두 버린 경우는 실패가 아니라 0건 결과이며 경고 로그만 남음 |
-| `CHUNK_ALL_REJECTED: 모든 chunk 가 검증 기준에 걸려 제외됨: <파일> (입력 N건, 사유별 {…})` | 청크 검증에서 모든 청크가 불량으로 판정되어 적재할 청크가 남지 않음<br>· 일부 청크만 불량이면 오류 없이 그 청크만 빼고 적재하며, 제외된 청크의 정보(제외 건수, 청크별 페이지·사유·설명, 최대 20건)를 성공 응답의 `chunk_validation` 으로 알려 줌. 제외된 청크마다 마스킹을 거친 본문 앞 200자(`preview`)와 원래 청크 순번(`index`)을, 요약에는 사유별 건수(`reasons`)를 함께 실음<br>· 사유(`blank`·`no_content`·`broken_chars`·`repetition`·`min_chars`)별 건수가 함께 표시<br>· 재시도로 해결되지 않음 → 원문 상태나 검증 기준(`min_chars` 등)을 확인<br>· 어떤 청크가 불량인지는 아래 [청크 검증 판정 기준](#청크-검증-판정-기준) 참조 |
+| `CHUNK_ALL_REJECTED: 모든 chunk 가 검증 기준에 걸려 제외됨: <파일> (입력 N건, 사유별 {…})` | 청크 검증에서 모든 청크가 불량으로 판정되어 적재할 청크가 남지 않음<br>· 일부 청크만 불량이면 오류 없이 그 청크만 빼고 적재하며, 제외된 청크의 정보(제외 건수, 청크별 페이지·사유·설명, 최대 20건)를 성공 응답의 `chunk_validation` 으로 알려 줌. 제외된 청크마다 마스킹을 거친 본문 앞 200자(`preview`)와 원래 청크 순번(`index`)을, 요약에는 사유별 건수(`reasons`)를 함께 실음<br>· 사유(`blank`·`no_content`·`broken_chars`·`repetition`·`min_chars`)별 건수가 함께 표시<br>· 재시도로 해결되지 않음 → 원문 상태나 검증 기준(`limits.min_chars` 등)을 확인<br>· 어떤 청크가 불량인지는 아래 [청크 검증 판정 기준](#청크-검증-판정-기준) 참조 |
 | `CHUNK_VALIDATION_ERROR: chunk 판정 중 오류: <파일> #N (…)` | 청크 검증 기능 자체가 판정 도중 실패<br>· 판정하지 못한 청크를 그대로 적재하지 않기 위해 문서 전체를 실패로 처리<br>· 서비스 내부 결함일 가능성이 높으므로 로그와 함께 개발 측에 전달<br>· 청크가 판정 기준에 걸린 것이 아니라 판정 과정 자체의 오류 |
 
 **구분 단서** — 원인은 `reason_code` 로 가릅니다([사유 코드](#사유-코드)). 청커 예외 중 `stage` 가
@@ -270,21 +278,21 @@ monimo 설정은 `action: drop` 이라 걸린 청크를 빼고 적재하며, 판
 청크마다 아래 순서로 검사하며, 앞의 사유에 걸리면 그 사유가 대표 사유입니다.
 판정은 `HEADER:` 경로와 문서 접두를 뺀 본문으로 합니다.
 
-| 순서 | 사유 | 판정 (설정 키 = 기본값) | 걸리는 예 | 통과하는 예 |
+| 순서 | 사유 | 판정 (`limits` 설정 키 = 기본값) | 걸리는 예 | 통과하는 예 |
 |---|---|---|---|---|
 | 1 | `blank` | 본문이 공백뿐 | 빈 본문, 공백·줄바꿈만 | - |
 | 2 | `no_content` | 내용 문자(글자·숫자, 언어 무관) 0자. HTML 태그, 표 구분선(`\| --- \|`), 표 칸 경계(`\|`)는 내용 문자로 세지 않음 | `<div></div>` 10번 반복, `- - - * * * ###` | 일본어·중국어 문장, `<가입대상>`·`0 < 금리 < 5%` 같은 꺾쇠 표기 |
-| 3 | `broken_chars` | 깨진 문자(U+FFFD `�`, 제어 문자, `GLYPH<…>`, 잘못된 인코딩으로 바뀐 한글 `占쏙옙`·`ë³´í—˜`) 개수 ≥ `broken_min_count = 3` **그리고** 점유율(깨진 문자 ÷ 공백 제외 문자) ≥ `broken_max_share = 0.3`. `GLYPH<…>` 는 표식 전체 글자 수를 셈 | `���가나다라` (3자, 43%), `占쏙옙占쏙옙 안내` | `��가나다라` (2자), 문장 중간의 `�` 1자, 한자 `占有` |
-| 4 | `repetition` | 동일 문자 연속·동일 줄·동일 문구(4~50자) 연속 중 하나가 `repeat_min_count = 10` 회 이상 **그리고** 중복 점유율(반복으로 겹친 문자 ÷ 공백 제외 문자) ≥ `repeat_max_share = 0.5` | `ㅁ` 10자 연속, `처리 중 오류가 발생했습니다. ` 30번, 같은 줄 15번 | `ㅁ` 9자 연속, `-----` 같은 구분선, `10000000000원`(숫자 연속은 세지 않음) |
-| 5 | `min_chars` | 내용 문자 수 < 하한. 문서·평문 청크 `min_chars = 4`, 행 청크 `row_min_chars = 0`(검사 안 함) | `1.`, `가나다` | `가나다라`, 행 청크 `카드 > 결제` |
+| 3 | `broken_chars` | 깨진 문자(U+FFFD `�`, 제어 문자, `GLYPH<…>`, 잘못된 인코딩으로 바뀐 한글 `占쏙옙`·`ë³´í—˜`) 개수 ≥ `broken_chars.count = 3` **그리고** 점유율(깨진 문자 ÷ 공백 제외 문자) ≥ `broken_chars.share = 0.3`. `GLYPH<…>` 는 표식 전체 글자 수를 셈 | `���가나다라` (3자, 43%), `占쏙옙占쏙옙 안내` | `��가나다라` (2자), 문장 중간의 `�` 1자, 한자 `占有` |
+| 4 | `repetition` | 동일 문자 연속·동일 줄·동일 문구(4~50자) 연속 중 하나가 `repetition.count = 10` 회 이상 **그리고** 중복 점유율(반복으로 겹친 문자 ÷ 공백 제외 문자) ≥ `repetition.share = 0.5` | `ㅁ` 10자 연속, `처리 중 오류가 발생했습니다. ` 30번, 같은 줄 15번 | `ㅁ` 9자 연속, `-----` 같은 구분선, `10000000000원`(숫자 연속은 세지 않음) |
+| 5 | `min_chars` | 내용 문자 수 < 하한. 문서·평문 청크 `min_chars.text = 4`, 행 청크 `min_chars.row = 0`(검사 안 함) | `1.`, `가나다` | `가나다라`, 행 청크 `카드 > 결제` |
 
 판정을 면제·완화받는 청크는 다음과 같습니다.
 
-- 표가 든 청크는 길이 하한을 적용하지 않습니다(`table_min_chars: true` 로 켤 수 있습니다).
+- 표가 든 청크는 길이 하한을 적용하지 않습니다(`limits.min_chars.table` 로 켤 수 있습니다).
 - 코드·수식 청크(docling 라벨 `code`·`formula`)는 길이 하한과 반복 판정을 적용하지 않습니다.
-- 행 청크(custom_fields 레코드형이 만든 청크)는 `row_min_chars` 를 씁니다. FAQ·메뉴처럼 짧은 행을 보호하기 위해 기본은 검사하지 않습니다.
+- 행 청크(custom_fields 레코드형이 만든 청크)는 `limits.min_chars.row` 를 씁니다. FAQ·메뉴처럼 짧은 행을 보호하기 위해 기본은 검사하지 않습니다.
 - 오디오(`[AUDIO]`)·legacy 표(`[DA]`) 단일 청크는 검증하지 않습니다.
-- `by_doc_type` 으로 doc_type 별로 위 기준값을 덮어쓸 수 있습니다.
+- `by_doc_type` 으로 doc_type 별로 위 기준값과 검사별 처리(`checks`)를 덮어쓸 수 있습니다.
 
 검사는 청크가 만들어진 직후와 `edit_output` 훅이 끝난 뒤 응답 직전, 두 번 합니다. 훅이 바꾼 본문도
 검사합니다. 설정 키 전체와 모드 전환 절차는
@@ -308,9 +316,9 @@ parser 기준입니다.
 | `values` 미등록 값 | 경고, 원값 통과 |
 | `source.pre.*` 를 문서형 아닌 kind 에 사용 | 검증 통과 + 무시 |
 | front matter 없음·깨짐 | `on_missing`·`on_invalid` 기본값 `ignore` 로 조용히 누락 |
-| 등록 블록(`- custom_fields:`) 키 오타 | 키 검증 대상 아님, 무시 |
+| 최상위 `doc_type:` 이 없는 `custom_field_*.yaml` | 등록되지 않아 쓰이지 않음(설정 점검기가 경고) |
 | `GENOS_CUSTOM_FIELDS_VALIDATION=warn` | 모든 키 검증이 경고로 격하, 해당 설정 무시 |
-| 문서형 extractor 런타임 실패 | `error_policy: lenient`(기본)에서 경고 + 성공 응답 |
+| 문서형 extractor 런타임 실패 | `defaults.llm_call_failure: warn`(기본)에서 경고 + 성공 응답. `fail` 이거나 요청 `error_policy: strict` 면 LLM 호출 실패만 실패 응답 |
 | 표 설명 프롬프트 길이 초과 | 기본 설정(`overflow_policy: batch`)은 나눠 호출 |
 | 동명 키가 얕은 곳·깊은 곳에 존재 | 얕은 쪽 값이 실림 (로그 없음) |
 | 동명 레코드 배열이 여러 곳에 존재 | `records_at` 지정 시 가장 얕은 곳의 매칭 1개만 사용 (로그 없음) |
