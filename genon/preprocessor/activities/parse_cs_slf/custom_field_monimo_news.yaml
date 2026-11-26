@@ -1,0 +1,36 @@
+# monimo_news(모니모 관심소식) custom_fields
+
+schema: v2
+doc_type: monimo_news
+source:
+  kind: html
+  pre:
+    json:
+      body_from: [content]
+
+# `newslertter-` 는 원본 HTML 의 class 이름 그대로이므로 고치지 않는다.
+fields:
+  BIZ_ID:
+    alias: [$file]
+    transform: {name: regex_extract, pattern: '^(TD\d+)'}
+    default: null
+  GROUP_C:
+    default: IFP
+  USE_YN:
+    default: Y
+  CUSTOM_TITLE:
+    select: .new-banner-headline
+  CATEGORY:
+    select: .newsletter-article-wrap
+    attr: newsletter-title
+  SUMMARY:
+    select: .article-summary-box
+  DETAIL:
+    select: .newslertter-article-content
+  SOURCE:
+    select: .newsletter-source
+body:
+  once: [CATEGORY, CUSTOM_TITLE]
+  labels:
+    CATEGORY: 카테고리
+    CUSTOM_TITLE: 제목

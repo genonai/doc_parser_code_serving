@@ -1,0 +1,13 @@
+{
+ "id": "parse_cs_slf",
+ "stage": "parse",
+ "title": "생명 고객센터 파싱",
+ "description": "cs_slf 문서유형 전용 파싱",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-27 04:14:34",
+ "updated_at": "2026-11-27 04:14:34"
+}
