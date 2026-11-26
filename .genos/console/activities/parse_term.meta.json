@@ -1,0 +1,13 @@
+{
+ "id": "parse_term",
+ "stage": "parse",
+ "title": "용어 파싱",
+ "description": "term 문서유형 전용 파싱",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-27 04:10:55",
+ "updated_at": "2026-11-27 04:10:55"
+}
