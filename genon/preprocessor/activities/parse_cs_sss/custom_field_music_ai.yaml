@@ -1,0 +1,24 @@
+# music_ai(모니모 뮤직 AI 플레이리스트) custom_fields
+
+schema: v2
+doc_type: music_ai
+source:
+  kind: records
+  records_at: playList
+fields:
+  BIZ_ID:
+    template: "{{THEME_NM}}"
+    transform: {name: hash, prefix: MUSIC_AI_, length: 16}
+  GROUP_C:
+    const: IFP
+  THEME_NM:
+    alias: [text]
+    transform: to_text
+  LANDING_TYPE_C:
+    alias: [landingType]
+    default: null
+require:
+  fields: [THEME_NM]
+body:
+  fields: [THEME_NM]
+  split: true
