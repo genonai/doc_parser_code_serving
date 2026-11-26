@@ -1,0 +1,49 @@
+# cs_sss(삼성증권 고객센터 안내) custom_fields
+
+schema: v2
+doc_type: cs_sss
+source:
+  kind: records
+fields:
+  BIZ_ID:
+    alias: [ID, id]
+    default: null
+  GROUP_C:
+    alias: [회사명, company, corp_code]
+    const: SSS
+  CS_CTGR_L1:
+    alias: [category, 대분류, 카테고리]
+    default: null
+  CS_CTGR_L2:
+    alias: [중분류]
+    default: null
+  CS_CTGR_L3:
+    alias: [소분류]
+    default: null
+  CUSTOM_TITLE:
+    alias: [question, 제목, 대표질문]
+  CONTENT:
+    alias: [answer, 안내본문, 답변]
+    transform: to_text
+  RELATED_KEYWORDS:
+    alias: [related_keywords, 연관 키워드]
+    default: null
+  DEEP_LINK_URL:
+    alias: [딥링크, 앱 딥링크]
+    default: null
+  SRC_LAST_MOD_DT:
+    alias: [updated_date]
+    transform: date_int
+  VISIBLE_YN:
+    alias: [is_visible]
+    default: "Y"
+require:
+  fields: [CUSTOM_TITLE]
+body:
+  fields: [CS_CTGR_L1, CUSTOM_TITLE, CONTENT]
+  labels:
+    CS_CTGR_L1: 문의유형
+    CUSTOM_TITLE: 제목
+    CONTENT: 내용
+  split: true
+  repeat: [CS_CTGR_L1, CUSTOM_TITLE]
