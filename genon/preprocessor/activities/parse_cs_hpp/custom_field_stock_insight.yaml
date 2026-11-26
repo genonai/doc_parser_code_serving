@@ -1,0 +1,59 @@
+# stock_insight(삼성증권 AI 차트뷰 종목별 분석) custom_fields
+
+schema: v2
+doc_type: stock_insight
+source:
+  kind: records
+  pre:
+    delimited:
+      # 메모장에서 `□|` 로 보이는 두 글자다(□ 는 제어 문자 0x0F).
+      separator: "\x0f|"
+      columns: [jong_name, jong_code, regt_no, ntc_objline, detail_desc,
+                news_date, md_stck_itm_c, kosc_stck_itm_c, nat_c]
+  # 종목코드·뉴스일자가 같은 행을 등록번호별로 라인번호 순으로 이어 한 건으로 만든다
+  merge_rows:
+    group_by: [JONG_CODE, NEWS_DATE]
+    part_by: REGT_NO
+    order_by: NTC_OBJLINE_NO
+    concat: [DETAIL_DESC, DETAIL_TEXT]
+fields:
+  BIZ_ID:
+    template: "{{JONG_CODE}}_{{NEWS_DATE}}"
+    default: null
+  # meta: false 는 행 합치기에만 쓰고 chunk 메타데이터에는 싣지 않는다
+  REGT_NO:
+    alias: [등록번호, REGT_NO, regt_no]
+    default: null
+    meta: false
+  NTC_OBJLINE_NO:
+    alias: [NTC_OBJLINE_NO, ntc_objline, ntc_objline_no, 게시물 라인번호]
+    default: null
+    meta: false
+  JONG_CODE:
+    alias: [종목코드, jong_code, JONG_CODE]
+  JONG_NM:
+    alias: [종목명, jong_name, jong_nm, JONG_NAME]
+  NEWS_DATE:
+    alias: [뉴스일자, NEWS_DATE, news_date]
+    transform: date_int
+  DETAIL_DESC:
+    alias: [상세내용, DETAIL_DESC, detail_desc]
+    default: null
+  ANALYSIS_DATE:
+    alias: [NEWS_DATE, news_date, 분석기준일, 분석 기준일, 뉴스일자]
+    transform: date_int
+  GROUP_C:
+    const: SSS
+  DETAIL_TEXT:
+    alias: [상세내용, detail_desc, DETAIL_DESC, 세부내용]
+    default: null
+    transform: [to_text]
+require:
+  fields: [JONG_CODE, JONG_NM, ANALYSIS_DATE]
+body:
+  fields: [JONG_NM, DETAIL_TEXT]
+  labels:
+    JONG_NM: 종목명
+    DETAIL_TEXT: 세부내용
+  split: true
+  repeat: [JONG_NM]
