@@ -8,7 +8,7 @@
 # 실행 공통 설정
 defaults:
   # 로그 상세도. 5=DEBUG 4=INFO(기본) 3=WARNING 2=ERROR 1=CRITICAL 0=끄기
-  log_level: 4
+  log_level: 1500
 
 # chunk 를 나누는 방법
 chunking:
