@@ -1,0 +1,13 @@
+{
+ "id": "parse_faq",
+ "stage": "parse",
+ "title": "FAQ 파싱",
+ "description": "faq 문서유형 전용 파싱",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-27 04:11:20",
+ "updated_at": "2026-11-27 04:11:20"
+}
