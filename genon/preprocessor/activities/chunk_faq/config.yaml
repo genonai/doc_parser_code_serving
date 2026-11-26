@@ -8,7 +8,7 @@
 # 실행 공통 설정
 defaults:
   # 로그 상세도. 5=DEBUG 4=INFO(기본) 3=WARNING 2=ERROR 1=CRITICAL 0=끄기
-  log_level: 1500
+  log_level: 4
 
 # chunk 를 나누는 방법
 chunking:
@@ -18,7 +18,7 @@ chunking:
 
   # chunk 최대 크기. 글자 수(tokenizer_type 이 huggingface 면 token 수). 0=나누지 않음.
   # 0 보다 크고 min_chunk_size 보다 작으면 min_chunk_size 로 올림
-  chunk_size: 300
+  chunk_size: 1500
   # 나누는 방식. 바꾸면 chunk 경계가 바뀌어 문서 재적재 필요
   #   section(기본)=섹션 단위, 큰 섹션만 다시 나눔(제목만 있는 chunk 는 이웃과 합침) | section_merge=섹션을 chunk_size 까지 이어 붙이고 큰 섹션은 나눔
   #   character=섹션 무시, 본문을 chunk_size 글자씩 자름(HEADER 줄 없음)
