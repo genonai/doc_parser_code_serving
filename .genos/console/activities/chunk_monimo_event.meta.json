@@ -1,0 +1,13 @@
+{
+ "id": "chunk_monimo_event",
+ "stage": "chunk",
+ "title": "모니모 이벤트 청킹",
+ "description": "",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "chunk",
+ "params": {},
+ "created_at": "2026-11-27 04:46:11",
+ "updated_at": "2026-11-27 04:46:11"
+}
