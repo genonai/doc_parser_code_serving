@@ -1,0 +1,177 @@
+# 파싱 activity 설정. 원본 파일을 docling 문서로 바꾸고, 필요하면 LLM 으로 정보를 추가.
+#
+# 주석 규칙: 항목 오른쪽 주석과 항목 바로 위(빈 줄 전까지)의 주석이 전처리 Studio 도움말로 표시됨.
+# 긴 설명은 빈 줄로 떼어 그 위에 둠.
+
+# 실행 공통 설정
+defaults:
+  # 로그 상세도. 5=DEBUG 4=INFO(기본) 3=WARNING 2=ERROR 1=CRITICAL 0=끄기
+  log_level: 4
+  # 문서 유형(doc_type) 설정 파일이 없을 때의 처리. warn(기본)=경고 후 일반 문서로 파싱 | fail=요청 실패
+  unknown_doc_type: fail
+
+  # llm_call_failure 가 실패로 보는 경우: 연결 오류, HTTP 오류, 시간 초과(요청 deadline 포함), 응답 형식 오류, 입력 길이 초과.
+  # 빈 응답, 모델 출력 내용의 오류(JSON 깨짐 등), OCR·layout·문서 품질 판정 호출은 제외.
+  # docling 내장 목차·메타데이터 추출은 HTTP 오류·연결 오류·시간 초과면 warn 이어도 중단.
+
+  # LLM·VLM 호출(요약·그림·표·PPT 설명, 필드 추출, 민감정보 분류) 실패 시 처리.
+  # warn(기본)=경고 후 그 결과 없이 계속 | fail=첫 실패에서 문서 처리 중단.
+  # 요청 파라미터 error_policy=strict 도 fail 과 같음. 요청으로 fail 해제는 불가
+  llm_call_failure: fail
+
+# 모델 preset: LLM·OCR·layout·음성 받아쓰기·민감정보 분류 서버의 접속 정보(주소·키 등)에 붙인 이름.
+# 접속 정보는 resource/model_presets.yaml 에 두고, 각 항목에서 `model_preset: <이름>` 으로 지정.
+# 우선순위: 항목에 직접 적은 url·api_key·model > 이 파일의 model_presets(preset 이름·키 단위) > model_presets.yaml.
+# 운영 환경에서는 환경변수 GENOS_MODEL_PRESETS_FILE 이 가리키는 파일 값으로 접속 정보를 덮어씀.
+
+# 파일 형식별 설정
+formats:
+  # 비표준 확장자를 다른 형식으로 처리. 왼쪽=실제 확장자, 오른쪽=처리할 형식의 확장자
+  extension_aliases:
+    # 크롤링 결과(마크다운·HTML 혼합)를 마크다운으로 처리
+    ".parsed": ".md"
+    # 고객센터(화재) 원본(|@| 구분 텍스트)을 json 으로 처리.
+    # 실제 읽기는 custom_field_cs_ssf.yaml 의 source.pre.delimited 가 담당
+    ".dtms": ".json"
+
+  # 확장자와 실제 내용의 형식이 다르면 처리 중단(사유 코드 PARSE_D014). false(기본) | true
+  # 대상: PDF·오피스·한글·이미지·텍스트 계열 불일치, 내용이 JSON 인 .html·.htm·.xml.
+  # 같은 계열 안의 차이(doc↔docx, hwp↔hwpx, jpg↔png)와 extension_aliases 적용 파일은 검사 제외
+  verify_extension: true
+
+  # 표 HTML 이 깨졌으면 처리 중단(사유 코드 PARSE_D015). false(기본) | true
+  # 대상: 셀·행이 닫히기 전에 다음 셀·행 시작, <tr> 밖의 셀, 닫히지 않은 <table>.
+  # HTML·마크다운 입력과 레코드의 HTML 필드를 검사. 표 안의 표는 제외
+  verify_table_markup: true
+
+#   # 엑셀(xlsx·xlsm)·csv 설정. PDF 로 바꾸지 않고 처리
+#   xlsx:
+#     # 읽는 방식. tabular(기본)=병합 셀을 풀어 데이터 행마다 한 건 | docling=시트를 표가 든 문서로 처리
+#     processing_mode: "tabular"
+#     # processing_mode 가 tabular 일 때만 사용
+#     tabular:
+#       # 헤더 행 번호(0부터). 0(기본)=제목·여러 줄 헤더 자동 판정 | N=N번 행으로 고정(위 행은 버림)
+#       header_row: 0
+
+#   # PPT(.ppt·.pptx) 설정. PDF 로 바꿔 파싱하고, 바꾸지 못하면 텍스트만 추출
+#   ppt:
+#     # 페이지 이미지를 VLM 에 보내 받은 설명을 페이지마다 본문에 추가.
+#     # 슬라이드의 글자는 프롬프트의 {{page_text}} 자리로 함께 전달
+#     page_description:
+#       # 페이지 설명 생성 여부. false(기본) | true. 켜면 느려지는 대신 그림·도표 내용도 검색 대상
+#       enable: true
+#       # 사용할 모델 preset
+#       model_preset: page
+#       # 동시 요청 페이지 수. 기본 16. 늘리면 빨라지지만 모델 서버 부하 증가
+#       concurrency: 16
+#       # 프롬프트 파일(이 폴더 기준). {{page_text}} 에 페이지 글자가 들어감
+#       prompt_template_file: prompt_page_image_description_default.md
+
+#       # 선택 키: images_scale(이미지 배율), max_image_side(이미지 긴 변 최대 픽셀),
+#       # max_tokens(응답 길이 상한), params(VLM 에 추가로 보낼 값)
+
+# # OCR 설정. layout 이 genos_layout 이면 이미지 속 글자도 읽으므로 대부분 불필요.
+# # 문서·문서 유형별로 켜려면 요청 파라미터 ocr_mode: "auto" 또는 CONFIG_BY_DOC_TYPE 의 "ocr.ocr_mode": "auto"
+# ocr:
+#   # OCR 사용 방식. disable(기본) | force=항상 OCR(스캔 문서 품질은 오르지만 느려짐)
+#   # | auto=판정 LLM 이 OCR 필요로 답하거나, 깨진 글자·글자 없는 페이지가 있으면 OCR 로 다시 변환
+#   ocr_mode: "disable"
+
+#   # OCR 엔진. paddle(기본) | upstage(외부 API, 아래 upstage 설정 사용)
+#   engine: "paddle"
+
+#   # engine 이 paddle 일 때만 사용
+#   paddle:
+#     # 사용할 모델 preset
+#     model_preset: ocr
+
+# 페이지 구조(제목·본문·표·그림) 인식 설정
+layout:
+  # 구조 인식 모델. genos_layout(기본)=VLM 서버 | docling_layout=docling 내장 모델(서버 불필요)
+  layout_model_type: "genos_layout"
+  # layout_model_type 이 genos_layout 일 때만 사용
+  genos_layout:
+    # 사용할 모델 preset
+    model_preset: layout
+    # 한 번에 처리하는 페이지 수(VLM 동시 요청 수). 기본 32. 늘리면 빨라지지만 서버 부하 증가
+    page_batch_size: 128
+    # 페이지당 VLM 응답 길이 상한(token). 기본 16384. 넘으면 그 페이지는 구조만 받고 글자는 따로 채움
+    max_completion_tokens: 16384
+    # VLM 모델 이름. 기본 "dots-mocr"
+    model: "dots-mocr"
+    # 페이지당 VLM 요청 제한 시간(초). 기본 1200. 넘으면 그 페이지는 구조만 받고 글자는 따로 채움
+    timeout: 3600
+    # 같은 말 반복 억제 강도. 1.0=억제 없음, 클수록 강함. 기본 1.15
+    repetition_penalty: 1.15
+
+# 각 항목은 {이름: {옵션}} 형식의 목록. 끄려면 항목을 지우거나 주석 처리하거나 enable: false.
+# 특정 항목만 다른 모델을 쓰려면 그 항목에 url·api_key·model 을 직접 지정(preset 보다 우선).
+# 프롬프트 파일(*_file)은 이 폴더 기준 경로. 파일이 없거나 비어 있으면 서버 시작 실패.
+
+# 파싱 결과에 LLM 으로 정보 추가. 모니모는 텍스트 표 설명만 사용
+enrichment:
+  # LLM 연결은 model_preset(또는 url·model)으로 지정 권장. 생략하면 문서 유형 설정 중 LLM 으로 필드를 추출하는
+  # (document 형식) 설정의 연결만 빌려 쓰므로, 행 단위 매핑이나 LLM 을 쓰지 않는 문서 유형, 문서 유형 설정이 없는 문서에는 표 설명이 붙지 않음.
+  # 표가 많으면 model_context_tokens(입력)·max_tokens(응답) 중 먼저 차는 한도에 맞춰 여러 번 나눠 호출하고
+  # concurrency 만큼 동시에 보냄. rag 값을 늘리면 호출당 표 수가 줄고 호출 수가 늘어남.
+  #   호출당 표 수(응답 기준) = max_tokens / ((retrieval_context_max_chars
+  #                    + key_fact_limit x key_fact_max_chars + search_terms 몫 + 120) x 1.5)
+
+  # 텍스트 표(HTML·마크다운) 설명. 표마다 검색용 설명을 LLM 으로 만들어 표 앞에 추가.
+  # 실패하면 문서 처리 중단(defaults.llm_call_failure: fail)
+  - table_text_description:
+      # 사용 여부. 요청 파라미터 table_text_desc 로 요청마다 변경 가능
+      enable: true
+      # 사용할 모델 preset
+      model_preset: default
+      model_context_tokens: 40000  # 모델 최대 길이(token). 기본 128000. 모델을 바꾸면 함께 수정
+      max_tokens: 4000        # 응답 길이 상한(token). 기본 4000. 호출당 표 수도 이 값으로 정해짐. 모델 서버의 응답 상한 이하로 설정
+      # concurrency: 8          # 동시 호출 수. 기본 8
+      # temperature: 0.0        # 생성 무작위성. 0(기본)=결과가 거의 일정
+      # timeout: 600            # 호출 1회의 제한 시간(초). 기본 300. 넘기면 문서 처리 중단(defaults.llm_call_failure: fail)
+
+      # 표 설명 프롬프트 파일. 비우면 표 설명을 건너뜀
+      prompt_template_file: prompt_table_text_description_rag.md
+      # before_items: 3          # 표 앞에서 문맥으로 가져올 본문 항목 수. 기본 3
+      # after_items: 2           # 표 뒤에서 문맥으로 가져올 본문 항목 수. 기본 2
+      # max_context_chars: 1500  # 앞·뒤 문맥 각각의 최대 글자 수. 기본 1500
+
+      # 표마다 만들 설명의 분량
+      rag:
+        retrieval_context_max_chars: 200 # 설명 본문의 최대 글자 수. 표가 여러 chunk 로 나뉘면 chunk 마다 반복. 기본 350
+        key_fact_limit: 2                # 핵심 사실 최대 개수. 기본 3
+        key_fact_max_chars: 120          # 핵심 사실 1개의 최대 글자 수. 기본 160
+        # search_terms: 0                  # 검색어 개수. 0(기본)=만들지 않음 | N=최대 N개를 chunk 에 추가
+
+      # LLM 에 보내지 않을 표 종류. 아래 값은 기본값이라 적지 않아도 동작이 같음.
+      # 하나라도 해당하면 제외. `skip: false` 는 다섯 조건을 모두 해제. 문서 유형 설정의 skip 과 키 단위로 합쳐짐
+      # skip:
+      #   single_value_table: true       # 값이 한 칸뿐이거나 데이터 행이 없는 표
+      #   nested_table: true             # 다른 표의 칸 안에 든 표(false 로 해도 설명을 붙일 chunk 가 없어 버려짐)
+      #   duplicate_table: false         # 모든 행이 앞선 표 하나에 이미 들어 있는 표
+      #   self_describing_table: false   # 제목이 있고, 병합 셀이 없고, 데이터 5행 이하·2~3열이며, 값 칸이 문장이고, 금액·비율·기간이 없는 표
+      #   long_text_table: 0             # 첫 행·첫 열을 뺀 값 칸의 평균 글자 수가 이 값 이상인 표(0=끔)
+
+  # 문서 유형별 필드 추출(custom_fields)은 여기에 적지 않음. `- custom_fields:` 항목이 있으면 서버 시작 실패.
+  # 같은 폴더의 custom_field_<doc_type>.yaml 이 맨 위 `doc_type:` 한 줄로 등록되고, 파일을 지우면 빠짐.
+  # 목록 확인 `python -m genon.preprocessor.activities doc-types list`, 추가 `doc-types add`.
+  # 새 파일은 resource/templates/custom_field_TEMPLATE_*.yaml 을 복사해 작성.
+
+# 표를 글로 쓰는 형식(output.table_format)이 적용되는 곳:
+#   1) format 이 json·html·markdown 일 때의 파싱 결과
+#   2) 문서 유형 설정으로 레코드 단위 chunk 를 만드는 문서(예: monimo_event 의 DETAIL_HTML → DETAIL_TEXT 변환 결과).
+#      parse 단계가 chunk 본문을 완성하므로 format 이 docling 이어도 적용
+# format 이 docling 인 일반 문서(PDF·DOCX·HTML 등)의 표 모양은 activities/chunk/config.yaml 의 output 이 정함.
+# 최종 chunk 의 표 모양을 맞추려면 두 파일의 table_format 을 같게 둠(precheck_custom_fields.sh 가 다르면 경고).
+# 레코드 단위 문서는 표 모양이 바뀌면 그 내용으로 만든 hash 식별자(예: cs_ssf 의 BIZ_ID)도 바뀜.
+
+# 파싱 결과 형식
+output:
+  # 결과 형식. json(기본)=요소 목록 | html·markdown=본문 문자열 하나 | docling=docling 문서(청킹 단계 입력용)
+  format: "docling"
+  # 표 형식. html(기본) | markdown | auto(병합 셀·여러 줄 헤더가 있으면 html, 아니면 markdown).
+  # markdown 은 병합 셀을 표현하지 못해 헤더의 상하 관계가 사라짐. format 이 docling 인 일반 문서에는 영향 없음
+  table_format: "markdown"
+
+# 민감정보 분류: 요청 파라미터 guardrail_call=1 이면 문서 전체를 한 번 분류해 결과(sensitive_infos)를 청킹 단계로 넘김.
+# chunk 에 라벨을 붙이거나 가리는 처리는 청킹 단계 담당
