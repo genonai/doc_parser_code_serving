@@ -1,0 +1,13 @@
+{
+ "id": "parse_stock_insight",
+ "stage": "parse",
+ "title": "AI차트뷰 파싱",
+ "description": "stock_insight 문서유형 전용 파싱",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-27 04:16:54",
+ "updated_at": "2026-11-27 04:16:54"
+}
