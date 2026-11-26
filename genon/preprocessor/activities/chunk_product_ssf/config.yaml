@@ -108,7 +108,6 @@ chunking:
     # max_chars: chunk 최대 글자 수(HEADER 줄 포함). 넘은 chunk 는 버리지 않고 응답의 chunk_validation.max_length 와 로그로 알림.
     # 적지 않으면 검사 안 함. embedding 모델 입력 한도(token)를 글자 수로 환산한 값보다 조금 낮게 설정
     # max_chars: 7000
-  chunk_mode: character
 
 # 일반 문서(PDF·DOCX·HTML 등)의 표 모양은 이 파일이 정함(parse 단계 설정은 넘어오지 않음).
 # 문서 유형 설정(custom_fields)으로 레코드 단위 chunk 를 만드는 문서는 parse 단계가 chunk 본문을 완성하므로
