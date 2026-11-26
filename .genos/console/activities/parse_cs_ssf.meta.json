@@ -1,0 +1,13 @@
+{
+ "id": "parse_cs_ssf",
+ "stage": "parse",
+ "title": "화재 고객센터 파싱",
+ "description": "cs_ssf 문서유형 전용 파싱",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "parse",
+ "params": {},
+ "created_at": "2026-11-27 04:15:17",
+ "updated_at": "2026-11-27 04:15:17"
+}
