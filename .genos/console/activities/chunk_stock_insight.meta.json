@@ -1,0 +1,13 @@
+{
+ "id": "chunk_stock_insight",
+ "stage": "chunk",
+ "title": "AI차트뷰 청킹",
+ "description": "",
+ "author": "백영상",
+ "author_id": "yspaik",
+ "owner": "백영상",
+ "source_id": "chunk",
+ "params": {},
+ "created_at": "2026-11-27 04:53:15",
+ "updated_at": "2026-11-27 04:53:15"
+}
