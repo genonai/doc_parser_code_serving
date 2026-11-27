@@ -7,7 +7,7 @@ source:
   records_at: eventList
 fields:
   BIZ_ID:
-    alias: [cmpCntsId, ID, 이벤트ID, event_id]
+    alias: [cmpCntsId, ID, 이벤트ID, event_id, cmpId]
     default: null
   GROUP_C:
     alias: [mnmFncoCd, 회사명, corp_code, 고객사]
