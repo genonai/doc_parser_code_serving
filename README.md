@@ -116,6 +116,9 @@ genon/preprocessor/activities/<slug>/
   ```bash
   # 원형(또는 다른 사본) 폴더를 복사해 새 액티비티 — slug 는 parse_<이름>·chunk_<이름>, 단계는 원본과 같아야 합니다
   python -m genon.preprocessor.activities new --from parse --slug parse_x [--title "<별명>"]
+  # parse 를 복사할 때 doc_type 을 고르면 규칙 파일(custom_field_*.yaml)은 그 doc_type 을 등록한 것만 복사합니다(여러 번 지정 가능).
+  # 원본에 등록이 없는 doc_type 은 규칙 파일 없이 복사하고 결과 data.missing_doc_types 에 이름이 나옵니다
+  python -m genon.preprocessor.activities new --from parse --slug parse_x --doc-type <doc_type> [--doc-type <doc_type> ...]
   # 단건 실행 — 워커와 같은 본문을 Temporal 서버 없이 돌립니다(parse: 원본 문서, chunk: 파싱 결과 JSON)
   python -m genon.preprocessor.activities run --activity parse_x <원본 문서> [-o <결과 JSON>]
   python -m genon.preprocessor.activities run --activity chunk <파싱 결과 JSON>
@@ -126,6 +129,8 @@ genon/preprocessor/activities/<slug>/
   # doc_type 등록 — 등록된 doc_type 의 규칙 파일을 custom_field_<doc_type>.yaml 로 복사하고 그 파일에 doc_type 을 적습니다.
   # config.yaml 은 고치지 않으므로 원형 parse 에도 쓸 수 있고, 새 버전을 merge 할 때 충돌하지 않습니다
   python -m genon.preprocessor.activities doc-types add --name <doc_type> --from <등록된 doc_type> --activity parse_x [--title "<설명>"]
+  # 다른 parse activity 에 등록된 규칙 파일을 가져올 때는 --from-activity 를 줍니다(--name 과 --from 이 같아도 됩니다)
+  python -m genon.preprocessor.activities doc-types add --name <doc_type> --from <doc_type> --from-activity parse --activity parse_x
   python -m genon.preprocessor.activities doc-types list --activity parse_x
   python -m genon.preprocessor.activities doc-types validate --name <doc_type> --activity parse_x
 

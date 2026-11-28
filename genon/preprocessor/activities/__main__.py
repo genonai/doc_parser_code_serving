@@ -30,6 +30,8 @@
 바꾼다. slug 는 콘솔이 정한다(`parse_1` …, 규칙 ^(parse|chunk)(_[a-z0-9_]+)?$, 단계는 원형과 같아야 하고 원형·있는 이름은
 거부). 삭제는 원형(parse·chunk)과 사이트 완성본이 덮어쓰는 slug 를 거부한다. 둘 다 **파일만 다룬다** — 커밋은 Studio·사용자
 몫이다(작업 브랜치). 결과 `data.files` = 만든/지운 파일 경로 전부(저장소 루트 기준) — 콘솔이 이 목록을 한 커밋에 담는다.
+`new --doc-type <doc_type>`(#822, parse 만, 여러 번 줄 수 있다)는 규칙 파일(`custom_field_*.yaml`)을 그 doc_type 을 등록한 것만
+복사한다. 원본에 등록이 없는 doc_type 은 규칙 파일 없이 복사하고 결과 `data.missing_doc_types` 에 이름을 싣는다.
 
 `diff <slug>` (#496): 사본 폴더가 **복사된 뒤 원형이 얼마나 바뀌었는지** — git 이력에서 사본의 복사 커밋(폴더의
 config.yaml 이 처음 들어온 커밋)을 찾아, 그때의 원형 폴더와 지금의 원형 폴더를 파일별 unified diff 로 stdout 에
@@ -40,7 +42,8 @@ changed, added, removed, unchanged}.
 `doc-types` (#712, Studio 의 doc_type 추가): parse 액티비티 폴더의 doc_type 등록을 읽고(`list`·`validate`) 더하거나(`add`)
 뺀다(`remove`, #739). 등록은 규칙 파일(`custom_field_<doc_type>.yaml`) 최상위의 `doc_type:` 한 가지다(#748·#798).
 본체는 `_doc_types.py`. `add` 는 규칙 파일 하나를 만들고 `remove` 는 그 파일을 지운다 — `config.yaml` 을 고치지
-않으므로 원형 `parse` 에도 쓴다. `rename`(#808)은 등록한 규칙 파일의 `doc_type:` 값을 그 자리에서 바꾸고 관례 이름
+않으므로 원형 `parse` 에도 쓴다. `add --from-activity <activity>`(#822)는 다른 parse activity 에 등록된 규칙 파일을 복사한다
+(같은 이름으로 가져올 수 있다). `rename`(#808)은 등록한 규칙 파일의 `doc_type:` 값을 그 자리에서 바꾸고 관례 이름
 파일만 새 이름으로 옮긴다. `data.files` = [바뀐 규칙 파일](저장소 루트 기준, 옮긴 파일은 옮기기 전·뒤 경로 둘 다). 거부 사유는
 `error.detail.reason` 에 싣는다(`DocTypeError`). `list` 항목의 `removable`·`copyable` 은 `remove`·`add --from` 이
 거부하지 않는지다(#756). `enable`·`registered_in` 은 늘 true·`rule_file` 이다. `validate` 는 검사 결과가 실패여도 `ok: true` · `data.valid: false`.
@@ -90,6 +93,8 @@ def _parser() -> argparse.ArgumentParser:
     new.add_argument("--from", dest="origin", required=True, help="원본 slug")
     new.add_argument("--slug", required=True, help="새 slug(콘솔이 정한다, 예: parse_1)")
     new.add_argument("--title", help="processor.py 첫 줄 별명(기본: '<원본 별명> 사본')")
+    new.add_argument("--doc-type", dest="doc_types", action="append", metavar="DOC_TYPE",
+                     help="규칙 파일을 이 doc_type 을 등록한 것만 복사한다(parse 만, 여러 번 지정 가능. 기본: 전부 복사)")
     remove = sub.add_parser("remove", help="사본 액티비티 폴더를 지운다(원형·사이트가 덮어쓰는 slug 는 거부)")
     remove.add_argument("--slug", required=True, help="지울 slug")
     diff = sub.add_parser("diff", help="사본 slug 가 복사된 뒤 원형이 바뀐 것을 보여 준다")
@@ -106,6 +111,8 @@ def _parser() -> argparse.ArgumentParser:
     add.add_argument("--name", required=True, help="새 doc_type(소문자로 시작, 소문자·숫자·_)")
     add.add_argument("--from", dest="origin", required=True, help="규칙 파일을 복사할, 이미 등록된 doc_type")
     add.add_argument("--activity", required=True, help="parse activity 이름(parse 또는 parse_xxx)")
+    add.add_argument("--from-activity", dest="from_activity",
+                     help="--from 의 doc_type 이 등록된 parse activity(기본: --activity 와 같은 activity)")
     add.add_argument("--title", help="복사한 규칙 파일 첫 줄 주석에 넣을 설명(한 줄)")
     dt_remove = action.add_parser("remove", help="parse activity 에서 doc_type 등록을 뺀다(규칙 파일로 등록했으면 그 파일을, config.yaml 에 등록했으면 그 블록을 지운다)")
     dt_remove.add_argument("--name", required=True, help="뺄 doc_type")
@@ -129,9 +136,42 @@ def _repo_relative(root: Path, paths: list[Path]) -> list[str]:
         return [str(p.resolve()) for p in paths]
 
 
-def new_activity(origin: str, slug: str, title: str | None = None, activities_dir: Path | None = None) -> list[str]:
+def _rule_files_to_skip(source: Path, origin: str, slug: str, doc_types: list[str]) -> set[str]:
+    """`new --doc-type` 이 복사하지 않을 규칙 파일 이름 — `source` 최상위의 `custom_field_*.yaml` 가운데 받은 doc_type 을
+    등록하지 않은 것(`doc_type:` 줄이 없어 등록이 아닌 파일 포함). 파일을 바꾸지 않는다.
+
+    규칙 파일 하나가 doc_type 여럿을 등록하는데 그중 일부만 받았으면 거부한다 — 그대로 복사하면 받지 않은 doc_type 까지 등록된다.
+    """
+    from genon.preprocessor.activities import _doc_types, _folders
+    from genon.preprocessor.processing.enrichment import config_v2
+    from genon.preprocessor.processing.enrichment.custom_fields_enricher import normalize_doc_type, normalize_doc_types
+
+    if _folders.stage_of(origin) != _doc_types.PARSE_STAGE:
+        raise ValueError(f"--doc-type 지정 불가: 복제 원본 {origin!r} 은 parse 단계가 아님\n"
+                         "doc_type 규칙 파일은 parse activity 에만 있음")
+    wanted = {normalize_doc_type(name) for name in doc_types}
+    if "" in wanted:
+        raise ValueError("--doc-type 값이 비어 있음: doc_type 이름 지정 필요")
+    registered = {block["config_file"]: set(normalize_doc_types(block.get(config_v2.DOC_TYPE_KEY)))
+                  for block in config_v2.rule_file_registrations(source)}
+    skip: set[str] = set()
+    for path in sorted(source.glob(config_v2.RULE_FILE_GLOB)):
+        names = registered.get(path.name, set())
+        if names and names <= wanted:
+            continue
+        if names & wanted:
+            raise ValueError(f"activity {slug!r} 생성 불가: {path.name} 에 doc_type 이 여럿 있는데 일부만 지정됨 "
+                             f"({', '.join(sorted(names))})\n"
+                             f"--doc-type 에 {', '.join(sorted(names - wanted))} 추가 또는 {path.name} 의 doc_type 목록 수정 필요")
+        skip.add(path.name)
+    return skip
+
+
+def new_activity(origin: str, slug: str, title: str | None = None, activities_dir: Path | None = None,
+                 doc_types: list[str] | None = None) -> list[str]:
     """원본 폴더를 새 slug 폴더로 복사한다 → 만든 파일 목록(저장소 루트 기준). 설정·코드 모두 저장소 원본 폴더에서.
-    배포처(사이트 설정이 이미 activities/ 에 덮인 서빙본 사본)에서는 그 폴더가 곧 사이트 설정이다."""
+    배포처(사이트 설정이 이미 activities/ 에 덮인 서빙본 사본)에서는 그 폴더가 곧 사이트 설정이다.
+    `doc_types` 를 주면 규칙 파일은 그 doc_type 을 등록한 것만 복사한다(`_rule_files_to_skip`). 그 밖의 파일은 그대로 복사한다."""
     from genon.preprocessor.activities import _folders
 
     root = activities_dir or _folders.ACTIVITIES_DIR
@@ -151,12 +191,13 @@ def new_activity(origin: str, slug: str, title: str | None = None, activities_di
     if dest.exists():
         raise ValueError(f"대상 폴더 이미 있음: {dest}")
     source_cfg = source_code = root / origin                  # 저장소 원본 — 사이트 설정은 배포처 동기화가 덮는다(#561)
+    skip = _rule_files_to_skip(source_cfg, origin, slug, doc_types) if doc_types else set()
     code = {_folders.PROCESSOR_FILE, "__init__.py", "__main__.py"}       # 폴더 최상위의 액티비티 코드 — 저장소에서
     made: list[Path] = []
     dest.mkdir()
     try:
         for src in sorted(source_cfg.rglob("*")):                  # 설정·프롬프트·custom_field·플러그인(하위 폴더의 .py 포함)
-            if src.is_dir() or "__pycache__" in src.parts or (src.parent == source_cfg and src.name in code):
+            if src.is_dir() or "__pycache__" in src.parts or (src.parent == source_cfg and src.name in code | skip):
                 continue
             target = dest / src.relative_to(source_cfg)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -175,6 +216,18 @@ def new_activity(origin: str, slug: str, title: str | None = None, activities_di
         shutil.rmtree(dest, ignore_errors=True)
         raise
     return _repo_relative(root, made)
+
+
+def missing_doc_types(slug: str, doc_types: list[str], activities_dir: Path | None = None) -> list[str]:
+    """`new --doc-type` 으로 받은 이름 가운데 만든 폴더에 등록되지 않은 것(받은 순서) — 원본에 그 doc_type 규칙 파일이 없었다."""
+    from genon.preprocessor.activities import _folders
+    from genon.preprocessor.processing.enrichment import config_v2
+    from genon.preprocessor.processing.enrichment.custom_fields_enricher import normalize_doc_types
+
+    folder = (activities_dir or _folders.ACTIVITIES_DIR) / slug
+    registered = {name for block in config_v2.rule_file_registrations(folder)
+                  for name in normalize_doc_types(block.get(config_v2.DOC_TYPE_KEY))}
+    return [name for name in normalize_doc_types(doc_types) if name not in registered]
 
 
 def remove_activity(slug: str, activities_dir: Path | None = None) -> list[str]:
@@ -267,7 +320,8 @@ def doc_types_command(args) -> dict:
         return {**data, "files": _repo_relative(_folders.ACTIVITIES_DIR, files)}
     if args.title is not None and ("\n" in args.title or "\r" in args.title):
         raise _UsageError("--title 은 한 줄만 허용(규칙 파일 첫 줄 주석)")
-    data, files = _doc_types.add_doc_type(args.name, args.origin, args.activity, args.title)
+    data, files = _doc_types.add_doc_type(args.name, args.origin, args.activity, args.title,
+                                          from_activity=args.from_activity)
     return {**data, "files": _repo_relative(_folders.ACTIVITIES_DIR, files)}
 
 
@@ -524,10 +578,14 @@ def main(argv=None) -> int:
             from genon.preprocessor.activities import _folders
 
             activity = args.slug
-            files = (new_activity(args.origin, args.slug, args.title) if args.command == "new"
-                     else remove_activity(args.slug))
+            if args.command == "new":
+                data = {"files": new_activity(args.origin, args.slug, args.title, doc_types=args.doc_types)}
+                if args.doc_types:
+                    data["missing_doc_types"] = missing_doc_types(args.slug, args.doc_types)
+            else:
+                data = {"files": remove_activity(args.slug)}
             _emit({"ok": True, "stage": _folders.stage_of(activity), "activity": activity, "command": args.command,
-                   "duration_ms": int((time.monotonic() - started) * 1000), "data": {"files": files}})
+                   "duration_ms": int((time.monotonic() - started) * 1000), "data": data})
             return 0
         activity = args.activity
         if note := _apply_codespace_presets():           # 자식 프로세스가 이 env 를 물려받는다

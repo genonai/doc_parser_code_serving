@@ -317,14 +317,17 @@ def _copy_check(act: _Activity, origin: str) -> None:
 
 
 def add_doc_type(name: str, origin: str, activity: str, title: str | None = None,
-                 activities_dir: Path | None = None) -> tuple[dict, list[Path]]:
+                 activities_dir: Path | None = None, from_activity: str | None = None) -> tuple[dict, list[Path]]:
     """parse activity 에 doc_type 을 등록한다 → (`{doc_type, activity}`, 만든 파일 [규칙 파일]).
 
     `origin` doc_type 의 규칙 파일을 `custom_field_<name>.yaml` 로 복사하고 그 파일 최상위에 `doc_type: <name>` 을
     적는다. 이 한 줄이 등록이다 — `config.yaml` 은 고치지 않으므로 기본 activity `parse` 에도 쓸 수 있다.
+    `origin` 은 `from_activity`(없으면 `activity`)에 등록된 doc_type 이다. `from_activity` 가 다른 activity 면 그 폴더의
+    규칙 파일을 읽어 `activity` 폴더에 쓴다 — `name` 이 `origin` 과 같아도 된다.
     거부할 때는 `DocTypeError` 를 올리고 어떤 파일도 만들지 않는다.
     """
     act = _load(activity, activities_dir)
+    source_act = act if from_activity in (None, activity) else _load(from_activity, activities_dir)
     if not NAME_RE.fullmatch(name):
         raise DocTypeError("invalid_name", f"doc_type 이름 형식 오류: {name!r} (소문자로 시작, 소문자·숫자·_ 만 허용)")
     registered = [b for b in act.registrations if name in _doc_types_of(b)]
@@ -337,13 +340,13 @@ def add_doc_type(name: str, origin: str, activity: str, title: str | None = None
             f"doc_type={name} 이미 등록됨: config_file={_config_file_of(registered[0]) or '<없음>'}, {state}"
             + (f"\n{problem}" if problem else ""),
             steps=steps)
-    source_path = _copy_source(act, origin)
+    source_path = _copy_source(source_act, origin)
     target = act.folder / rule_file_name(name)
     if target.exists():
         raise DocTypeError("config_file_exists",
                            f"doc_type={name} 등록 중단: 규칙 파일이 이미 있음 ({act.label(target.name)})\n"
                            "그 파일을 지우거나 다른 이름 지정 필요")
-    rule_text = _with_doc_type(_titled(_read_text(source_path), name, title), name, act.label(source_path.name))
+    rule_text = _with_doc_type(_titled(_read_text(source_path), name, title), name, source_act.label(source_path.name))
     with target.open("xb") as f:
         f.write(rule_text.encode("utf-8"))
     return {"doc_type": name, "activity": act.name}, [target]

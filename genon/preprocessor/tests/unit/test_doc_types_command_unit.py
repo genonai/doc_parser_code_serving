@@ -1,4 +1,4 @@
-"""`activities doc-types list | validate | add | remove | rename` (#712, #739, #748, #798, #808) — 임시 activities 폴더에서 doc_type 등록을 다룬다.
+"""`activities doc-types list | validate | add | remove | rename` (#712, #739, #748, #798, #808)와 `new --doc-type`(#822) — 임시 activities 폴더에서 doc_type 등록을 다룬다.
 
 전처리 Studio 가 코드스페이스에서 부르는 명령이다. 등록은 규칙 파일 최상위의 `doc_type:` 한 가지다. 거부할 때 어떤
 파일도 바뀌지 않는지, `add`·`remove` 가 규칙 파일만 만들고 지우며 `config.yaml` 을 고치지 않는지, 결과 줄(`@@RESULT@@`)의
@@ -440,3 +440,113 @@ def test_rename_rejects_with_reason_and_changes_no_file(acts, name, to, activity
         _doc_types.rename_doc_type(name, to, activity, activities_dir=acts)
     assert exc.value.detail["reason"] == reason
     assert _snapshot(acts) == before
+
+
+# ── add --from-activity · new --doc-type (#822) — 복제한 parse activity 에 원하는 doc_type 규칙 파일만 둔다 ─────────────
+
+def test_add_from_activity_copies_rule_file_of_another_activity(acts):
+    """다른 parse activity 에 등록된 규칙 파일을 가져온다 — 같은 이름이면 본문이 원본과 같다."""
+    (acts / "parse_tour" / "custom_field_card.yaml").unlink()
+    before = _snapshot(acts)
+
+    data, files = _doc_types.add_doc_type("card", "card", "parse_tour", activities_dir=acts, from_activity="parse")
+
+    assert data == {"doc_type": "card", "activity": "parse_tour"}
+    assert files == [acts / "parse_tour" / "custom_field_card.yaml"]
+    after = _snapshot(acts)
+    assert after["parse_tour/custom_field_card.yaml"] == after["parse/custom_field_card.yaml"]
+    assert {k: v for k, v in after.items() if k != "parse_tour/custom_field_card.yaml"} == before
+    assert _doc_types.validate_doc_type("card", "parse_tour", acts)["valid"] is True
+
+    # 다른 이름으로 가져오면 doc_type 줄만 새 이름이다
+    _doc_types.add_doc_type("card_vip", "card", "parse_tour", activities_dir=acts, from_activity="parse")
+    assert (acts / "parse_tour" / "custom_field_card_vip.yaml").read_bytes() == \
+        after["parse/custom_field_card.yaml"].replace(b"doc_type: card\n", b"doc_type: card_vip\n")
+
+
+@pytest.mark.parametrize("name, origin, from_activity, reason", [
+    ("faq", "faq", "parse", "source_not_found"),              # 원본 activity 에 등록 없음
+    ("card", "card", "parse_nope", "activity_not_found"),
+])
+def test_add_from_activity_rejects_with_reason_and_changes_no_file(acts, name, origin, from_activity, reason):
+    (acts / "parse_tour" / "custom_field_card.yaml").unlink()
+    before = _snapshot(acts)
+
+    with pytest.raises(DocTypeError) as info:
+        _doc_types.add_doc_type(name, origin, "parse_tour", activities_dir=acts, from_activity=from_activity)
+
+    assert info.value.detail["reason"] == reason
+    assert _snapshot(acts) == before
+
+
+def _rule_names(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.glob("custom_field_*.yaml"))
+
+
+@pytest.mark.parametrize("doc_types, copied, missing", [
+    (["music_ai"], ["custom_field_music_ai.yaml"], []),
+    ([" Music_AI "], ["custom_field_music_ai.yaml"], []),                         # 이름 비교는 worker 와 같다
+    (["card", "music_ai"], ["custom_field_card.yaml", "custom_field_music_ai.yaml"], []),
+    (["card", "faq"], ["custom_field_card.yaml"], ["faq"]),                        # 원본에 없는 doc_type 은 규칙 파일 없이
+    (["pair_a", "pair_b"], ["custom_field_pair.yaml"], []),                        # 파일 하나의 doc_type 을 모두 지정
+    (["music_ai", "music_ai"], ["custom_field_music_ai.yaml", "custom_field_music_ai_notice.yaml"], []),  # 같은 doc_type 의 파일 여럿
+])
+def test_new_with_doc_types_copies_only_their_rule_files(acts, doc_types, copied, missing):
+    from genon.preprocessor.activities.__main__ import missing_doc_types, new_activity
+
+    folder = acts / "parse"
+    _write_rule(folder, "pair", "[pair_a, pair_b]")
+    (folder / "custom_field_draft.yaml").write_text(RULE, encoding="utf-8")        # doc_type 줄 없음 — 등록이 아니다
+    (folder / "prompt_x.md").write_text("prompt\n", encoding="utf-8")
+    if "custom_field_music_ai_notice.yaml" in copied:
+        _write_rule(folder, "music_ai_notice", "music_ai")
+    before = _snapshot(acts)
+
+    files = new_activity("parse", "parse_one", activities_dir=acts, doc_types=doc_types)
+
+    assert _rule_names(acts / "parse_one") == copied
+    assert sorted(Path(f).name for f in files) == sorted(["config.yaml", "processor.py", "prompt_x.md", *copied])
+    assert missing_doc_types("parse_one", doc_types, activities_dir=acts) == missing
+    assert {k: v for k, v in _snapshot(acts).items() if not k.startswith("parse_one/")} == before
+
+
+@pytest.mark.parametrize("origin, slug, doc_types, needle", [
+    ("parse", "parse_one", ["pair_a"], "일부만 지정됨"),
+    ("parse", "parse_one", ["card", " "], "값이 비어 있음"),
+    ("chunk", "chunk_one", ["card"], "parse 단계가 아님"),
+])
+def test_new_with_doc_types_rejects_and_creates_nothing(acts, origin, slug, doc_types, needle):
+    from genon.preprocessor.activities.__main__ import new_activity
+
+    _write_rule(acts / "parse", "pair", "[pair_a, pair_b]")
+    before = _snapshot(acts)
+
+    with pytest.raises(ValueError, match=needle):
+        new_activity(origin, slug, activities_dir=acts, doc_types=doc_types)
+
+    assert _snapshot(acts) == before
+    assert not (acts / slug).exists()
+
+
+def test_cli_new_reports_missing_doc_types_only_when_doc_type_given(acts, monkeypatch, capsys):
+    monkeypatch.setattr(_folders, "ACTIVITIES_DIR", acts)
+    cli = importlib.import_module("genon.preprocessor.activities.__main__")
+
+    def run(*argv):
+        code = cli.main(["new", "--from", "parse", *argv])
+        last = capsys.readouterr().out.strip().splitlines()[-1]
+        return code, json.loads(last[len(cli.RESULT_PREFIX):])
+
+    code, result = run("--slug", "parse_one", "--doc-type", "card", "--doc-type", "faq")
+    assert code == 0 and result["command"] == "new" and result["activity"] == "parse_one"
+    assert result["data"]["missing_doc_types"] == ["faq"]
+    assert _rule_names(acts / "parse_one") == ["custom_field_card.yaml"]
+
+    code, result = run("--slug", "parse_all")                                      # 주지 않으면 지금처럼 전부 복사
+    assert code == 0 and "missing_doc_types" not in result["data"]
+    assert _rule_names(acts / "parse_all") == ["custom_field_card.yaml", "custom_field_music_ai.yaml"]
+
+    code, result = _run_cli(capsys, "add", "--name", "music_ai", "--from", "music_ai", "--from-activity", "parse",
+                            "--activity", "parse_one")
+    assert code == 0 and result["data"]["doc_type"] == "music_ai"
+    assert _rule_names(acts / "parse_one") == ["custom_field_card.yaml", "custom_field_music_ai.yaml"]
